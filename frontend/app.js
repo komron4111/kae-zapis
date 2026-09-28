@@ -1,12 +1,13 @@
-// Записи Арай — интерфейс приложения. Расчёты — в logic.js, архив — в zip.js.
-// Данные живут в телефоне (IndexedDB) и сами сохраняются в облако (сервер api/ на
+// Nailapp — интерфейс приложения. Расчёты — в logic.js, архив — в zip.js.
+// Данные живут в телефоне (IndexedDB) и сами сохраняются в облако (сервер backend/ на
 // Cloudflare): копия записей и фото, свободное время для клиентов, заявки клиентов.
 
 import * as L from './logic.js';
 import { makeZip, readZip } from './zip.js';
 import { API_URL } from './config.js';
 
-const APP_VERSION = '1.3.0';
+const APP_NAME = 'Nailapp';
+const APP_VERSION = '1.4.0';
 
 // ---------- Мелочи ----------
 
@@ -166,15 +167,17 @@ function busyList() {
 
 // ---------- Экран ----------
 
-const ui = { tab: 'records', month: L.monthOf(today()), day: today(), finMonth: L.monthOf(today()), seenToday: today(), clientQuery: '' };
+// monthAnim — куда уехал календарь при смене месяца ('next' или 'prev'), для анимации.
+const ui = { tab: 'records', month: L.monthOf(today()), day: today(), finMonth: L.monthOf(today()), seenToday: today(), clientQuery: '', monthAnim: null };
 const appbar = $('#appbar'), view = $('#view'), fab = $('#fab'), sheet = $('#sheet'), viewer = $('#viewer');
 
 const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 let installEvent = null;
 
-function setHeader(title, actions = '') {
-  appbar.innerHTML = `<h1>${title}</h1>${actions}`;
+// Вверху каждого раздела — название приложения; раздел виден по нижней панели.
+function setHeader(actions = '') {
+  appbar.innerHTML = `<h1>${APP_NAME}</h1>${actions}`;
 }
 
 function render() {
@@ -188,11 +191,73 @@ function render() {
   else renderSettings();
 }
 
+// ---------- Свайпы ----------
+// Жест одним пальцем по элементу selector внутри root. Сначала понимаем направление:
+// по горизонтали ('x') или по вертикали ('y'). Если оно есть в axes, вызываем move(g)
+// на каждое движение и end(g) в конце. В g: target, сдвиг dx и dy, скорость vx и vy
+// (пикселей в миллисекунду) и cancelled — жест прервала система.
+
+let swipedAt = 0;
+
+function swipe(root, selector, { axes, move, end, enabled = () => true }) {
+  let g = null;
+  root.addEventListener('pointerdown', e => {
+    const target = e.target.closest(selector);
+    if (!target || !e.isPrimary || e.button > 0 || !enabled()) return;
+    g = { target, id: e.pointerId, x: e.clientX, y: e.clientY, axis: null, dx: 0, dy: 0, vx: 0, vy: 0, cancelled: false, path: [] };
+  });
+  root.addEventListener('pointermove', e => {
+    if (!g || e.pointerId !== g.id) return;
+    g.dx = e.clientX - g.x;
+    g.dy = e.clientY - g.y;
+    if (!g.axis) {
+      if (Math.hypot(g.dx, g.dy) < 10) return;
+      g.axis = Math.abs(g.dx) > Math.abs(g.dy) ? 'x' : 'y';
+      if (!axes.includes(g.axis)) {
+        g = null;
+        return;
+      }
+      try { g.target.setPointerCapture(e.pointerId); } catch (err) { /* палец уже отпустили */ }
+    }
+    g.path.push({ x: e.clientX, y: e.clientY, t: e.timeStamp });
+    if (g.path.length > 20) g.path.shift();
+    move(g);
+  });
+  const finish = e => {
+    if (!g || e.pointerId !== g.id) return;
+    const done = g;
+    g = null;
+    if (!done.axis) return;
+    // Скорость — по последним 100 мс: палец, который остановился, не «бросает».
+    const recent = [...done.path, { x: e.clientX, y: e.clientY, t: e.timeStamp }].filter(p => e.timeStamp - p.t <= 100);
+    if (recent.length > 1) {
+      const a = recent[0], b = recent[recent.length - 1], dt = Math.max(b.t - a.t, 1);
+      done.vx = (b.x - a.x) / dt;
+      done.vy = (b.y - a.y) / dt;
+    }
+    done.cancelled = e.type === 'pointercancel';
+    swipedAt = Date.now();
+    end(done);
+  };
+  root.addEventListener('pointerup', finish);
+  root.addEventListener('pointercancel', finish);
+}
+
+// После свайпа браузер может прислать «нажатие» на то, что под пальцем, — пропускаем его.
+document.addEventListener('click', e => {
+  if (Date.now() - swipedAt < 350) {
+    e.stopPropagation();
+    e.preventDefault();
+  }
+}, true);
+
 // ---------- Записи ----------
 
 function renderRecords() {
   const t = today();
-  setHeader('Записи', ui.day !== t ? '<button class="hbtn" data-act="today">Сегодня</button>' : '');
+  const monthAnim = ui.monthAnim;
+  ui.monthAnim = null;
+  setHeader(ui.day !== t ? '<button class="hbtn" data-act="today">Сегодня</button>' : '');
   const counts = {};
   for (const a of data.appointments) if (a.status !== 'cancelled') counts[a.date] = (counts[a.date] || 0) + 1;
   const cells = L.monthGrid(ui.month).map(d => {
@@ -235,7 +300,7 @@ function renderRecords() {
         <b>${L.monthTitle(ui.month)}</b>
         <button class="icon-btn" data-act="month" data-delta="1" aria-label="Следующий месяц">${icon('right')}</button>
       </div>
-      <div class="cal-grid">${L.WEEKDAYS_SHORT.map(w => `<span class="wd">${w}</span>`).join('')}${cells}</div>
+      <div class="cal-grid${monthAnim ? ` enter-${monthAnim}` : ''}">${L.WEEKDAYS_SHORT.map(w => `<span class="wd">${w}</span>`).join('')}${cells}</div>
     </section>
     <div class="day-head"><h2>${L.dayTitle(ui.day)}</h2>${active ? `<span>${active} ${L.plural(active, RECORD_FORMS)}</span>` : ''}</div>
     ${dayInfo}
@@ -244,8 +309,41 @@ function renderRecords() {
         <p>На этот день записей нет</p>
         <button class="btn secondary small" data-act="new-appt">${icon('plus')} Добавить запись</button>
       </div>`}
-    ${!block && ui.day >= t ? `<div class="day-actions"><button class="btn small ghost" data-act="new-block" data-day="${ui.day}">${icon('lock')} Закрыть день для записи</button></div>` : ''}`;
+    ${!block && ui.day >= t ? `<div class="day-actions"><button class="btn small secondary" data-act="new-block" data-day="${ui.day}">${icon('lock')} Закрыть день для записи</button></div>` : ''}`;
 }
+
+function changeMonth(delta) {
+  ui.month = L.addMonths(ui.month, delta);
+  ui.monthAnim = delta > 0 ? 'next' : 'prev';
+  render();
+}
+
+// Свайп по календарю влево — следующий месяц, вправо — предыдущий.
+// Сетка дней едет за пальцем; если сдвинули мало — возвращается на место.
+swipe(view, '.cal', {
+  axes: ['x'],
+  move(g) {
+    const grid = g.target.querySelector('.cal-grid');
+    grid.style.transform = `translateX(${g.dx}px)`;
+    grid.style.opacity = 1 - Math.min(Math.abs(g.dx) / grid.clientWidth, 1) * 0.7;
+  },
+  end(g) {
+    const grid = g.target.querySelector('.cal-grid');
+    const w = grid.clientWidth;
+    const flick = Math.abs(g.vx) > 0.4 && Math.sign(g.vx) === Math.sign(g.dx);
+    grid.classList.add('settle');
+    if (g.cancelled || !(Math.abs(g.dx) > w * 0.25 || flick)) {
+      grid.style.transform = '';
+      grid.style.opacity = '';
+      setTimeout(() => grid.classList.remove('settle'), 200);
+      return;
+    }
+    const delta = g.dx < 0 ? 1 : -1;
+    grid.style.transform = `translateX(${-delta * w}px)`;
+    grid.style.opacity = 0;
+    setTimeout(() => changeMonth(delta), 150);
+  },
+});
 
 function blockRange(b) {
   return b.from === b.to ? L.shortDate(b.from) : `${L.shortDate(b.from)} – ${L.shortDate(b.to)}`;
@@ -754,7 +852,7 @@ function toggleClients() {
 }
 
 function renderClients() {
-  setHeader('Клиенты');
+  setHeader();
   const clients = L.sortByName(L.pastClients(data.appointments));
   if (!clients.length) {
     view.innerHTML = '<div class="empty"><p>Клиентов пока нет. Они появятся здесь после первой записи.</p></div>';
@@ -914,33 +1012,155 @@ async function addPhotos(apptId, files) {
   toast(added > 1 ? `Добавлено фото: ${added}` : 'Фото добавлено');
 }
 
-let viewerState = null;
+// Просмотр фото на весь экран. Свайп влево и вправо — соседние фото того же окна
+// (в карточке клиента — фото всех его записей), вверх или вниз — закрыть.
+// На странице три слайда: текущее фото и соседние, чтобы их было видно при свайпе.
 
-async function openViewer(apptId, photoId) {
-  const rec = await dbGet('photo:' + photoId).catch(() => null);
-  if (!rec) return toast('Фото не найдено');
-  const file = new File([rec.data], `foto-${photoId}.jpg`, { type: rec.type || 'image/jpeg' });
-  viewerState = { apptId, photoId, file };
+let viewerState = null; // { list: [{ apptId, photoId }], index, file, busy }
+
+function openViewer(thumb) {
+  const root = thumb.closest('#sheet') || view;
+  const list = [...root.querySelectorAll('.thumb[data-act="view-photo"]')].map(b => ({ apptId: b.dataset.appt, photoId: b.dataset.photo }));
+  const index = Math.max(0, list.findIndex(p => p.photoId === thumb.dataset.photo));
+  viewerState = { list, index, file: null, busy: false };
+  viewer.className = 'viewer';
+  viewer.removeAttribute('style');
   viewer.innerHTML = `
     <div class="viewer-bar">
       <button class="icon-btn" data-act="close-viewer" aria-label="Закрыть">${icon('close')}</button>
-      <span class="grow"></span>
+      <span class="grow viewer-count"></span>
       <button class="btn small" data-act="share-photo">${icon('share')} Поделиться</button>
       <button class="icon-btn" data-act="delete-photo" aria-label="Удалить фото">${icon('trash')}</button>
     </div>
-    <img src="${await photoUrl(photoId)}" alt="Фото результата">`;
+    <div class="viewer-stage"><div class="viewer-track"></div></div>`;
   viewer.hidden = false;
+  showPhoto();
+}
+
+function showPhoto() {
+  const state = viewerState;
+  const { list, index } = state;
+  const track = $('.viewer-track', viewer);
+  const near = [index - 1, index, index + 1].filter(i => i >= 0 && i < list.length);
+  for (const el of [...track.children]) if (!near.includes(Number(el.dataset.index))) el.remove();
+  for (const i of near) {
+    let slide = $(`.viewer-slide[data-index="${i}"]`, track);
+    if (!slide) {
+      slide = document.createElement('div');
+      slide.className = 'viewer-slide';
+      slide.dataset.index = i;
+      slide.innerHTML = '<img alt="Фото результата" draggable="false">';
+      track.append(slide);
+      photoUrl(list[i].photoId).then(url => { if (url) slide.firstChild.src = url; }).catch(() => {});
+    }
+    slide.style.transform = `translateX(${(i - index) * 100}%)`;
+  }
+  track.style.transform = '';
+  $('.viewer-count', viewer).textContent = list.length > 1 ? `${index + 1} из ${list.length}` : '';
+  // Файл для «Поделиться» готовим заранее: iPhone открывает меню, только если
+  // share() вызван сразу по нажатию.
+  const { photoId } = list[index];
+  state.file = null;
+  dbGet('photo:' + photoId).then(rec => {
+    if (rec && viewerState === state && list[state.index].photoId === photoId) {
+      state.file = new File([rec.data], `foto-${photoId}.jpg`, { type: rec.type || 'image/jpeg' });
+    }
+  }).catch(() => {});
+}
+
+const currentSlide = () => viewerState && $(`.viewer-slide[data-index="${viewerState.index}"]`, viewer);
+
+// Анимация в конце жеста: включаем плавность, меняем вид, через 250 мс — then().
+function settleViewer(change, then) {
+  const state = viewerState;
+  state.busy = true;
+  viewer.classList.add('settle');
+  change();
+  setTimeout(() => {
+    if (viewerState !== state) return;
+    viewer.classList.remove('settle');
+    state.busy = false;
+    if (then) then();
+  }, 250);
+}
+
+// Плавно закрыть: фото уезжает вверх или вниз (direction = -1 или 1) или просто гаснет.
+function hideViewer(direction = 0) {
+  if (!viewerState || viewerState.busy) return;
+  const slide = currentSlide();
+  settleViewer(() => {
+    if (direction && slide) slide.style.transform = `translateY(${direction * viewer.clientHeight}px) scale(.8)`;
+    else viewer.style.opacity = 0;
+    viewer.style.backgroundColor = 'rgba(0, 0, 0, 0)';
+    $('.viewer-bar', viewer).style.opacity = 0;
+  }, closeViewer);
 }
 
 function closeViewer() {
   viewer.hidden = true;
   viewer.innerHTML = '';
+  viewer.className = 'viewer';
+  viewer.removeAttribute('style');
   viewerState = null;
 }
 
+swipe(viewer, '.viewer-stage', {
+  axes: ['x', 'y'],
+  enabled: () => Boolean(viewerState && !viewerState.busy),
+  move(g) {
+    const { list, index } = viewerState;
+    if (g.axis === 'x') {
+      // У первого и последнего фото тянется туго: дальше листать некуда.
+      const edge = (g.dx > 0 && index === 0) || (g.dx < 0 && index === list.length - 1);
+      $('.viewer-track', viewer).style.transform = `translateX(${edge ? g.dx / 3 : g.dx}px)`;
+      return;
+    }
+    const slide = currentSlide();
+    if (!slide) return;
+    const k = Math.min(Math.abs(g.dy) / viewer.clientHeight, 1);
+    slide.style.transform = `translateY(${g.dy}px) scale(${1 - k * 0.3})`;
+    viewer.style.backgroundColor = `rgba(0, 0, 0, ${Math.max(1 - k * 2.5, 0)})`;
+    $('.viewer-bar', viewer).style.opacity = Math.max(1 - k * 4, 0);
+  },
+  end(g) {
+    const state = viewerState;
+    const { list, index } = state;
+    if (g.axis === 'x') {
+      const w = viewer.clientWidth;
+      const step = g.dx < 0 ? 1 : -1;
+      const flick = Math.abs(g.vx) > 0.35 && Math.sign(g.vx) === Math.sign(g.dx);
+      const go = !g.cancelled && (Math.abs(g.dx) > w * 0.2 || flick) && list[index + step];
+      const track = $('.viewer-track', viewer);
+      settleViewer(() => { track.style.transform = go ? `translateX(${-step * w}px)` : ''; }, () => {
+        if (!go) return;
+        state.index += step;
+        showPhoto();
+      });
+      return;
+    }
+    const flick = Math.abs(g.vy) > 0.5 && Math.sign(g.vy) === Math.sign(g.dy);
+    if (!g.cancelled && (Math.abs(g.dy) > 100 || flick)) {
+      hideViewer(g.dy < 0 ? -1 : 1);
+      return;
+    }
+    const slide = currentSlide();
+    settleViewer(() => {
+      if (slide) slide.style.transform = 'translateX(0)';
+      viewer.style.backgroundColor = '';
+      $('.viewer-bar', viewer).style.opacity = '';
+    });
+  },
+});
+
 async function sharePhoto() {
   if (!viewerState) return;
-  const { file } = viewerState;
+  let { file } = viewerState;
+  if (!file) {
+    const { photoId } = viewerState.list[viewerState.index];
+    const rec = await dbGet('photo:' + photoId).catch(() => null);
+    if (!rec) return toast('Фото не найдено');
+    file = new File([rec.data], `foto-${photoId}.jpg`, { type: rec.type || 'image/jpeg' });
+  }
   try {
     if (navigator.canShare && navigator.canShare({ files: [file] })) await navigator.share({ files: [file] });
     else downloadFile(file);
@@ -951,16 +1171,23 @@ async function sharePhoto() {
 
 async function deletePhoto() {
   if (!viewerState || !confirm('Удалить это фото?')) return;
-  const { apptId, photoId } = viewerState;
+  const state = viewerState;
+  const { apptId, photoId } = state.list[state.index];
   const a = data.appointments.find(x => x.id === apptId);
   if (a) a.photos = (a.photos || []).filter(id => id !== photoId);
   if (!(await save())) return;
   await dbDel('photo:' + photoId).catch(() => {});
   forgetPhoto(photoId);
-  closeViewer();
   refreshPhotoViews(apptId);
   if (ui.tab === 'records') render();
   toast('Фото удалено');
+  if (viewerState !== state) return;
+  // Остаёмся в просмотре на соседнем фото; если фото больше нет — закрываем.
+  state.list.splice(state.index, 1);
+  if (!state.list.length) return closeViewer();
+  state.index = Math.min(state.index, state.list.length - 1);
+  $('.viewer-track', viewer).innerHTML = '';
+  showPhoto();
 }
 
 // Удаляет фото, на которые не ссылается ни одна запись.
@@ -1028,7 +1255,7 @@ function drawBlock(id, day) {
 // ---------- Финансы ----------
 
 function renderFinance() {
-  setHeader('Финансы');
+  setHeader();
   const ym = ui.finMonth;
   const r = L.monthReport(data, ym);
   const expenses = data.expenses.filter(e => L.monthOf(e.date) === ym).sort((a, b) => b.date.localeCompare(a.date));
@@ -1102,7 +1329,7 @@ function drawExpense(id) {
 // ---------- Настройки ----------
 
 function renderSettings() {
-  setHeader('Настройки');
+  setHeader();
   const s = settings();
   const rent = L.rentFor(data.rent, L.monthOf(today()));
   view.innerHTML = `
@@ -1174,7 +1401,7 @@ function renderSettings() {
       <label class="btn secondary block">Восстановить из архива<input type="file" class="file-input" accept=".zip,.json,application/zip,application/json" data-change="restore"></label>
     </section>
 
-    <p class="version">Записи Арай · версия ${APP_VERSION}</p>`;
+    <p class="version">${APP_NAME} · версия ${APP_VERSION}</p>`;
 }
 
 function cloudPairedHtml() {
@@ -1473,7 +1700,7 @@ async function enablePush() {
     permission = await Notification.requestPermission();
   } catch (e) { /* ниже — понятное сообщение */ }
   if (permission !== 'granted') {
-    return toast('Уведомления не разрешены. Их можно включить: Настройки iPhone → Уведомления → Записи Арай');
+    return toast('Уведомления не разрешены. Их можно включить: Настройки iPhone → Уведомления → это приложение');
   }
   try {
     await subscribePush();
@@ -1527,7 +1754,7 @@ async function prepareBackup() {
       if (rec) files.push({ name: `photos/${id}.jpg`, data: new Uint8Array(rec.data) });
     }
   }
-  pendingBackup = new File([makeZip(files)], `zapisi-arai-${today()}.zip`, { type: 'application/zip' });
+  pendingBackup = new File([makeZip(files)], `nailapp-${today()}.zip`, { type: 'application/zip' });
   const n = data.appointments.length, photos = files.length - 1;
   pushSheet(() => sheetHtml('Архив', `
     <div class="sheet-body">
@@ -1541,7 +1768,7 @@ async function sendBackup() {
   const file = pendingBackup;
   if (!file) return;
   try {
-    if (navigator.canShare && navigator.canShare({ files: [file] })) await navigator.share({ files: [file], title: 'Архив: Записи Арай' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) await navigator.share({ files: [file], title: `Архив: ${APP_NAME}` });
     else downloadFile(file);
   } catch (e) {
     if (e.name !== 'AbortError') toast('Не удалось сохранить архив');
@@ -1682,7 +1909,7 @@ function toast(message) {
 
 const actions = {
   'today': () => { ui.day = today(); ui.month = L.monthOf(ui.day); render(); },
-  'month': el => { ui.month = L.addMonths(ui.month, Number(el.dataset.delta)); render(); },
+  'month': el => changeMonth(Number(el.dataset.delta)),
   'day': el => { ui.day = el.dataset.day; ui.month = L.monthOf(ui.day); render(); },
   'new-appt': () => openAppt(null),
   'new-appt-for': el => openAppt(null, { name: el.dataset.name, phone: el.dataset.phone, date: today() }),
@@ -1736,8 +1963,8 @@ const actions = {
   'confirm-request': el => confirmRequest(el.dataset.id),
   'decline-request': el => declineRequest(el.dataset.id),
   'open-client': el => openClient(el.dataset.key),
-  'view-photo': el => openViewer(el.dataset.appt, el.dataset.photo),
-  'close-viewer': () => closeViewer(),
+  'view-photo': el => openViewer(el),
+  'close-viewer': () => hideViewer(),
   'share-photo': () => sharePhoto(),
   'delete-photo': () => deletePhoto(),
   'new-block': el => openBlock(null, el.dataset.day),

@@ -474,7 +474,7 @@ export function readBackup(text) {
   let obj = null;
   try { obj = JSON.parse(text); } catch (e) { /* не JSON */ }
   if (!obj || obj.app !== BACKUP_APP || !Array.isArray(obj.appointments)) {
-    throw new Error('Это не файл копии «Записи Арай»');
+    throw new Error('Это не файл копии Nailapp');
   }
   const str = v => (v == null ? '' : String(v));
   const list = v => (Array.isArray(v) ? v : []);
