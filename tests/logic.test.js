@@ -1,6 +1,8 @@
-// Тесты logic.js и zip.js. Запуск: открыть tests/ в браузере через локальный сервер (см. README).
+// Тесты logic.js, zip.js и шифрования уведомлений (api/src/push.js).
+// Запуск: открыть tests/ в браузере через локальный сервер (см. README).
 import * as L from '../logic.js';
 import * as Z from '../zip.js';
+import * as P from '../api/src/push.js';
 
 const tests = [];
 
@@ -309,6 +311,96 @@ test('кривые настройки, закрытые дни и фото в к
   eq(copy.appointments[0].photos, ['ok1']);
   eq([copy.settings.dayStart, copy.settings.lastStart, copy.settings.duration], ['09:00', '21:00', 150]);
   eq(copy.blocks, [{ id: 'b0', from: '2026-10-10', to: '2026-10-12', note: '' }]);
+});
+
+// ---------- Несколько услуг и заявки клиентов ----------
+
+test('услуги: старая запись с одной услугой и новая со списком', () => {
+  eq(L.servicesOf({ service: 'Маникюр' }), ['Маникюр']);
+  eq(L.servicesOf({ services: ['Маникюр', 'Педикюр'] }), ['Маникюр', 'Педикюр']);
+  eq(L.servicesOf({}), []);
+  eq(L.servicesLabel(['Маникюр', 'Педикюр']), 'Маникюр + Педикюр');
+  const prices = [{ name: 'Маникюр', price: 5000 }, { name: 'Педикюр', price: 7000 }];
+  eq(L.servicesTotal(['Маникюр', 'Педикюр', 'Стрижка'], prices), 12000);
+});
+
+test('копия: старая запись с одной услугой читается как список', () => {
+  const copy = L.readBackup(JSON.stringify({ app: 'kae-zapis', appointments: [
+    { date: '2026-09-10', service: 'Наращивание' },
+    { date: '2026-09-11', services: ['Маникюр', ' ', 'Педикюр'] },
+  ] }));
+  eq(copy.appointments.map(a => a.services), [['Наращивание'], ['Маникюр', 'Педикюр']]);
+});
+
+test('клиенты видят услуги с ценами из прайса', () => {
+  const s = L.buildSchedule({ appointments: [], blocks: [], settings: {}, prices: [{ name: 'Маникюр', price: 5000 }, { name: ' ', price: 0 }] }, new Date(2026, 9, 1), 1);
+  eq(s.services, [{ name: 'Маникюр', price: 5000 }]);
+});
+
+const SCHEDULE = {
+  duration: 150,
+  services: [{ name: 'Маникюр', price: 5000 }, { name: 'Педикюр', price: 7000 }],
+  days: [
+    { date: '2026-10-01', times: ['09:00', '09:30', '14:30', '15:00', '15:30', '16:00', '16:30', '17:00'] },
+    { date: '2026-10-02', off: true },
+  ],
+};
+const CLOCK = { date: '2026-09-30', minutes: 600 };
+
+test('заявка занимает время для других клиентов', () => {
+  const held = L.applyHolds(SCHEDULE, [{ date: '2026-10-01', time: '14:30' }]);
+  eq(held.days[0].times, ['09:00', '09:30', '17:00']);
+  eq(held.days[1], { date: '2026-10-02', off: true });
+});
+
+test('проверка заявки клиента', () => {
+  const good = { date: '2026-10-01', time: '14:30', name: '  Айгуль   А. ', phone: '8 701 111 22 33', services: ['Маникюр', 'Маникюр', 'Педикюр'], comment: 'Френч' };
+  eq(L.validateRequest(good, SCHEDULE, CLOCK), { ok: true, request: {
+    date: '2026-10-01', time: '14:30', name: 'Айгуль А.', phone: '+7 701 111 22 33', services: ['Маникюр', 'Педикюр'], comment: 'Френч',
+  } });
+  const error = patch => L.validateRequest({ ...good, ...patch }, SCHEDULE, CLOCK).error;
+  const busy = 'Это время уже занято — выберите другое';
+  eq([error({ name: ' ' }), error({ phone: '123' }), error({ services: [] }), error({ services: ['Стрижка'] }), error({ time: '14:00' }), error({ date: '2026-10-02' }), error({ date: 'завтра' })],
+    ['Укажите имя', 'Укажите номер телефона', 'Выберите вид работы', 'Такой услуги нет в прайсе', busy, busy, 'Выберите день и время']);
+  eq(L.validateRequest(good, SCHEDULE, { date: '2026-10-01', minutes: 900 }).status, 409); // 14:30 уже прошло
+});
+
+test('текст уведомления о заявке', () => {
+  eq(L.requestSummary({ name: 'Айгуль', date: '2026-10-01', time: '09:30', services: ['Маникюр', 'Педикюр'] }), 'Айгуль · 1 октября в 9:30 · Маникюр + Педикюр');
+});
+
+test('base64url туда и обратно', () => {
+  const bytes = Uint8Array.from([0, 1, 250, 255, 62, 63, 128]);
+  eq([...L.b64uToBytes(L.bytesToB64u(bytes))], [...bytes]);
+  eq(L.bytesToB64u(Uint8Array.from([251, 255])), '-_8');
+});
+
+// ---------- Шифрование уведомлений ----------
+
+test('шифрование уведомления совпадает с примером RFC 8291 байт в байт', async () => {
+  const clean = x => x.replace(/\s+/g, '');
+  const asPublic = P.unb64u(clean('BP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIg Dll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A8'));
+  const jwk = { kty: 'EC', crv: 'P-256', x: P.b64u(asPublic.slice(1, 33)), y: P.b64u(asPublic.slice(33, 65)), d: 'yfWPiYE-n46HLnH0KqZOF1fJJU3MYrct3AELtAQ-oRw' };
+  const serverKeys = {
+    publicKey: await crypto.subtle.importKey('raw', asPublic, { name: 'ECDH', namedCurve: 'P-256' }, true, []),
+    privateKey: await crypto.subtle.importKey('jwk', jwk, { name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveBits']),
+  };
+  const subscription = { keys: { p256dh: clean('BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV- JvLexhqUzORcx aOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4'), auth: 'BTBZMqHH6r4Tts7J_aSIgg' } };
+  const body = await P.encryptPayload(subscription, P.unb64u('V2hlbiBJIGdyb3cgdXAsIEkgd2FudCB0byBiZSBhIHdhdGVybWVsb24'), { salt: P.unb64u('DGv6ra1nlYgDCS1FRnbzlw'), serverKeys });
+  const expected = clean('DGv6ra1nlYgDCS1FRnbzlwAAEABBBP4z 9KsN6nGRTbVYI_c7VJSPQTBtkgcy27ml mlMoZIIgDll6e3vCYLocInmYWAmS6Tlz AC8wEqKK6PBru3jl7A8')
+    + '|' + clean('8pfeW0KbunFT06SuDKoJH9Ql87S1QUrd irN6GcG7sFz1y1sqLgVi1VhjVkHsUoEs bI_0LpXMuGvnzQ');
+  const [header, ciphertext] = expected.split('|');
+  eq(P.b64u(body), P.b64u(new Uint8Array([...P.unb64u(header), ...P.unb64u(ciphertext)])));
+});
+
+test('подпись VAPID проверяется публичным ключом сервера', async () => {
+  const vapid = await P.generateVapidKeys();
+  const auth = await P.vapidAuthorization('https://web.push.apple.com/QGd1', vapid, 'https://komron4111.github.io/kae-zapis/', Date.UTC(2026, 8, 29));
+  const [, token, key] = auth.match(/^vapid t=([^,]+), k=(.+)$/);
+  const [head, claims, signature] = token.split('.');
+  const pub = await crypto.subtle.importKey('raw', P.unb64u(key), { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+  eq(await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, pub, P.unb64u(signature), new TextEncoder().encode(`${head}.${claims}`)), true);
+  eq(JSON.parse(new TextDecoder().decode(P.unb64u(claims))), { aud: 'https://web.push.apple.com', exp: 1790683200, sub: 'https://komron4111.github.io/kae-zapis/' });
 });
 
 // ---------- Архив копии (ZIP) ----------

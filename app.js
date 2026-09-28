@@ -1,18 +1,12 @@
-// Записи Арай — интерфейс приложения. Расчёты — в logic.js, архив копии — в zip.js.
-// Данные и фото хранятся только в телефоне (IndexedDB). В интернет уходит только
-// свободное время для клиентов (без имён и телефонов) — в репозиторий kae-zapis-okna.
+// Записи Арай — интерфейс приложения. Расчёты — в logic.js, архив — в zip.js.
+// Данные живут в телефоне (IndexedDB) и сами сохраняются в облако (сервер api/ на
+// Cloudflare): копия записей и фото, свободное время для клиентов, заявки клиентов.
 
 import * as L from './logic.js';
 import { makeZip, readZip } from './zip.js';
+import { API_URL } from './config.js';
 
-const APP_VERSION = '1.1.0';
-
-const OKNA_REPO = 'komron4111/kae-zapis-okna';
-const OKNA_API = `https://api.github.com/repos/${OKNA_REPO}/contents/okna.json`;
-// Шаблон ключа: права и срок заполняются сами, остаётся выбрать репозиторий.
-const TOKEN_URL = 'https://github.com/settings/personal-access-tokens/new?name=Zapisi+Arai+okna'
-  + '&description=' + encodeURIComponent('Публикация свободного времени из приложения «Записи Арай»')
-  + '&target_name=komron4111&expires_in=none&contents=write';
+const APP_VERSION = '1.2.0';
 
 // ---------- Мелочи ----------
 
@@ -23,6 +17,7 @@ const today = () => L.ymd(new Date());
 const nowMinutes = () => { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); };
 const RECORD_FORMS = ['запись', 'записи', 'записей'];
 const VISIT_FORMS = ['оплаченная запись', 'оплаченные записи', 'оплаченных записей'];
+const REQUEST_FORMS = ['заявка', 'заявки', 'заявок'];
 
 const ICONS = {
   calendar: '<rect x="3" y="4.5" width="18" height="16.5" rx="3"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4"/>',
@@ -32,7 +27,6 @@ const ICONS = {
   plus: '<path d="M12 5v14M5 12h14"/>',
   left: '<path d="M15 5l-7 7 7 7"/>',
   right: '<path d="M9 5l7 7-7 7"/>',
-  down: '<path d="M6 9l6 6 6-6"/>',
   close: '<path d="M6 6l12 12M18 6L6 18"/>',
   user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/>',
   phone: '<path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2z"/>',
@@ -42,6 +36,8 @@ const ICONS = {
   lock: '<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/>',
   link: '<path d="M10 14a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-6.4-6.4l-1 1"/><path d="M14 10a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 6.4 6.4l1-1"/>',
   trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
+  bell: '<path d="M6 16v-5a6 6 0 0 1 12 0v5l2 2H4z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>',
+  cloud: '<path d="M7 18.5a4.5 4.5 0 0 1-.6-9 6 6 0 0 1 11.6 1.6 3.8 3.8 0 0 1-.5 7.4z"/>',
 };
 const icon = name => `<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
 
@@ -60,8 +56,8 @@ function formatSize(bytes) {
 }
 
 // ---------- Хранилище: IndexedDB в телефоне ----------
-// Ключи: 'data' — записи и настройки, 'publish' — ключ GitHub и статус публикации
-// (в копию не входит), 'photo:<id>' — фото.
+// Ключи: 'data' — записи и настройки, 'photo:<id>' — фото,
+// 'cloud' — ключ телефона для облака и состояние сохранения (в копию не входит).
 
 const DB_NAME = 'kae-zapis';
 let idb = null;
@@ -112,12 +108,16 @@ function pref(key, value) {
   return null;
 }
 
+const API = pref('api') || API_URL;
+
 // ---------- Данные ----------
 
 let data = null;
 // Данные не прочитались: не сохраняем, чтобы пустой список не затёр настоящий.
 let storageBroken = false;
-let publish = { token: '', fingerprint: '', at: null, error: '' };
+let cloud = freshCloud();
+// Заявки клиентов, которые ждут ответа (приходят с сервера).
+let requests = [];
 
 function freshData() {
   return {
@@ -129,6 +129,11 @@ function freshData() {
     blocks: [],
     lastBackup: null,
   };
+}
+
+function freshCloud() {
+  // closing — заявки, подтверждённые без связи: закроем их в облаке при следующем сохранении.
+  return { key: '', pushKey: '', pushOn: false, schedulePrint: '', backupPrint: '', savedAt: null, uploaded: [], closing: [], error: '' };
 }
 
 const settings = () => ({ ...L.DEFAULT_SETTINGS, ...data.settings });
@@ -144,8 +149,15 @@ async function save() {
     toast('Не удалось сохранить. Проверьте свободное место на телефоне');
     return false;
   }
-  schedulePublish();
+  scheduleSync();
   return true;
+}
+
+// Заявки занимают время так же, как записи (в свободном времени и предупреждениях).
+function busyList() {
+  return data.appointments.concat(requests.map(r => ({
+    id: `req:${r.id}`, date: r.date, time: r.time, status: 'booked', name: `${r.name} (заявка)`, phone: r.phone,
+  })));
 }
 
 // ---------- Экран ----------
@@ -164,7 +176,7 @@ function setHeader(title, actions = '') {
 function render() {
   const tabs = [['records', 'calendar', 'Записи'], ['clients', 'users', 'Клиенты'], ['finance', 'chart', 'Финансы'], ['settings', 'sliders', 'Настройки']];
   $('#tabbar').innerHTML = tabs.map(([id, ic, label]) =>
-    `<button data-tab="${id}"${ui.tab === id ? ' class="active" aria-current="page"' : ''}>${icon(ic)}<span>${label}</span></button>`).join('');
+    `<button data-tab="${id}"${ui.tab === id ? ' class="active" aria-current="page"' : ''}>${icon(ic)}<span>${label}</span>${id === 'records' && requests.length ? `<i class="tab-badge">${requests.length}</i>` : ''}</button>`).join('');
   fab.hidden = ui.tab !== 'records';
   if (ui.tab === 'records') renderRecords();
   else if (ui.tab === 'clients') renderClients();
@@ -189,7 +201,10 @@ function renderRecords() {
     const label = L.dayTitle(d) + (n ? `, ${n} ${L.plural(n, RECORD_FORMS)}` : '');
     return `<button class="${cls.join(' ')}" data-act="day" data-day="${d}" aria-label="${label}"><span>${Number(d.slice(8))}</span><i>${n || ''}</i></button>`;
   }).join('');
-  const list = data.appointments.filter(a => a.date === ui.day).sort((a, b) => a.time.localeCompare(b.time));
+  const dayRequests = requests.filter(r => r.date === ui.day);
+  const list = data.appointments.filter(a => a.date === ui.day);
+  const items = [...list.map(a => ({ time: a.time, html: apptCard(a) })), ...dayRequests.map(r => ({ time: r.time, html: requestCard(r, false) }))]
+    .sort((a, b) => a.time.localeCompare(b.time));
   const active = list.filter(a => a.status !== 'cancelled').length;
   const block = L.blockFor(data.blocks, ui.day);
   let dayInfo = '';
@@ -200,11 +215,16 @@ function renderRecords() {
         <button class="btn small secondary" data-act="edit-block" data-id="${esc(block.id)}">Изменить</button>
       </div>`;
   } else if (ui.day >= t) {
-    const times = L.freeTimes(data.appointments, ui.day, settings(), ui.day === t ? nowMinutes() : -1);
+    const times = L.freeTimes(busyList(), ui.day, settings(), ui.day === t ? nowMinutes() : -1);
     dayInfo = `<p class="free-line">${times.length ? `Свободно: ${L.formatRanges(L.toRanges(times))}` : 'Свободного времени нет'}</p>`;
   }
   view.innerHTML = `
     ${banners()}
+    ${requests.length ? `
+    <section class="requests" id="requests">
+      <h2 class="section-title">Новые заявки · ${requests.length}</h2>
+      ${requests.map(r => requestCard(r, true)).join('')}
+    </section>` : ''}
     <section class="card cal">
       <div class="cal-head">
         <button class="icon-btn" data-act="month" data-delta="-1" aria-label="Предыдущий месяц">${icon('left')}</button>
@@ -215,7 +235,7 @@ function renderRecords() {
     </section>
     <div class="day-head"><h2>${L.dayTitle(ui.day)}</h2>${active ? `<span>${active} ${L.plural(active, RECORD_FORMS)}</span>` : ''}</div>
     ${dayInfo}
-    ${list.length ? list.map(apptCard).join('') : `
+    ${items.length ? items.map(x => x.html).join('') : `
       <div class="empty">
         <p>На этот день записей нет</p>
         <button class="btn secondary small" data-act="new-appt">${icon('plus')} Добавить запись</button>
@@ -240,7 +260,7 @@ function apptCard(a) {
   }
   const photos = (a.photos || []).length;
   const details = [
-    a.service,
+    L.servicesLabel(L.servicesOf(a)),
     a.status === 'booked' && a.prepaid ? `предоплата ${L.formatMoney(a.prepaid)}` : '',
     photos ? `${photos} фото` : '',
   ].filter(Boolean).join(' · ');
@@ -249,6 +269,15 @@ function apptCard(a) {
       <span class="appt-time">${esc(a.time)}</span>
       <span class="appt-main"><b>${esc(a.name || L.formatPhone(a.phone))}</b><small>${esc(details)}</small></span>
       <span class="appt-sum">${sum}</span>
+    </button>`;
+}
+
+function requestCard(r, withDate) {
+  return `
+    <button class="appt request" data-act="open-request" data-id="${esc(r.id)}">
+      <span class="appt-time">${esc(r.time)}</span>
+      <span class="appt-main"><b>${esc(r.name)}</b><small>${withDate ? `${L.shortDate(r.date)} · ` : ''}${esc(L.servicesLabel(r.services))}</small></span>
+      <span class="appt-sum"><span class="badge warn">заявка</span></span>
     </button>`;
 }
 
@@ -276,42 +305,40 @@ function banners() {
         <button class="btn small secondary" data-act="goto" data-to="settings">Прайс</button>
       </div>`);
   }
-  if (publish.token && publish.error) {
+  if (!cloud.key) {
     out.push(`
-      <div class="banner warn">
-        <div class="grow">Ссылка для клиентов не обновилась: ${esc(publish.error)}.</div>
-        <button class="btn small secondary" data-act="goto" data-to="settings">Настройки</button>
+      <div class="banner">
+        <div class="grow">Подключите облако: записи и фото будут сохраняться сами, а клиенты смогут оставлять заявки.</div>
+        <button class="btn small secondary" data-act="goto" data-to="settings">Подключить</button>
       </div>`);
-  }
-  if (backupDue()) {
+  } else if (cloud.error) {
     out.push(`
       <div class="banner warn">
-        <div class="grow">Записи хранятся только в этом телефоне. Сохраните резервную копию.</div>
-        <button class="btn small secondary" data-act="backup">Сохранить</button>
+        <div class="grow">Облако: ${esc(cloud.error)}. Попробуем снова при следующем изменении.</div>
       </div>`);
   }
   return out.join('');
 }
 
-function backupDue() {
-  if (data.appointments.length < 3) return false;
-  return !data.lastBackup || Date.now() - Date.parse(data.lastBackup) > 14 * 864e5;
-}
-
 // ---------- Карточка записи ----------
 
+// prefill — данные для новой записи (из карточки клиента или заявки);
+// prefill.requestId — запись создаётся из заявки, после сохранения заявка закрывается.
 function openAppt(id, prefill = {}) {
   pushSheet(() => drawAppt(id, prefill));
 }
 
 function drawAppt(id, prefill) {
   const src = id ? data.appointments.find(a => a.id === id) : null;
-  const a = src || { date: ui.day, time: '', name: '', phone: '', service: '', total: 0, prepaid: 0, status: 'booked', note: '', ...prefill };
+  const { requestId, ...fields } = prefill;
+  const a = src || { date: ui.day, time: '', name: '', phone: '', services: [], total: 0, prepaid: 0, status: 'booked', note: '', ...fields };
+  const chosen = L.servicesOf(a);
   const services = data.prices.filter(p => p.name.trim());
-  if (a.service && !services.some(p => p.name === a.service)) services.push({ name: a.service, price: 0 });
+  for (const name of chosen) if (!services.some(p => p.name === name)) services.push({ name, price: 0 });
 
-  sheetHtml(src ? 'Запись' : 'Новая запись', `
+  sheetHtml(src ? 'Запись' : requestId ? 'Подтверждение записи' : 'Новая запись', `
     <form id="appt-form" class="sheet-body" novalidate autocomplete="off">
+      ${requestId ? '<p class="hint form-note">Проверьте данные, впишите предоплату и сохраните — запись появится в календаре, а время станет занятым для клиентов.</p>' : ''}
       <div class="row2">
         <label>Дата<input type="date" name="date" value="${esc(a.date)}"></label>
         <label>Время<input type="time" name="time" value="${esc(a.time)}"></label>
@@ -325,13 +352,13 @@ function drawAppt(id, prefill) {
       <div class="suggest" data-for="phone"></div>
       <div class="phone-links" id="phone-links"></div>
       <fieldset>
-        <legend>Услуга</legend>
+        <legend>Услуги — можно несколько</legend>
         <div class="chips">${services.map(p => `
-          <button type="button" class="chip${p.name === a.service ? ' on' : ''}" data-act="service" data-name="${esc(p.name)}" data-price="${p.price}">
+          <button type="button" class="chip${chosen.includes(p.name) ? ' on' : ''}" data-act="service" data-name="${esc(p.name)}" data-price="${p.price}">
             ${esc(p.name)}${p.price ? `<small>${L.formatAmount(p.price)}</small>` : ''}
           </button>`).join('')}
         </div>
-        <input type="hidden" name="service" value="${esc(a.service)}">
+        <input type="hidden" name="services" value="${esc(JSON.stringify(chosen))}">
       </fieldset>
       <div class="row2">
         <label>Сумма, ₸<input name="total" class="money" inputmode="numeric" enterkeyhint="done" value="${L.formatAmount(a.total)}" placeholder="0"></label>
@@ -353,12 +380,13 @@ function drawAppt(id, prefill) {
         <label class="btn small secondary">${icon('camera')} Добавить фото<input type="file" accept="image/*" multiple class="file-input" data-change="photo" data-id="${esc(src.id)}"></label>
       </fieldset>` : ''}
       <p id="appt-warn" class="warn-text" hidden></p>
-      <button type="submit" class="btn primary block">Сохранить</button>
+      <button type="submit" class="btn primary block">${requestId ? 'Подтвердить запись' : 'Сохранить'}</button>
       ${src ? `<button type="button" class="btn danger block" data-act="delete-appt" data-id="${esc(src.id)}">Удалить запись</button>` : ''}
     </form>`);
 
   const form = $('#appt-form');
   form.dataset.id = src ? src.id : '';
+  form.dataset.request = requestId || '';
   const clients = L.pastClients(data.appointments);
   bindSuggest(form, 'name', clients);
   bindSuggest(form, 'phone', clients);
@@ -372,6 +400,9 @@ function drawAppt(id, prefill) {
 }
 
 const field = (form, name) => form.elements.namedItem(name);
+const chosenServices = form => JSON.parse(field(form, 'services').value || '[]');
+// При редактировании запись (или заявка, из которой она создаётся) не мешает сама себе.
+const selfId = form => form.dataset.id || (form.dataset.request ? `req:${form.dataset.request}` : '');
 
 // Пересчитывает остаток, свободное время, предупреждения и ссылки для звонка.
 function refreshAppt(form) {
@@ -394,13 +425,14 @@ function refreshAppt(form) {
   }
 
   const s = settings();
+  const busy = busyList();
   const date = field(form, 'date').value, time = field(form, 'time').value;
   const block = date ? L.blockFor(data.blocks, date) : null;
   const hint = $('#time-hint');
   if (!date || date < today() || block) {
     hint.innerHTML = '';
   } else {
-    const times = L.freeTimes(data.appointments, date, s, date === today() ? nowMinutes() : -1, form.dataset.id);
+    const times = L.freeTimes(busy, date, s, date === today() ? nowMinutes() : -1, selfId(form));
     const ranges = L.toRanges(times);
     hint.innerHTML = times.length
       ? `<span>Свободно: ${L.formatRanges(ranges)}</span>
@@ -411,7 +443,7 @@ function refreshAppt(form) {
   const warnings = [];
   if (block) warnings.push(`Этот день закрыт для записи${block.note ? `: ${block.note}` : ''}.`);
   if (date && time) {
-    const near = L.conflicts(data.appointments, date, time, s.duration, form.dataset.id);
+    const near = L.conflicts(busy, date, time, s.duration, selfId(form));
     if (near.length) {
       const who = near.map(x => `${x.name || x.phone} в ${L.shortTime(x.time)}`).join(', ');
       warnings.push(`Пересекается с записью: ${who}. Между записями нужно ${L.formatDuration(s.duration)}.`);
@@ -429,7 +461,7 @@ function refreshAppt(form) {
   const links = $('#phone-links');
   if (L.canDial(phone)) {
     const d = L.phoneDigits(phone);
-    const text = reminderText(field(form, 'name').value.trim(), field(form, 'service').value, date, time);
+    const text = reminderText(field(form, 'name').value.trim(), chosenServices(form), date, time);
     links.innerHTML = `
       <a class="btn small secondary" href="tel:+${d}">${icon('phone')} Позвонить</a>
       <a class="btn small secondary" href="https://wa.me/${d}?text=${encodeURIComponent(text)}" target="_blank" rel="noopener">${icon('chat')} Напомнить в WhatsApp</a>`;
@@ -438,9 +470,10 @@ function refreshAppt(form) {
   }
 }
 
-function reminderText(name, service, date, time) {
+function reminderText(name, services, date, time) {
   let text = `Здравствуйте${name ? ', ' + name : ''}!`;
-  if (date && time) text += ` Напоминаю о записи${service ? ' на ' + service.toLowerCase() : ''}: ${L.shortDate(date)} в ${L.shortTime(time)}.`;
+  const what = L.servicesLabel(services).toLowerCase();
+  if (date && time) text += ` Напоминаю о записи${what ? ' на ' + what : ''}: ${L.shortDate(date)} в ${L.shortTime(time)}.`;
   return text;
 }
 
@@ -451,7 +484,7 @@ async function saveAppt(form) {
     time: v('time'),
     name: v('name').trim(),
     phone: L.formatPhone(v('phone')),
-    service: v('service'),
+    services: chosenServices(form),
     total: L.toMoney(v('total')),
     prepaid: L.toMoney(v('prepaid')),
     status: v('status'),
@@ -460,21 +493,149 @@ async function saveAppt(form) {
   const error = !rec.date ? 'Укажите дату'
     : !rec.time ? 'Укажите время'
     : !rec.name && !rec.phone ? 'Укажите имя или телефон клиента'
-    : !rec.service ? 'Выберите услугу'
+    : !rec.services.length ? 'Выберите услугу'
     : rec.prepaid > rec.total ? 'Предоплата не может быть больше суммы'
     : '';
   if (error) return toast(error);
 
   const now = new Date().toISOString();
   const src = data.appointments.find(a => a.id === form.dataset.id);
-  if (src) Object.assign(src, rec, { updated: now });
-  else data.appointments.push({ id: uid(), ...rec, photos: [], created: now, updated: now });
+  if (src) {
+    Object.assign(src, rec, { updated: now });
+    delete src.service;
+  } else {
+    data.appointments.push({ id: uid(), ...rec, photos: [], created: now, updated: now });
+  }
   if (!(await save())) return;
   ui.day = rec.date;
   ui.month = L.monthOf(rec.date);
+  const requestId = form.dataset.request;
+  if (requestId) {
+    // Запись создана из заявки: закрываем окно записи и окно заявки.
+    requests = requests.filter(r => r.id !== requestId);
+    closeSheet(2);
+    render();
+    updateBadge();
+    toast('Запись подтверждена');
+    try {
+      await api('POST', `/api/requests/${requestId}/confirm`);
+    } catch (e) {
+      cloud.closing = [...(cloud.closing || []), requestId];
+      await dbSet('cloud', cloud).catch(() => {});
+      scheduleSync(10000);
+    }
+    return;
+  }
   closeSheet();
   render();
   toast(src ? 'Запись обновлена' : 'Запись добавлена');
+}
+
+// ---------- Заявки клиентов ----------
+
+async function loadRequests() {
+  if (!cloud.key) return;
+  const res = await api('GET', '/api/requests');
+  const closing = cloud.closing || [];
+  const fresh = (await res.json()).requests.filter(r => !closing.includes(r.id));
+  const changed = JSON.stringify(fresh.map(r => r.id)) !== JSON.stringify(requests.map(r => r.id));
+  requests = fresh;
+  updateBadge();
+  if (changed) {
+    renderTabbarOnly();
+    if (ui.tab === 'records') render();
+  }
+}
+
+function renderTabbarOnly() {
+  const tab = $('#tabbar [data-tab="records"]');
+  if (!tab) return;
+  const old = tab.querySelector('.tab-badge');
+  if (old) old.remove();
+  if (requests.length) tab.insertAdjacentHTML('beforeend', `<i class="tab-badge">${requests.length}</i>`);
+}
+
+// Число заявок на значке приложения (iOS 16.4+ для приложения на экране «Домой»).
+function updateBadge() {
+  try {
+    const p = requests.length ? navigator.setAppBadge && navigator.setAppBadge(requests.length) : navigator.clearAppBadge && navigator.clearAppBadge();
+    if (p && p.catch) p.catch(() => {});
+  } catch (e) { /* значки не поддерживаются */ }
+}
+
+function openRequest(id) {
+  pushSheet(() => drawRequest(id));
+}
+
+function drawRequest(id) {
+  const r = requests.find(x => x.id === id);
+  if (!r) {
+    sheetHtml('Заявка', '<div class="sheet-body"><p class="empty">Заявка уже обработана</p></div>');
+    return;
+  }
+  const total = L.servicesTotal(r.services, data.prices);
+  const d = L.phoneDigits(r.phone);
+  const what = L.servicesLabel(r.services).toLowerCase();
+  const text = `Здравствуйте, ${r.name}! Получила вашу заявку на ${L.shortDate(r.date)} в ${L.shortTime(r.time)} (${what}). Чтобы подтвердить запись, внесите, пожалуйста, предоплату.`;
+  const near = L.conflicts(data.appointments, r.date, r.time, settings().duration);
+  const block = L.blockFor(data.blocks, r.date);
+  sheetHtml('Заявка на запись', `
+    <div class="sheet-body">
+      <div class="card request-info">
+        <p class="lead"><b>${esc(r.name)}</b></p>
+        <p>${esc(L.formatPhone(r.phone))}</p>
+        <p>${L.dayTitle(r.date)}, ${L.shortTime(r.time)}</p>
+        <p>${esc(L.servicesLabel(r.services))}${total ? ` · ${L.formatMoney(total)}` : ''}</p>
+        ${r.comment ? `<p class="hint">«${esc(r.comment)}»</p>` : ''}
+        <p class="hint">Заявка пришла ${formatDateTime(r.created)}</p>
+      </div>
+      ${near.length || block ? `<p class="warn-text">${block ? 'Этот день закрыт для записи. ' : ''}${near.length ? `Пересекается с записью: ${esc(near.map(x => `${x.name || x.phone} в ${L.shortTime(x.time)}`).join(', '))}.` : ''}</p>` : ''}
+      <a class="btn secondary block" href="https://wa.me/${d}?text=${encodeURIComponent(text)}" target="_blank" rel="noopener">${icon('chat')} Написать в WhatsApp</a>
+      <p class="hint form-note">Попросите предоплату. Когда она придёт, нажмите «Подтвердить запись».</p>
+      <button class="btn primary block" data-act="confirm-request" data-id="${esc(r.id)}">Подтвердить запись</button>
+      <button class="btn danger block" data-act="decline-request" data-id="${esc(r.id)}">Отклонить</button>
+    </div>`);
+}
+
+function confirmRequest(id) {
+  const r = requests.find(x => x.id === id);
+  if (!r) return;
+  openAppt(null, {
+    requestId: r.id,
+    date: r.date,
+    time: r.time,
+    name: r.name,
+    phone: r.phone,
+    services: r.services,
+    total: L.servicesTotal(r.services, data.prices),
+    note: r.comment,
+  });
+}
+
+async function declineRequest(id) {
+  if (!confirm('Отклонить заявку? Это время снова станет свободным для других клиентов.')) return;
+  try {
+    await api('POST', `/api/requests/${id}/decline`);
+  } catch (e) {
+    return toast(`Не удалось отклонить: ${e.message}`);
+  }
+  requests = requests.filter(r => r.id !== id);
+  updateBadge();
+  closeSheet();
+  render();
+  toast('Заявка отклонена');
+}
+
+// Открыть заявки: из уведомления или по ссылке ?open=requests.
+function showRequests() {
+  ui.tab = 'records';
+  render();
+  const open = () => {
+    if (requests.length === 1 && sheet.hidden) openRequest(requests[0].id);
+    else if (requests.length) $('#requests')?.scrollIntoView({ block: 'start' });
+  };
+  open();
+  loadRequests().then(open).catch(() => {});
 }
 
 // ---------- Клиенты ----------
@@ -596,7 +757,7 @@ function visitRow(a, t) {
     <div class="visit ${esc(a.status)}">
       <button class="visit-main" data-act="open-appt" data-id="${esc(a.id)}">
         <b>${L.shortDate(a.date)} ${a.date.slice(0, 4)}, ${esc(L.shortTime(a.time))}</b>
-        <small>${esc(a.service)} · ${money}</small>
+        <small>${esc(L.servicesLabel(L.servicesOf(a)))} · ${money}</small>
         ${a.note ? `<small>${esc(a.note)}</small>` : ''}
       </button>
       <div class="thumbs" data-photos-of="${esc(a.id)}">${thumbs(a)}</div>
@@ -606,7 +767,7 @@ function visitRow(a, t) {
 
 // ---------- Фото результата ----------
 // Фото сжимается до 1280 px по длинной стороне и хранится в IndexedDB
-// под ключом 'photo:<id>'; в записи — список id.
+// под ключом 'photo:<id>'; в записи — список id. В облако уходит при сохранении.
 
 const photoUrls = new Map();
 
@@ -885,8 +1046,16 @@ function renderSettings() {
   const rent = L.rentFor(data.rent, L.monthOf(today()));
   view.innerHTML = `
     <section class="card">
+      <h2>Облако и заявки</h2>
+      ${cloud.key ? cloudPairedHtml() : `
+      <p class="hint">Подключите телефон к облаку: записи и фото будут сохраняться сами после каждого изменения, клиенты смогут оставлять заявки по ссылке, а вам будут приходить уведомления. Если телефон потеряется — подключите новый тем же кодом, и всё вернётся.</p>
+      <label>Код доступа<input type="password" id="access-code" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Код, который вы задали"></label>
+      <button class="btn primary block" data-act="pair">${icon('cloud')} Подключить</button>`}
+    </section>
+
+    <section class="card">
       <h2>Прайс</h2>
-      <p class="hint">Цена подставляется в запись при выборе услуги. В самой записи её можно поменять.</p>
+      <p class="hint">Цена подставляется в запись при выборе услуги, в записи её можно поменять. Клиенты видят эти цены по ссылке.</p>
       <div class="prices">${data.prices.map(p => `
         <div class="price-row">
           <input value="${esc(p.name)}" placeholder="Название услуги" enterkeyhint="done" data-change="price-name" data-id="${esc(p.id)}" aria-label="Услуга">
@@ -913,31 +1082,16 @@ function renderSettings() {
 
     <section class="card">
       <h2>Ссылка для клиентов</h2>
-      <p class="hint">По ссылке клиенты видят свободное время на 30 дней вперёд. Имена и телефоны клиентов там не видны.</p>
+      <p class="hint">По ссылке клиенты видят свободное время на 30 дней вперёд, выбирают время и услуги и оставляют заявку. Имена и телефоны других клиентов там не видны.</p>
       <div class="link-box">${esc(clientLink())}</div>
       <div class="btn-row">
         <button class="btn small secondary" data-act="share-link">${icon('share')} Поделиться</button>
         <button class="btn small secondary" data-act="copy-link">${icon('link')} Скопировать</button>
       </div>
       <label>Имя для клиентов<input value="${esc(s.clientName)}" enterkeyhint="done" data-change="set-clientName"></label>
-      <label>WhatsApp для записи<input type="tel" value="${esc(s.whatsapp)}" enterkeyhint="done" placeholder="+7 700 000 00 00" data-change="set-whatsapp"></label>
-      <p class="hint">Клиент нажмёт на время — и откроется WhatsApp с сообщением на этот номер.</p>
-      <div id="publish-status">${publishStatusHtml()}</div>
-      ${publish.token ? `
-      <div class="btn-row">
-        <button class="btn small secondary" data-act="publish-now">Обновить сейчас</button>
-        <button class="btn small ghost" data-act="token-remove">Отключить</button>
-      </div>` : `
-      <div class="panel">
-        <p><b>Подключение — один раз.</b> Чтобы ссылка обновлялась сама, приложению нужен ключ GitHub.</p>
-        <ol class="steps">
-          <li><a href="${TOKEN_URL}" target="_blank" rel="noopener">Откройте страницу создания ключа</a> и войдите в GitHub.</li>
-          <li>В разделе «Repository access» выберите «Only select repositories» → <b>kae-zapis-okna</b>.</li>
-          <li>Нажмите «Generate token», скопируйте ключ и вставьте сюда.</li>
-        </ol>
-        <label>Ключ GitHub<input type="password" id="token-input" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="github_pat_…"></label>
-        <button class="btn primary block" data-act="token-save">Подключить</button>
-      </div>`}
+      <label>WhatsApp мастера<input type="tel" value="${esc(s.whatsapp)}" enterkeyhint="done" placeholder="+7 700 000 00 00" data-change="set-whatsapp"></label>
+      <p class="hint">Клиенты увидят кнопку «Написать мастеру» с этим номером.</p>
+      ${cloud.key ? '' : '<p class="status warn">Заявки начнут приходить после подключения облака.</p>'}
     </section>
 
     <section class="card">
@@ -952,14 +1106,42 @@ function renderSettings() {
     </section>
 
     <section class="card">
-      <h2>Резервная копия</h2>
-      <p class="hint">Все записи и фото хранятся только в этом телефоне. Раз в неделю сохраняйте копию — например, отправьте файл себе в Telegram или WhatsApp. Если телефон потеряется или сменится, всё восстановится из копии.</p>
-      <p>Последняя копия: <b>${data.lastBackup ? formatDate(data.lastBackup) : 'ещё не сохраняли'}</b></p>
-      <button class="btn primary block" data-act="backup">Сохранить копию</button>
-      <label class="btn secondary block">Восстановить из копии<input type="file" class="file-input" accept=".zip,.json,application/zip,application/json" data-change="restore"></label>
+      <h2>Архив на телефон</h2>
+      <p class="hint">${cloud.key ? 'Облако сохраняет всё само. Архив — дополнительная копия файлом, на всякий случай.' : 'Пока облако не подключено, раз в неделю сохраняйте архив — например, отправьте файл себе в Telegram.'}</p>
+      <p>Последний архив: <b>${data.lastBackup ? formatDate(data.lastBackup) : 'ещё не сохраняли'}</b></p>
+      <button class="btn secondary block" data-act="backup">Сохранить архив</button>
+      <label class="btn secondary block">Восстановить из архива<input type="file" class="file-input" accept=".zip,.json,application/zip,application/json" data-change="restore"></label>
     </section>
 
     <p class="version">Записи Арай · версия ${APP_VERSION}</p>`;
+}
+
+function cloudPairedHtml() {
+  const pushState = !('Notification' in window) ? 'unsupported' : Notification.permission === 'granted' && cloud.pushOn ? 'on' : 'off';
+  return `
+    <div id="cloud-status">${cloudStatusHtml()}</div>
+    <div class="cloud-line">
+      ${icon('bell')}
+      <span class="grow">Уведомления о заявках: <b>${pushState === 'on' ? 'включены' : 'выключены'}</b></span>
+    </div>
+    ${pushState === 'on' ? '' : `<button class="btn primary block" data-act="enable-push">${icon('bell')} Включить уведомления</button>`}
+    ${pushState === 'unsupported' ? `<p class="hint">${isIOS && !isStandalone() ? 'Уведомления работают, когда приложение открыто с экрана «Домой».' : 'Этот браузер не поддерживает уведомления.'}</p>` : ''}
+    <div class="btn-row">
+      <button class="btn small secondary" data-act="sync-now">Сохранить сейчас</button>
+      <button class="btn small secondary" data-act="cloud-restore">Восстановить из облака</button>
+      <button class="btn small ghost" data-act="unpair">Отключить</button>
+    </div>`;
+}
+
+function cloudStatusHtml() {
+  if (syncing) return '<p class="status">Сохраняем в облако…</p>';
+  if (cloud.error) return `<p class="status bad">Не удалось сохранить: ${esc(cloud.error)}. Попробуем снова.</p>`;
+  return `<p class="status ok">${icon('cloud')} Всё сохранено в облаке${cloud.savedAt ? ` · ${formatDateTime(cloud.savedAt)}` : ''}</p>`;
+}
+
+function showCloudStatus() {
+  const box = $('#cloud-status');
+  if (box) box.innerHTML = cloudStatusHtml();
 }
 
 function durationHint(duration) {
@@ -967,101 +1149,291 @@ function durationHint(duration) {
 }
 
 function clientLink() {
-  return new URL('okna/', location.href.split('#')[0]).href;
+  return new URL('okna/', location.href.split('#')[0].split('?')[0]).href;
 }
 
-function publishStatusHtml() {
-  if (!publish.token) return '<p class="status warn">Ссылка пока не обновляется: подключите ключ GitHub.</p>';
-  if (publishing) return '<p class="status">Выкладываем свободное время…</p>';
-  if (publish.error) return `<p class="status bad">Не удалось выложить: ${esc(publish.error)}. Попробуем снова при следующем изменении.</p>`;
-  return `<p class="status ok">Свободное время на сайте актуально${publish.at ? ` (выложено ${formatDateTime(publish.at)})` : ''}.</p>`;
+// ---------- Облако ----------
+
+async function api(method, path, body, type) {
+  const headers = {};
+  if (cloud.key) headers.Authorization = `Bearer ${cloud.key}`;
+  let payload = body;
+  if (body !== undefined) {
+    if (!(body instanceof Uint8Array) && typeof body !== 'string') {
+      payload = JSON.stringify(body);
+      type = 'application/json';
+    }
+    headers['Content-Type'] = type || 'application/json';
+  }
+  let res;
+  try {
+    res = await fetch(API + path, { method, headers, body: payload, cache: 'no-store' });
+  } catch (e) {
+    throw new Error('нет связи с облаком');
+  }
+  if (res.ok) return res;
+  let message = `ошибка ${res.status}`;
+  try { message = (await res.json()).error || message; } catch (e) { /* не JSON */ }
+  if (res.status === 401 && cloud.key) {
+    // Этот телефон отключили (например, подключили другой) — забываем ключ.
+    cloud = freshCloud();
+    await dbSet('cloud', cloud).catch(() => {});
+    render();
+  }
+  const error = new Error(message);
+  error.status = res.status;
+  throw error;
 }
 
-// ---------- Свободное время для клиентов: публикация на GitHub ----------
-
-let publishTimer = null, publishing = false, publishAgain = false;
-
-function schedulePublish(delay = 2500) {
-  if (!publish.token || storageBroken) return;
-  clearTimeout(publishTimer);
-  publishTimer = setTimeout(publishNow, delay);
+async function sha256(text) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return L.bytesToB64u(new Uint8Array(digest));
 }
 
-function showPublishStatus() {
-  const box = $('#publish-status');
-  if (box) box.innerHTML = publishStatusHtml();
+async function gzip(text) {
+  if (typeof CompressionStream === 'undefined') return null;
+  const stream = new Blob([text]).stream().pipeThrough(new CompressionStream('gzip'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
-async function publishNow() {
-  if (!publish.token || !data) return;
-  if (publishing) {
-    publishAgain = true;
+async function gunzip(bytes) {
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+  return new Response(stream).text();
+}
+
+// Отпечаток данных без даты выгрузки: без изменений копию заново не отправляем.
+const dataPrint = d => sha256(JSON.stringify([d.appointments, d.expenses, d.prices, d.rent, d.settings, d.blocks]));
+
+let syncTimer = null, syncing = false, syncAgain = false;
+
+function scheduleSync(delay = 2500) {
+  if (!cloud.key || storageBroken) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(syncNow, delay);
+}
+
+// Сохраняет в облако копию данных, новые фото и свободное время для клиентов,
+// забирает новые заявки. Каждый шаг — отдельно: ошибка в одном не мешает другим.
+async function syncNow() {
+  if (!cloud.key || !data) return;
+  if (syncing) {
+    syncAgain = true;
     return;
   }
-  publishing = true;
-  showPublishStatus();
-  try {
-    const schedule = L.buildSchedule(data);
-    // Время выгрузки не в счёт: без изменений в расписании файл не перезаписываем.
-    const fingerprint = JSON.stringify({ ...schedule, updated: '' });
-    if (fingerprint !== publish.fingerprint) {
-      await putOkna(JSON.stringify(schedule, null, 1));
-      publish.fingerprint = fingerprint;
-      publish.at = new Date().toISOString();
-    }
-    publish.error = '';
-  } catch (e) {
-    publish.error = e.message;
-  }
-  publishing = false;
-  await dbSet('publish', publish).catch(() => {});
-  showPublishStatus();
-  if (publishAgain) {
-    publishAgain = false;
-    publishNow();
-  }
-}
-
-async function putOkna(text) {
-  const headers = { Authorization: `Bearer ${publish.token}`, Accept: 'application/vnd.github+json' };
-  const request = async (method, body) => {
-    let res;
+  syncing = true;
+  showCloudStatus();
+  const errors = [];
+  const step = async fn => {
     try {
-      res = await fetch(OKNA_API, { method, headers: body ? { ...headers, 'Content-Type': 'application/json' } : headers, body, cache: 'no-store' });
+      await fn();
     } catch (e) {
-      throw new Error('нет интернета');
+      errors.push(e.message);
     }
-    if (res.status === 401) throw new Error('ключ GitHub не подходит или отозван');
-    return res;
   };
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const current = await request('GET');
-    if (!current.ok && current.status !== 404) throw new Error(`GitHub ответил ${current.status}`);
-    const sha = current.ok ? (await current.json()).sha : undefined;
-    const res = await request('PUT', JSON.stringify({ message: 'Свободное время обновлено', content: toBase64(text), ...(sha ? { sha } : {}) }));
-    if (res.ok) return;
-    // Файл успели изменить (или он появился) — берём свежий sha и повторяем.
-    if (res.status === 409 || res.status === 422) continue;
-    if (res.status === 403 || res.status === 404) throw new Error('у ключа нет доступа к репозиторию kae-zapis-okna');
-    throw new Error(`GitHub ответил ${res.status}`);
+
+  await step(async () => {
+    const print = await dataPrint(data);
+    if (print === cloud.backupPrint) return;
+    const text = JSON.stringify(L.makeBackup(data));
+    const packed = await gzip(text);
+    await api('PUT', '/api/backup', packed || text, packed ? 'application/gzip' : 'application/json');
+    cloud.backupPrint = print;
+    cloud.savedAt = new Date().toISOString();
+  });
+  await step(async () => {
+    const schedule = L.buildSchedule(data);
+    const print = JSON.stringify({ ...schedule, updated: '' });
+    if (print === cloud.schedulePrint) return;
+    await api('PUT', '/api/schedule', schedule);
+    cloud.schedulePrint = print;
+  });
+  await step(async () => {
+    const ids = new Set(data.appointments.flatMap(a => a.photos || []));
+    for (const id of ids) {
+      if (cloud.uploaded.includes(id)) continue;
+      const rec = await dbGet('photo:' + id).catch(() => null);
+      if (!rec) continue;
+      await api('PUT', `/api/photos/${id}`, new Uint8Array(rec.data), 'image/jpeg');
+      cloud.uploaded.push(id);
+    }
+    for (const id of [...cloud.uploaded]) {
+      if (ids.has(id)) continue;
+      await api('DELETE', `/api/photos/${id}`);
+      cloud.uploaded = cloud.uploaded.filter(x => x !== id);
+    }
+  });
+  await step(async () => {
+    for (const id of [...(cloud.closing || [])]) {
+      await api('POST', `/api/requests/${id}/confirm`);
+      cloud.closing = cloud.closing.filter(x => x !== id);
+    }
+  });
+  await step(loadRequests);
+
+  syncing = false;
+  if (cloud.key) {
+    cloud.error = errors[0] || '';
+    await dbSet('cloud', cloud).catch(() => {});
   }
-  throw new Error('GitHub не принял файл');
+  showCloudStatus();
+  if (syncAgain) {
+    syncAgain = false;
+    syncNow();
+  }
 }
 
-function toBase64(text) {
-  let binary = '';
-  for (const byte of new TextEncoder().encode(text)) binary += String.fromCharCode(byte);
-  return btoa(binary);
+async function fetchCloudBackup() {
+  let res;
+  try {
+    res = await api('GET', '/api/backup');
+  } catch (e) {
+    if (e.status === 404) return null;
+    throw e;
+  }
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  const gz = (res.headers.get('Content-Type') || '').includes('gzip');
+  return { copy: L.readBackup(gz ? await gunzip(bytes) : new TextDecoder().decode(bytes)), created: res.headers.get('X-Backup-Created') };
 }
 
-// ---------- Резервная копия: ZIP с data.json и фото ----------
+// Заменяет данные телефона копией из облака (вместе с фото).
+async function applyCloudBackup(copy) {
+  toast('Загружаем данные из облака…');
+  const ids = [...new Set(copy.appointments.flatMap(a => a.photos))];
+  let missing = 0;
+  for (const id of ids) {
+    if (await dbGet('photo:' + id).catch(() => null)) continue;
+    try {
+      const res = await api('GET', `/api/photos/${id}`);
+      await dbSet('photo:' + id, { type: 'image/jpeg', data: await res.arrayBuffer(), created: null });
+    } catch (e) {
+      missing++;
+    }
+  }
+  data = {
+    appointments: copy.appointments,
+    expenses: copy.expenses,
+    prices: copy.prices.length ? copy.prices : freshData().prices,
+    rent: copy.rent,
+    settings: copy.settings,
+    blocks: copy.blocks,
+    lastBackup: data.lastBackup,
+  };
+  await dbSet('data', data);
+  cloud.backupPrint = await dataPrint(data);
+  cloud.uploaded = ids;
+  cloud.schedulePrint = '';
+  await dbSet('cloud', cloud).catch(() => {});
+  await cleanupPhotos();
+  render();
+  toast(missing ? `Данные восстановлены, но ${missing} фото не загрузились` : 'Данные восстановлены из облака');
+  scheduleSync(500);
+}
+
+async function pairDevice() {
+  const code = $('#access-code').value.trim();
+  if (code.length < 8) return toast('Код доступа — не короче 8 символов');
+  const key = L.bytesToB64u(crypto.getRandomValues(new Uint8Array(32)));
+  let res, body = {};
+  try {
+    res = await fetch(`${API}/api/pair`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code, key, name: 'Телефон мастера' }) });
+    body = await res.json().catch(() => ({}));
+  } catch (e) {
+    return toast('Нет связи с облаком. Проверьте интернет');
+  }
+  if (!res.ok) return toast(body.error || 'Не удалось подключить');
+  cloud = { ...freshCloud(), key, pushKey: body.pushKey };
+  await dbSet('cloud', cloud).catch(() => {});
+
+  // Новый телефон: если в облаке есть копия — предлагаем восстановить её.
+  let remote = null;
+  try {
+    remote = await fetchCloudBackup();
+  } catch (e) { /* покажем ниже как ошибку сохранения */ }
+  if (remote && remote.copy.appointments.length) {
+    const n = remote.copy.appointments.length;
+    const question = data.appointments.length
+      ? `В облаке есть копия от ${formatDateTime(remote.created)}: ${n} ${L.plural(n, RECORD_FORMS)}. Заменить данные этого телефона копией из облака? «Отмена» — оставить данные телефона и сохранить их в облако.`
+      : `В облаке есть копия от ${formatDateTime(remote.created)}: ${n} ${L.plural(n, RECORD_FORMS)}. Восстановить её на этом телефоне?`;
+    if (confirm(question)) {
+      await applyCloudBackup(remote.copy);
+      return;
+    }
+  }
+  render();
+  toast('Телефон подключён к облаку');
+  syncNow();
+}
+
+async function restoreFromCloud() {
+  let remote;
+  try {
+    remote = await fetchCloudBackup();
+  } catch (e) {
+    return toast(`Не удалось загрузить: ${e.message}`);
+  }
+  if (!remote) return toast('В облаке пока нет копии');
+  const n = remote.copy.appointments.length;
+  if (!confirm(`Восстановить копию из облака от ${formatDateTime(remote.created)} (${n} ${L.plural(n, RECORD_FORMS)})? Данные на телефоне заменятся.`)) return;
+  await applyCloudBackup(remote.copy);
+}
+
+// Включение уведомлений: запрос разрешения должен идти сразу после нажатия (требование iOS).
+async function enablePush() {
+  if (!('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+    return toast(isIOS && !isStandalone() ? 'Уведомления работают, когда приложение открыто с экрана «Домой»' : 'Этот браузер не поддерживает уведомления');
+  }
+  let permission = 'denied';
+  try {
+    permission = await Notification.requestPermission();
+  } catch (e) { /* ниже — понятное сообщение */ }
+  if (permission !== 'granted') {
+    return toast('Уведомления не разрешены. Их можно включить: Настройки iPhone → Уведомления → Записи Арай');
+  }
+  try {
+    await subscribePush();
+    cloud.pushOn = true;
+    await dbSet('cloud', cloud).catch(() => {});
+    render();
+    toast('Уведомления о заявках включены');
+  } catch (e) {
+    toast(`Не удалось включить уведомления: ${e.message}`);
+  }
+}
+
+async function subscribePush() {
+  const reg = await navigator.serviceWorker.ready;
+  const options = { userVisibleOnly: true, applicationServerKey: L.b64uToBytes(cloud.pushKey) };
+  let sub = await reg.pushManager.getSubscription();
+  if (!sub) {
+    sub = await reg.pushManager.subscribe(options);
+  } else {
+    // Подписка на другой ключ сервера не подойдёт — оформляем заново.
+    const current = sub.options && sub.options.applicationServerKey;
+    if (current && L.bytesToB64u(new Uint8Array(current)) !== cloud.pushKey) {
+      await sub.unsubscribe();
+      sub = await reg.pushManager.subscribe(options);
+    }
+  }
+  await api('PUT', '/api/push', sub.toJSON());
+}
+
+async function unpair() {
+  if (!confirm('Отключить этот телефон от облака? Данные на телефоне останутся, но перестанут сохраняться в облако, а заявки — приходить.')) return;
+  cloud = freshCloud();
+  requests = [];
+  updateBadge();
+  await dbSet('cloud', cloud).catch(() => {});
+  render();
+}
+
+// ---------- Архив на телефон: ZIP с data.json и фото ----------
 
 let pendingBackup = null;
 
 // Сначала собираем файл, потом отдельной кнопкой отправляем: iOS разрешает
 // «Поделиться» только сразу после нажатия, а сборка с фото занимает время.
 async function prepareBackup() {
-  toast('Готовим копию…');
+  toast('Готовим архив…');
   const files = [{ name: 'data.json', data: new TextEncoder().encode(JSON.stringify(L.makeBackup(data))) }];
   for (const a of data.appointments) {
     for (const id of a.photos || []) {
@@ -1071,10 +1443,10 @@ async function prepareBackup() {
   }
   pendingBackup = new File([makeZip(files)], `zapisi-arai-${today()}.zip`, { type: 'application/zip' });
   const n = data.appointments.length, photos = files.length - 1;
-  pushSheet(() => sheetHtml('Резервная копия', `
+  pushSheet(() => sheetHtml('Архив', `
     <div class="sheet-body">
-      <p class="lead">Копия готова: ${n} ${L.plural(n, RECORD_FORMS)}, ${photos} фото, ${formatSize(pendingBackup.size)}.</p>
-      <p class="hint">Отправьте файл себе в Telegram или WhatsApp либо сохраните в «Файлы». Восстановить: «Настройки» → «Восстановить из копии».</p>
+      <p class="lead">Архив готов: ${n} ${L.plural(n, RECORD_FORMS)}, ${photos} фото, ${formatSize(pendingBackup.size)}.</p>
+      <p class="hint">Отправьте файл себе в Telegram или WhatsApp либо сохраните в «Файлы». Восстановить: «Настройки» → «Восстановить из архива».</p>
       <button class="btn primary block" data-act="send-backup">${icon('share')} Отправить или сохранить</button>
     </div>`));
 }
@@ -1083,10 +1455,10 @@ async function sendBackup() {
   const file = pendingBackup;
   if (!file) return;
   try {
-    if (navigator.canShare && navigator.canShare({ files: [file] })) await navigator.share({ files: [file], title: 'Копия: Записи Арай' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) await navigator.share({ files: [file], title: 'Архив: Записи Арай' });
     else downloadFile(file);
   } catch (e) {
-    if (e.name !== 'AbortError') toast('Не удалось сохранить копию');
+    if (e.name !== 'AbortError') toast('Не удалось сохранить архив');
     return;
   }
   pendingBackup = null;
@@ -1094,7 +1466,7 @@ async function sendBackup() {
   await save();
   closeSheet();
   render();
-  toast('Копия сохранена');
+  toast('Архив сохранён');
 }
 
 function downloadFile(file) {
@@ -1125,7 +1497,7 @@ async function restoreBackup(file) {
   }
   const when = copy.exportedAt ? ` от ${formatDate(copy.exportedAt)}` : '';
   const count = `${copy.appointments.length} ${L.plural(copy.appointments.length, RECORD_FORMS)}${photos.length ? ` и ${photos.length} фото` : ''}`;
-  if (!confirm(`Восстановить копию${when}? В ней ${count}. Текущие данные в приложении заменятся.`)) return;
+  if (!confirm(`Восстановить архив${when}? В нём ${count}. Текущие данные в приложении заменятся.`)) return;
   toast('Восстанавливаем…');
   try {
     for (const p of photos) {
@@ -1190,12 +1562,15 @@ function hideSheet() {
   document.documentElement.classList.remove('locked');
 }
 
-function closeSheet() {
-  if (sheets.length) history.back();
+function closeSheet(levels = 1) {
+  const n = Math.min(levels, sheets.length);
+  if (n) history.go(-n);
 }
 
+// Глубина стопки хранится в истории: «Назад» на несколько окон закрывает их все.
 addEventListener('popstate', () => {
-  sheets.pop();
+  const depth = (history.state && history.state.sheet) || 0;
+  while (sheets.length > depth) sheets.pop();
   closeViewer();
   showSheet();
 });
@@ -1206,7 +1581,7 @@ function toast(message) {
   el.textContent = message;
   el.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { el.hidden = true; }, 2800);
+  toastTimer = setTimeout(() => { el.hidden = true; }, 3200);
 }
 
 // ---------- Действия ----------
@@ -1228,10 +1603,11 @@ const actions = {
   },
   'service': el => {
     const form = el.closest('form');
-    form.querySelectorAll('.chip[data-act="service"]').forEach(c => c.classList.toggle('on', c === el));
-    field(form, 'service').value = el.dataset.name;
-    const price = Number(el.dataset.price);
-    if (price) field(form, 'total').value = L.formatAmount(price);
+    el.classList.toggle('on');
+    const chips = [...form.querySelectorAll('.chip[data-act="service"].on')];
+    field(form, 'services').value = JSON.stringify(chips.map(c => c.dataset.name));
+    const sum = chips.reduce((total, c) => total + Number(c.dataset.price), 0);
+    if (sum) field(form, 'total').value = L.formatAmount(sum);
     refreshAppt(form);
   },
   'status': el => {
@@ -1253,6 +1629,9 @@ const actions = {
     render();
     toast('Запись удалена');
   },
+  'open-request': el => openRequest(el.dataset.id),
+  'confirm-request': el => confirmRequest(el.dataset.id),
+  'decline-request': el => declineRequest(el.dataset.id),
   'open-client': el => openClient(el.dataset.key),
   'view-photo': el => openViewer(el.dataset.appt, el.dataset.photo),
   'close-viewer': () => closeViewer(),
@@ -1297,7 +1676,7 @@ const actions = {
     const url = clientLink();
     if (!navigator.share) return actions['copy-link']();
     try {
-      await navigator.share({ title: 'Свободное время для записи', url });
+      await navigator.share({ title: 'Запись на маникюр', url });
     } catch (e) { /* отменили */ }
   },
   'copy-link': async () => {
@@ -1308,24 +1687,15 @@ const actions = {
       toast('Не удалось скопировать — выделите ссылку пальцем');
     }
   },
-  'token-save': async () => {
-    const token = $('#token-input').value.trim();
-    if (!/^(github_pat_|ghp_)\w+$/.test(token)) return toast('Это не похоже на ключ GitHub');
-    publish = { token, fingerprint: '', at: null, error: '' };
-    await dbSet('publish', publish).catch(() => {});
-    render();
-    publishNow();
+  'pair': () => pairDevice(),
+  'unpair': () => unpair(),
+  'enable-push': () => enablePush(),
+  'sync-now': () => {
+    cloud.backupPrint = '';
+    cloud.schedulePrint = '';
+    syncNow();
   },
-  'token-remove': async () => {
-    if (!confirm('Отключить обновление ссылки? Клиенты будут видеть последнее выложенное время.')) return;
-    publish = { token: '', fingerprint: '', at: null, error: '' };
-    await dbSet('publish', publish).catch(() => {});
-    render();
-  },
-  'publish-now': () => {
-    publish.fingerprint = '';
-    publishNow();
-  },
+  'cloud-restore': () => restoreFromCloud(),
   'backup': () => prepareBackup(),
   'send-backup': () => sendBackup(),
   'goto': el => { ui.tab = el.dataset.to; render(); scrollTo(0, 0); },
@@ -1438,11 +1808,11 @@ addEventListener('appinstalled', () => {
   if (data) render();
 });
 
-addEventListener('online', () => schedulePublish(500));
+addEventListener('online', () => scheduleSync(500));
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible' || !data) return;
-  schedulePublish(1000);
+  scheduleSync(800);
   // Приложение могли не закрывать несколько дней: «сегодня» должно сдвинуться.
   const t = today();
   if (t === ui.seenToday) return;
@@ -1460,16 +1830,45 @@ async function start() {
   let stored = null;
   try {
     stored = await dbGet('data');
-    publish = { ...publish, ...((await dbGet('publish')) || {}) };
+    cloud = { ...freshCloud(), ...((await dbGet('cloud')) || {}) };
   } catch (e) {
     storageBroken = true;
   }
   data = Object.assign(freshData(), stored || {});
   data.settings = { ...L.DEFAULT_SETTINGS, ...data.settings };
+  // Раньше у записи была одна услуга в поле service — переводим в список.
+  let migrated = false;
+  for (const a of data.appointments) {
+    if (Array.isArray(a.services)) continue;
+    a.services = a.service ? [a.service] : [];
+    delete a.service;
+    migrated = true;
+  }
   render();
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
+  if (migrated) save();
+  // Ключ GitHub от прежней версии больше не нужен — удаляем его с телефона.
+  if (!storageBroken) dbDel('publish').catch(() => {});
+
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('./sw.js').catch(() => {});
+    navigator.serviceWorker.addEventListener('message', e => {
+      if (!e.data) return;
+      if (e.data.type === 'open-requests') showRequests();
+      if (e.data.type === 'new-request') loadRequests().catch(() => {});
+    });
+  }
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
-  schedulePublish(1500);
+
+  const params = new URLSearchParams(location.search);
+  if (params.has('open')) {
+    history.replaceState(history.state, '', location.pathname);
+    if (params.get('open') === 'requests' && cloud.key) showRequests();
+  }
+  // Подписка на уведомления могла обновиться (например, после перезагрузки iPhone).
+  if (cloud.key && cloud.pushOn && 'Notification' in window && Notification.permission === 'granted') {
+    subscribePush().catch(() => {});
+  }
+  scheduleSync(1000);
 }
 
 start();

@@ -1,0 +1,13 @@
+# Сервер «Записи Арай». Разворачивается командой: npx wrangler deploy (из папки api).
+name = "kae-zapis-api"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+
+[observability]
+enabled = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "kae-zapis"
+database_id = "dc66615c-c584-463e-96f8-cbbcf5ab4eca"
+migrations_dir = "migrations"

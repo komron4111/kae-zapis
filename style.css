@@ -619,3 +619,52 @@ body.okna main { padding-bottom: 24px; }
 .okna-times { padding: 0 14px 14px; }
 .okna-times .chip { color: var(--text); text-decoration: none; }
 .okna-foot { margin-top: 14px; color: var(--muted); font-size: 13px; text-align: center; }
+
+/* ---------- Заявки клиентов и облако ---------- */
+
+.tabbar button { position: relative; }
+.tab-badge {
+  position: absolute;
+  top: 4px;
+  left: calc(50% + 6px);
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 700;
+  line-height: 18px;
+}
+
+.requests { margin-bottom: 14px; }
+.requests .section-title { margin-top: 4px; }
+.appt.request { border-style: dashed; border-left-style: solid; border-left-color: var(--warn); }
+.request-info p { margin: 0; }
+.request-info p + p { margin-top: 6px; }
+.request-info .lead { margin: 0; font-size: 20px; }
+.form-note { margin-top: 10px; }
+
+.cloud-line { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.cloud-line .ico { color: var(--muted); }
+.status .ico { width: 16px; height: 16px; vertical-align: -3px; }
+
+/* Поле-ловушка для ботов: люди его не видят. */
+.trap { position: absolute !important; left: -9999px !important; width: 1px !important; height: 1px !important; opacity: 0; }
+
+.okna-done { padding-top: 32px; text-align: center; }
+.okna-done h2 { margin: 6px 0 10px; font-size: 22px; }
+.okna-done p { margin: 0 0 10px; }
+.done-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: var(--ok-soft);
+  color: var(--ok);
+  font-size: 32px;
+  font-weight: 700;
+}

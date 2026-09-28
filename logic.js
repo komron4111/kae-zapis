@@ -1,5 +1,6 @@
 // Логика без интерфейса: даты, деньги, рабочее время и свободные окошки,
-// отчёт за месяц, телефоны, клиенты, резервная копия. Проверяется тестами в tests/.
+// заявки клиентов, отчёт за месяц, телефоны, клиенты, резервная копия.
+// Общая для приложения, страницы клиентов и сервера (api/). Проверяется тестами в tests/.
 
 export const MONTHS = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
 export const MONTHS_GEN = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
@@ -85,6 +86,26 @@ export function plural(n, forms) {
   if (n10 === 1 && n100 !== 11) return forms[0];
   if (n10 >= 2 && n10 <= 4 && (n100 < 12 || n100 > 14)) return forms[1];
   return forms[2];
+}
+
+// ---------- Услуги: в одной записи может быть несколько ----------
+
+// Старые записи хранили одну услугу строкой в поле service.
+export function servicesOf(a) {
+  if (Array.isArray(a.services)) return a.services;
+  return a.service ? [a.service] : [];
+}
+
+export function servicesLabel(list) {
+  return list.join(' + ');
+}
+
+// Сумма по прайсу; услуги, которых в прайсе нет, не считаются.
+export function servicesTotal(names, prices) {
+  return names.reduce((sum, name) => {
+    const p = prices.find(x => x.name === name);
+    return sum + (p ? p.price : 0);
+  }, 0);
 }
 
 // ---------- Деньги: целые тенге ----------
@@ -234,6 +255,7 @@ export function buildSchedule(data, now = new Date(), days = HORIZON_DAYS) {
     whatsapp: phoneDigits(s.whatsapp),
     duration: s.duration,
     tzOffset: now.getTimezoneOffset(),
+    services: (data.prices || []).filter(p => p.name && p.name.trim()).map(p => ({ name: p.name.trim(), price: p.price })),
     updated: now.toISOString(),
     days: list,
   };
@@ -246,6 +268,61 @@ export function masterClock(tzOffset, nowMs = Date.now()) {
     date: `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`,
     minutes: d.getUTCHours() * 60 + d.getUTCMinutes(),
   };
+}
+
+// ---------- Заявки клиентов ----------
+
+// Заявки, которые ждут подтверждения, занимают время так же, как записи.
+export function applyHolds(schedule, holds) {
+  const byDate = {};
+  for (const h of holds) (byDate[h.date] = byDate[h.date] || []).push(toMinutes(h.time));
+  return {
+    ...schedule,
+    days: schedule.days.map(d => (d.off || !byDate[d.date] ? d : {
+      ...d,
+      times: d.times.filter(t => byDate[d.date].every(h => Math.abs(h - toMinutes(t)) >= schedule.duration)),
+    })),
+  };
+}
+
+// Проверяет заявку клиента по опубликованному расписанию (уже с учётом других заявок).
+// clock — «сейчас» по часам мастера. Возвращает { ok: true, request } или { ok: false, status, error }.
+export function validateRequest(body, schedule, clock) {
+  const fail = (error, status = 400) => ({ ok: false, status, error });
+  const b = body && typeof body === 'object' ? body : {};
+  const name = String(b.name || '').trim().replace(/\s+/g, ' ');
+  if (!name || name.length > 60) return fail('Укажите имя');
+  const digits = phoneDigits(b.phone);
+  if (digits.length < 10 || digits.length > 15) return fail('Укажите номер телефона');
+  const known = (schedule.services || []).map(x => x.name);
+  const services = [...new Set((Array.isArray(b.services) ? b.services : []).map(x => String(x).trim()).filter(Boolean))];
+  if (!services.length) return fail('Выберите вид работы');
+  if (services.length > 10 || services.some(x => (known.length ? !known.includes(x) : x.length > 60))) return fail('Такой услуги нет в прайсе');
+  if (!DATE_RE.test(b.date) || !TIME_RE.test(b.time)) return fail('Выберите день и время');
+  const day = (schedule.days || []).find(d => d.date === b.date);
+  const past = b.date < clock.date || (b.date === clock.date && toMinutes(b.time) <= clock.minutes);
+  if (!day || day.off || past || !(day.times || []).includes(b.time)) return fail('Это время уже занято — выберите другое', 409);
+  const comment = String(b.comment || '').trim().slice(0, 300);
+  return { ok: true, request: { date: b.date, time: b.time, name, phone: formatPhone(digits), services, comment } };
+}
+
+// «Айгуль · 30 сентября в 14:30 · Маникюр + Педикюр» — для уведомления мастеру.
+export function requestSummary(r) {
+  return `${r.name} · ${shortDate(r.date)} в ${shortTime(r.time)} · ${servicesLabel(r.services)}`;
+}
+
+// ---------- base64url (ключи уведомлений и устройства) ----------
+
+export function bytesToB64u(bytes) {
+  let binary = '';
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+export function b64uToBytes(str) {
+  const s = String(str).replace(/-/g, '+').replace(/_/g, '/');
+  const binary = atob(s + '==='.slice((s.length + 3) % 4));
+  return Uint8Array.from(binary, c => c.charCodeAt(0));
 }
 
 // ---------- Телефоны ----------
@@ -366,7 +443,7 @@ export function readBackup(text) {
     time: str(a.time),
     name: str(a.name),
     phone: str(a.phone),
-    service: str(a.service),
+    services: (Array.isArray(a.services) ? a.services : a.service ? [a.service] : []).map(x => str(x).trim()).filter(Boolean),
     total: toMoney(a.total),
     prepaid: toMoney(a.prepaid),
     status: STATUSES.includes(a.status) ? a.status : 'booked',

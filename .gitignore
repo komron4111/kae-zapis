@@ -4,3 +4,8 @@ CLAUDE.md
 
 # macOS
 .DS_Store
+
+# Сервер: зависимости, локальная база, локальные секреты
+api/node_modules/
+api/.wrangler/
+api/.dev.vars
