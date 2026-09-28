@@ -1,0 +1,236 @@
+// Тесты logic.js. Запуск: открыть tests/ в браузере через локальный сервер (см. README).
+import * as L from '../logic.js';
+
+const results = [];
+
+function test(name, fn) {
+  try {
+    fn();
+    results.push({ name, ok: true });
+  } catch (e) {
+    results.push({ name, ok: false, error: e.message });
+  }
+}
+
+function eq(actual, expected) {
+  const a = JSON.stringify(actual), b = JSON.stringify(expected);
+  if (a !== b) throw new Error(`ожидали ${b}, получили ${a}`);
+}
+
+function throws(fn, text) {
+  try { fn(); } catch (e) {
+    if (!e.message.includes(text)) throw new Error(`ошибка «${e.message}» без текста «${text}»`);
+    return;
+  }
+  throw new Error('ожидали ошибку');
+}
+
+const NB = ' ';
+const appt = (date, status, total, prepaid, extra = {}) =>
+  ({ id: date + status + total, date, time: '10:00', name: '', phone: '', service: 'Маникюр', total, prepaid, status, note: '', ...extra });
+
+// ---------- Даты ----------
+
+test('дата по местному времени, без сдвига UTC', () => {
+  eq(L.ymd(new Date(2026, 8, 28, 23, 59)), '2026-09-28');
+  eq(L.ymd(new Date(2026, 0, 1, 0, 1)), '2026-01-01');
+});
+
+test('месяцы через границу года', () => {
+  eq(L.addMonths('2026-12', 1), '2027-01');
+  eq(L.addMonths('2026-01', -1), '2025-12');
+  eq(L.addMonths('2026-09', 0), '2026-09');
+});
+
+test('названия месяца и дня', () => {
+  eq(L.monthTitle('2026-09'), 'Сентябрь 2026');
+  eq(L.dayTitle('2026-09-28'), 'Понедельник, 28 сентября');
+  eq(L.shortDate('2026-10-01'), '1 октября');
+});
+
+test('сетка сентября 2026: 5 недель с понедельника', () => {
+  const g = L.monthGrid('2026-09');
+  eq(g.length, 35);
+  eq(g[0], '2026-08-31');
+  eq(g[1], '2026-09-01');
+  eq(g[34], '2026-10-04');
+});
+
+test('сетка марта 2026: 6 недель', () => {
+  const g = L.monthGrid('2026-03');
+  eq(g.length, 42);
+  eq(g[0], '2026-02-23');
+  eq(g[6], '2026-03-01');
+});
+
+test('склонение слова «запись»', () => {
+  const f = ['запись', 'записи', 'записей'];
+  eq([0, 1, 2, 4, 5, 11, 12, 14, 21, 22, 25, 101, 111].map(n => L.plural(n, f)),
+    ['записей', 'запись', 'записи', 'записи', 'записей', 'записей', 'записей', 'записей', 'запись', 'записи', 'записей', 'запись', 'записей']);
+});
+
+// ---------- Деньги ----------
+
+test('сумма из поля ввода', () => {
+  eq(L.toMoney('12 000'), 12000);
+  eq(L.toMoney(''), 0);
+  eq(L.toMoney(null), 0);
+  eq(L.toMoney(5000), 5000);
+  eq(L.toMoney(-300), 0);
+  eq(L.toMoney(12.6), 13);
+});
+
+test('формат денег', () => {
+  eq(L.formatMoney(70000), `70${NB}000${NB}₸`);
+  eq(L.formatMoney(-5000), `−5${NB}000${NB}₸`);
+  eq(L.formatMoney(0), `0${NB}₸`);
+  eq(L.formatMoney(1234567), `1${NB}234${NB}567${NB}₸`);
+  eq(L.formatAmount(12000), '12 000');
+  eq(L.formatAmount(0), '');
+});
+
+test('получено и остаток по статусам', () => {
+  const booked = appt('2026-09-10', 'booked', 12000, 5000);
+  const paid = appt('2026-09-10', 'paid', 12000, 5000);
+  const cancelled = appt('2026-09-10', 'cancelled', 12000, 5000);
+  eq([L.received(booked), L.balanceDue(booked)], [5000, 7000]);
+  eq([L.received(paid), L.balanceDue(paid)], [12000, 0]);
+  eq([L.received(cancelled), L.balanceDue(cancelled)], [5000, 0]);
+});
+
+// ---------- Аренда и отчёт ----------
+
+test('аренда 70 000 по умолчанию и смена суммы с месяца', () => {
+  const base = [{ from: '2000-01', amount: 70000 }];
+  eq(L.rentFor(base, '2026-09'), 70000);
+  const changed = L.setRent(base, '2026-10', 80000);
+  eq(L.rentFor(changed, '2026-09'), 70000);
+  eq(L.rentFor(changed, '2026-10'), 80000);
+  eq(L.rentFor(changed, '2027-03'), 80000);
+  eq(L.setRent(changed, '2026-10', 75000), [{ from: '2000-01', amount: 70000 }, { from: '2026-10', amount: 75000 }]);
+  eq(L.setRent(changed, '2026-09', 60000), [{ from: '2000-01', amount: 70000 }, { from: '2026-09', amount: 60000 }]);
+});
+
+test('отчёт за месяц сходится до тенге', () => {
+  const data = {
+    appointments: [
+      appt('2026-09-10', 'paid', 12000, 5000),
+      appt('2026-09-20', 'booked', 8000, 3000),
+      appt('2026-09-21', 'cancelled', 6000, 2000),
+      appt('2026-09-22', 'booked', 7000, 0),
+      appt('2026-10-01', 'paid', 9000, 0),
+    ],
+    expenses: [
+      { id: 'e1', date: '2026-09-05', amount: 15000, note: 'Гель-лаки' },
+      { id: 'e2', date: '2026-09-18', amount: 4000, note: 'Пилки' },
+      { id: 'e3', date: '2026-10-02', amount: 7000, note: '' },
+    ],
+    rent: [{ from: '2000-01', amount: 70000 }],
+  };
+  eq(L.monthReport(data, '2026-09'), { income: 17000, materials: 19000, rent: 70000, profit: -72000, expected: 12000, paidVisits: 1 });
+  eq(L.monthReport(data, '2026-10'), { income: 9000, materials: 7000, rent: 70000, profit: -68000, expected: 0, paidVisits: 1 });
+});
+
+// ---------- Телефоны и поиск ----------
+
+test('номер в международном виде', () => {
+  eq(L.phoneDigits('8 (701) 123-45-67'), '77011234567');
+  eq(L.phoneDigits('+7 701 123 45 67'), '77011234567');
+  eq(L.phoneDigits('7011234567'), '77011234567');
+  eq(L.phoneDigits('+998 90 123 45 67'), '998901234567');
+});
+
+test('красивый номер', () => {
+  eq(L.formatPhone('87011234567'), '+7 701 123 45 67');
+  eq(L.formatPhone('+998 90 123 45 67'), '+998 90 123 45 67');
+  eq(L.formatPhone(''), '');
+  eq([L.canDial('123'), L.canDial('8701 123 45 67')], [false, true]);
+});
+
+test('клиенты из записей: без повторов, данные из свежей записи', () => {
+  const list = L.pastClients([
+    appt('2026-08-01', 'paid', 1, 0, { name: 'Айгуль', phone: '8 701 123 45 67' }),
+    appt('2026-09-01', 'paid', 1, 0, { name: 'Айгуль А.', phone: '+7 701 123 45 67' }),
+    appt('2026-08-15', 'paid', 1, 0, { name: 'Дана', phone: '' }),
+    appt('2026-09-10', 'booked', 1, 0, { name: 'Дана', phone: '8 705 555 44 33' }),
+    appt('2026-08-20', 'cancelled', 1, 0, { name: 'Сауле', phone: '' }),
+  ]);
+  eq(list, [
+    { name: 'Дана', phone: '8 705 555 44 33' },
+    { name: 'Айгуль А.', phone: '+7 701 123 45 67' },
+    { name: 'Сауле', phone: '' },
+  ]);
+});
+
+test('список клиентов по алфавиту, клиент без имени — по номеру', () => {
+  const sorted = L.sortByName([
+    { name: 'Сауле', phone: '' },
+    { name: 'Айгуль', phone: '' },
+    { name: '', phone: '+7 700 000 00 00' },
+    { name: 'Дана', phone: '' },
+  ]);
+  eq(sorted.map(c => c.name || c.phone), ['+7 700 000 00 00', 'Айгуль', 'Дана', 'Сауле']);
+});
+
+test('поиск клиента по имени (ё = е) и по номеру с восьмёркой', () => {
+  const clients = [
+    { name: 'Айгуль', phone: '+7 701 123 45 67' },
+    { name: 'Алёна', phone: '+7 777 000 11 22' },
+    { name: 'Дана', phone: '' },
+  ];
+  const names = q => L.findClients(clients, q).map(c => c.name);
+  eq(names('ален'), ['Алёна']);
+  eq(names('АЙГ'), ['Айгуль']);
+  eq(names('8701'), ['Айгуль']);
+  eq(names('+7 777'), ['Алёна']);
+  eq(names('70'), []);
+  eq(names(''), ['Айгуль', 'Алёна', 'Дана']);
+});
+
+// ---------- Резервная копия ----------
+
+test('копия сохраняется и читается обратно', () => {
+  const data = {
+    appointments: [appt('2026-09-10', 'paid', 12000, 5000, { name: 'Айгуль', phone: '+7 701 123 45 67' })],
+    expenses: [{ id: 'e1', date: '2026-09-05', amount: 15000, note: 'Гель-лаки' }],
+    prices: [{ id: 'p1', name: 'Маникюр', price: 5000 }],
+    rent: [{ from: '2000-01', amount: 70000 }],
+  };
+  const copy = L.readBackup(JSON.stringify(L.makeBackup(data, new Date(Date.UTC(2026, 8, 28)))));
+  eq(copy.exportedAt, '2026-09-28T00:00:00.000Z');
+  eq(copy.appointments[0].total, 12000);
+  eq(copy.appointments[0].name, 'Айгуль');
+  eq(copy.expenses, data.expenses);
+  eq(copy.prices, data.prices);
+  eq(copy.rent, data.rent);
+});
+
+test('чужой файл не принимается', () => {
+  throws(() => L.readBackup('не json'), 'Это не файл копии');
+  throws(() => L.readBackup('{"app":"другое","appointments":[]}'), 'Это не файл копии');
+});
+
+test('кривые поля в копии приводятся к нужному виду', () => {
+  const copy = L.readBackup(JSON.stringify({
+    app: 'kae-zapis',
+    appointments: [
+      { date: '2026-09-10', total: '12000', prepaid: 5000, status: 'constructor' },
+      { date: 'вчера', total: 1 },
+    ],
+  }));
+  eq(copy.appointments.length, 1);
+  eq([copy.appointments[0].id, copy.appointments[0].total, copy.appointments[0].status], ['r0', 12000, 'booked']);
+  eq(copy.rent, [{ from: '2000-01', amount: 70000 }]);
+});
+
+// ---------- Итог ----------
+
+const failed = results.filter(r => !r.ok);
+document.getElementById('summary').textContent = failed.length
+  ? `Ошибок: ${failed.length} из ${results.length}`
+  : `Все тесты пройдены: ${results.length}`;
+document.getElementById('summary').className = failed.length ? 'fail' : 'ok';
+document.body.dataset.status = failed.length ? 'fail' : 'pass';
+document.getElementById('list').innerHTML = results
+  .map(r => `<li class="${r.ok ? 'ok' : 'fail'}">${r.ok ? '✓' : '✗'} ${r.name}${r.ok ? '' : ' — ' + r.error}</li>`)
+  .join('');
