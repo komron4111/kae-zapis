@@ -3,7 +3,9 @@
 // Телефон мастера один раз подключается по коду доступа (секрет ACCESS_CODE)
 // и дальше входит своим ключом устройства.
 
-import * as L from '../../logic.js';
+// Правила свободного времени и проверки заявки — общие с сайтом: один файл
+// frontend/logic.js, wrangler включает его в сервер при выкладке.
+import * as L from '../../frontend/logic.js';
 import { generateVapidKeys, sendPush } from './push.js';
 
 const SITE = 'https://komron4111.github.io/kae-zapis/';

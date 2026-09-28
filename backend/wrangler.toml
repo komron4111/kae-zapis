@@ -1,4 +1,4 @@
-# Сервер «Записи Арай». Разворачивается командой: npx wrangler deploy (из папки api).
+# Сервер «Записи Арай». Разворачивается командой: npx wrangler deploy (из папки backend).
 name = "kae-zapis-api"
 main = "src/index.js"
 compatibility_date = "2026-09-01"

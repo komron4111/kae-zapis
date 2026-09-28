@@ -1,6 +1,6 @@
 // Уведомления Web Push без сторонних библиотек: подпись VAPID (RFC 8292)
 // и шифрование содержимого aes128gcm (RFC 8291). Только WebCrypto, поэтому
-// работает и на сервере Cloudflare, и в браузере (тесты в tests/).
+// работает и на сервере Cloudflare, и в Node (тесты в backend/tests/).
 
 const encoder = new TextEncoder();
 

@@ -6,6 +6,6 @@ CLAUDE.md
 .DS_Store
 
 # Сервер: зависимости, локальная база, локальные секреты
-api/node_modules/
-api/.wrangler/
-api/.dev.vars
+backend/node_modules/
+backend/.wrangler/
+backend/.dev.vars
