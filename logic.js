@@ -1,5 +1,5 @@
-// Логика без интерфейса: даты, деньги, отчёт за месяц, телефоны,
-// сохранённые клиенты, резервная копия. Проверяется тестами в tests/.
+// Логика без интерфейса: даты, деньги, рабочее время и свободные окошки,
+// отчёт за месяц, телефоны, клиенты, резервная копия. Проверяется тестами в tests/.
 
 export const MONTHS = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
 export const MONTHS_GEN = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
@@ -9,6 +9,14 @@ export const WEEKDAYS_SHORT = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', '
 // Стартовый прайс без цен: цены Арай вносит сама в «Настройках».
 export const DEFAULT_SERVICES = ['Наращивание', 'Маникюр', 'Снятие маникюра', 'Педикюр', 'Маникюр+Педикюр'];
 export const DEFAULT_RENT = 70000;
+
+// Рабочее время: запись можно начать с dayStart до lastStart включительно,
+// между началами записей — не меньше duration минут (наращивание — 2 ч 30 мин).
+export const DEFAULT_SETTINGS = { dayStart: '09:00', lastStart: '20:00', duration: 150, clientName: 'Арай', whatsapp: '' };
+// Клиентам время предлагается с шагом 30 минут.
+export const SLOT_STEP = 30;
+// На сколько дней вперёд публикуются свободные окошки.
+export const HORIZON_DAYS = 30;
 
 // booked — записана (получена только предоплата), paid — оплачено полностью,
 // cancelled — отменена (предоплата остаётся у мастера, если её не вернули).
@@ -52,6 +60,12 @@ export function dayTitle(dateStr) {
 export function shortDate(dateStr) {
   const d = parseYmd(dateStr);
   return `${d.getDate()} ${MONTHS_GEN[d.getMonth()]}`;
+}
+
+export function addDays(dateStr, n) {
+  const d = parseYmd(dateStr);
+  d.setDate(d.getDate() + n);
+  return ymd(d);
 }
 
 // Клетки календаря: недели с понедельника, 5 или 6 строк.
@@ -137,6 +151,103 @@ export function monthReport(data, ym) {
   return { income, materials, rent, profit: income - materials - rent, expected, paidVisits };
 }
 
+// ---------- Время ----------
+
+export function toMinutes(hhmm) {
+  const [h, m] = String(hhmm).split(':').map(Number);
+  return h * 60 + (m || 0);
+}
+
+export function fromMinutes(min) {
+  return `${pad2(Math.floor(min / 60))}:${pad2(min % 60)}`;
+}
+
+// '09:00' → '9:00'
+export function shortTime(hhmm) {
+  return String(hhmm).replace(/^0(\d)/, '$1');
+}
+
+// 150 → '2 ч 30 мин'
+export function formatDuration(min) {
+  const h = Math.floor(min / 60), m = min % 60;
+  return [h ? `${h} ч` : '', m ? `${m} мин` : ''].filter(Boolean).join(' ');
+}
+
+// ---------- Закрытые дни и свободное время ----------
+
+// Блок записи: { id, from, to, note } — даты включительно.
+export function blockFor(blocks, date) {
+  return (blocks || []).find(b => b.from <= date && date <= b.to) || null;
+}
+
+function busyStarts(appointments, date, excludeId) {
+  return appointments.filter(a => a.date === date && a.status !== 'cancelled' && a.time && a.id !== excludeId);
+}
+
+// Записи, которые мешают начать новую в time: между началами меньше duration.
+export function conflicts(appointments, date, time, duration, excludeId) {
+  const t = toMinutes(time);
+  return busyStarts(appointments, date, excludeId).filter(a => Math.abs(toMinutes(a.time) - t) < duration);
+}
+
+// Свободное время начала записи в этот день, с шагом SLOT_STEP.
+// after — минуты: время не позже него не предлагается (для сегодняшнего дня).
+export function freeTimes(appointments, date, settings, after = -1, excludeId) {
+  const busy = busyStarts(appointments, date, excludeId).map(a => toMinutes(a.time));
+  const out = [];
+  for (let s = toMinutes(settings.dayStart); s <= toMinutes(settings.lastStart); s += SLOT_STEP) {
+    if (s > after && busy.every(b => Math.abs(b - s) >= settings.duration)) out.push(fromMinutes(s));
+  }
+  return out;
+}
+
+// ['09:00', '09:30', '14:30'] → [['09:00', '09:30'], ['14:30', '14:30']]
+export function toRanges(times) {
+  const ranges = [];
+  for (const t of times) {
+    const last = ranges[ranges.length - 1];
+    if (last && toMinutes(t) - toMinutes(last[1]) === SLOT_STEP) last[1] = t;
+    else ranges.push([t, t]);
+  }
+  return ranges;
+}
+
+// → '9:00–9:30, 14:30'
+export function formatRanges(ranges) {
+  return ranges.map(([a, b]) => (a === b ? shortTime(a) : `${shortTime(a)}–${shortTime(b)}`)).join(', ');
+}
+
+// Что видят клиенты: свободное время на days дней вперёд, без имён и телефонов.
+// Прошедшее время сегодняшнего дня страница клиентов отсекает сама.
+export function buildSchedule(data, now = new Date(), days = HORIZON_DAYS) {
+  const s = { ...DEFAULT_SETTINGS, ...data.settings };
+  const first = ymd(now);
+  const list = [];
+  for (let i = 0; i < days; i++) {
+    const date = addDays(first, i);
+    list.push(blockFor(data.blocks, date) ? { date, off: true } : { date, times: freeTimes(data.appointments, date, s) });
+  }
+  return {
+    app: BACKUP_APP,
+    kind: 'okna',
+    name: s.clientName,
+    whatsapp: phoneDigits(s.whatsapp),
+    duration: s.duration,
+    tzOffset: now.getTimezoneOffset(),
+    updated: now.toISOString(),
+    days: list,
+  };
+}
+
+// «Сейчас» по часам мастера: tzOffset — как getTimezoneOffset() на её телефоне.
+export function masterClock(tzOffset, nowMs = Date.now()) {
+  const d = new Date(nowMs - tzOffset * 60000);
+  return {
+    date: `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`,
+    minutes: d.getUTCHours() * 60 + d.getUTCMinutes(),
+  };
+}
+
 // ---------- Телефоны ----------
 
 // Цифры номера в международном виде: «8 (701) 123-45-67» → «77011234567».
@@ -164,18 +275,42 @@ export function canDial(phone) {
 
 const norm = s => String(s || '').toLowerCase().replace(/ё/g, 'е').trim();
 
-// Один клиент — один номер. Имя и номер берутся из самой свежей записи.
+const newestFirst = (a, b) => (b.date + b.time).localeCompare(a.date + a.time);
+
+// Один клиент — один номер (без номера — одно имя). Имя и номер берутся
+// из самой свежей записи. visits — записи без отменённых, last — дата последней.
 export function pastClients(appointments) {
   const byKey = new Map();
-  const sorted = [...appointments].sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time));
-  for (const a of sorted) {
+  for (const a of [...appointments].sort(newestFirst)) {
     const key = phoneDigits(a.phone) || norm(a.name);
-    if (key && !byKey.has(key)) byKey.set(key, { name: a.name, phone: a.phone });
+    if (!key) continue;
+    let c = byKey.get(key);
+    if (!c) byKey.set(key, c = { key, name: a.name, phone: a.phone, visits: 0, last: a.date });
+    if (a.status !== 'cancelled') c.visits++;
   }
-  // Запись без номера не дублирует клиента с тем же именем, у которого номер есть.
-  const withPhone = new Set();
-  for (const c of byKey.values()) if (phoneDigits(c.phone)) withPhone.add(norm(c.name));
-  return [...byKey.values()].filter(c => phoneDigits(c.phone) || !withPhone.has(norm(c.name)));
+  // Записи без номера с тем же именем, что у клиента с номером, — это он же.
+  const byName = new Map();
+  for (const c of byKey.values()) if (phoneDigits(c.phone)) byName.set(norm(c.name), c);
+  const out = [];
+  for (const c of byKey.values()) {
+    const owner = !phoneDigits(c.phone) && byName.get(norm(c.name));
+    if (!owner) {
+      out.push(c);
+      continue;
+    }
+    owner.visits += c.visits;
+    if (c.last > owner.last) owner.last = c.last;
+  }
+  return out;
+}
+
+// Все записи клиента, свежие первыми (по тем же правилам, что pastClients).
+export function clientVisits(appointments, client) {
+  const pd = phoneDigits(client.phone), name = norm(client.name);
+  return appointments.filter(a => {
+    const d = phoneDigits(a.phone);
+    return d ? d === pd : norm(a.name) === name;
+  }).sort(newestFirst);
 }
 
 export function sortByName(clients) {
@@ -210,6 +345,8 @@ export function makeBackup(data, now = new Date()) {
     expenses: data.expenses,
     prices: data.prices,
     rent: data.rent,
+    settings: data.settings,
+    blocks: data.blocks,
   };
 }
 
@@ -234,6 +371,7 @@ export function readBackup(text) {
     prepaid: toMoney(a.prepaid),
     status: STATUSES.includes(a.status) ? a.status : 'booked',
     note: str(a.note),
+    photos: list(a.photos).filter(id => typeof id === 'string' && /^[\w-]+$/.test(id)),
     created: a.created || null,
     updated: a.updated || null,
   }));
@@ -246,11 +384,33 @@ export function readBackup(text) {
   const rent = list(obj.rent).filter(r => r && /^\d{4}-\d{2}$/.test(r.from)).map(r => ({
     from: r.from, amount: toMoney(r.amount),
   }));
+  const blocks = list(obj.blocks).filter(b => b && DATE_RE.test(b.from) && DATE_RE.test(b.to)).map((b, i) => ({
+    id: str(b.id) || 'b' + i,
+    from: b.from < b.to ? b.from : b.to,
+    to: b.from < b.to ? b.to : b.from,
+    note: str(b.note),
+  }));
   return {
     appointments,
     expenses,
     prices,
     rent: rent.length ? rent : [{ from: '2000-01', amount: DEFAULT_RENT }],
+    settings: readSettings(obj.settings),
+    blocks,
     exportedAt: obj.exportedAt || null,
   };
+}
+
+const TIME_RE = /^\d{2}:\d{2}$/;
+
+function readSettings(src) {
+  const s = src && typeof src === 'object' ? src : {};
+  const out = { ...DEFAULT_SETTINGS };
+  if (TIME_RE.test(s.dayStart)) out.dayStart = s.dayStart;
+  if (TIME_RE.test(s.lastStart)) out.lastStart = s.lastStart;
+  const duration = Math.round(Number(s.duration));
+  if (duration >= 15 && duration <= 600) out.duration = duration;
+  if (typeof s.clientName === 'string') out.clientName = s.clientName;
+  if (typeof s.whatsapp === 'string') out.whatsapp = s.whatsapp;
+  return out;
 }

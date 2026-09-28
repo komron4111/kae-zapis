@@ -1,7 +1,7 @@
 // Офлайн-кэш: приложение открывается без интернета.
 // После любой правки файлов увеличьте VERSION — телефоны скачают
 // новую версию при следующем запуске приложения.
-const VERSION = 'v1';
+const VERSION = 'v2';
 const CACHE = `zapisi-arai-${VERSION}`;
 const FILES = [
   './',
@@ -9,6 +9,7 @@ const FILES = [
   './style.css',
   './app.js',
   './logic.js',
+  './zip.js',
   './manifest.webmanifest',
   './icons/icon.svg',
   './icons/icon-192.png',

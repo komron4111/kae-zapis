@@ -1,15 +1,11 @@
-// Тесты logic.js. Запуск: открыть tests/ в браузере через локальный сервер (см. README).
+// Тесты logic.js и zip.js. Запуск: открыть tests/ в браузере через локальный сервер (см. README).
 import * as L from '../logic.js';
+import * as Z from '../zip.js';
 
-const results = [];
+const tests = [];
 
 function test(name, fn) {
-  try {
-    fn();
-    results.push({ name, ok: true });
-  } catch (e) {
-    results.push({ name, ok: false, error: e.message });
-  }
+  tests.push({ name, fn });
 }
 
 function eq(actual, expected) {
@@ -156,10 +152,19 @@ test('клиенты из записей: без повторов, данные 
     appt('2026-08-20', 'cancelled', 1, 0, { name: 'Сауле', phone: '' }),
   ]);
   eq(list, [
-    { name: 'Дана', phone: '8 705 555 44 33' },
-    { name: 'Айгуль А.', phone: '+7 701 123 45 67' },
-    { name: 'Сауле', phone: '' },
+    { key: '77055554433', name: 'Дана', phone: '8 705 555 44 33', visits: 2, last: '2026-09-10' },
+    { key: '77011234567', name: 'Айгуль А.', phone: '+7 701 123 45 67', visits: 2, last: '2026-09-01' },
+    { key: 'сауле', name: 'Сауле', phone: '', visits: 0, last: '2026-08-20' },
   ]);
+});
+
+test('история клиента: все его записи, свежие первыми', () => {
+  const list = [
+    appt('2026-08-15', 'paid', 1, 0, { id: 'c', name: 'Дана', phone: '' }),
+    appt('2026-09-10', 'booked', 1, 0, { id: 'd', name: 'Дана', phone: '8 705 555 44 33' }),
+    appt('2026-09-01', 'paid', 1, 0, { id: 'e', name: 'Дана', phone: '8 777 000 00 00' }),
+  ];
+  eq(L.clientVisits(list, { name: 'Дана', phone: '+7 705 555 44 33' }).map(a => a.id), ['d', 'c']);
 });
 
 test('список клиентов по алфавиту, клиент без имени — по номеру', () => {
@@ -187,14 +192,81 @@ test('поиск клиента по имени (ё = е) и по номеру �
   eq(names(''), ['Айгуль', 'Алёна', 'Дана']);
 });
 
+// ---------- Рабочее время и свободные окошки ----------
+
+const S = { ...L.DEFAULT_SETTINGS }; // 9:00–20:00, между записями 2 ч 30 мин
+
+test('минуты и время', () => {
+  eq([L.toMinutes('09:00'), L.toMinutes('14:30'), L.fromMinutes(870), L.shortTime('09:30'), L.shortTime('14:00')],
+    [540, 870, '14:30', '9:30', '14:00']);
+  eq([L.formatDuration(150), L.formatDuration(120), L.formatDuration(45)], ['2 ч 30 мин', '2 ч', '45 мин']);
+});
+
+test('пустой день: свободно с 9:00 до 20:00 каждые 30 минут', () => {
+  const times = L.freeTimes([], '2026-10-01', S);
+  eq([times.length, times[0], times[times.length - 1]], [23, '09:00', '20:00']);
+  eq(L.formatRanges(L.toRanges(times)), '9:00–20:00');
+});
+
+test('запись в 12:00: следующая не раньше 14:30, до неё — не позже 9:30', () => {
+  const list = [appt('2026-10-01', 'booked', 0, 0, { id: 'x', time: '12:00' })];
+  const times = L.freeTimes(list, '2026-10-01', S);
+  eq(times.slice(0, 3), ['09:00', '09:30', '14:30']);
+  eq(L.formatRanges(L.toRanges(times)), '9:00–9:30, 14:30–20:00');
+});
+
+test('отменённая запись время не занимает, запись не мешает сама себе', () => {
+  const list = [
+    appt('2026-10-01', 'cancelled', 0, 0, { id: 'c', time: '12:00' }),
+    appt('2026-10-01', 'booked', 0, 0, { id: 'b', time: '15:00' }),
+  ];
+  eq(L.freeTimes(list, '2026-10-01', S, -1, 'b').length, 23);
+  eq(L.conflicts(list, '2026-10-01', '13:00', 150).map(a => a.id), ['b']);
+  eq(L.conflicts(list, '2026-10-01', '12:30', 150), []);
+  eq(L.conflicts(list, '2026-10-01', '13:00', 150, 'b'), []);
+});
+
+test('сегодня прошедшее время не предлагается', () => {
+  eq(L.freeTimes([], '2026-10-01', S, L.toMinutes('18:10')), ['18:30', '19:00', '19:30', '20:00']);
+});
+
+test('закрытые дни включают обе границы', () => {
+  const blocks = [{ id: 'v', from: '2026-10-10', to: '2026-10-20', note: 'Отпуск' }];
+  eq([L.blockFor(blocks, '2026-10-09'), L.blockFor(blocks, '2026-10-10').id, L.blockFor(blocks, '2026-10-20').id, L.blockFor(blocks, '2026-10-21')],
+    [null, 'v', 'v', null]);
+});
+
+test('расписание для клиентов: без имён и телефонов, закрытые дни помечены', () => {
+  const data = {
+    appointments: [appt('2026-10-01', 'booked', 0, 0, { id: 'a', time: '12:00', name: 'Айгуль', phone: '+7 701 123 45 67' })],
+    blocks: [{ id: 'v', from: '2026-10-02', to: '2026-10-02', note: 'Болезнь' }],
+    settings: { ...L.DEFAULT_SETTINGS, whatsapp: '8 700 111 22 33' },
+  };
+  const s = L.buildSchedule(data, new Date(2026, 9, 1, 10, 0), 3);
+  eq([s.kind, s.name, s.whatsapp, s.duration], ['okna', 'Арай', '77001112233', 150]);
+  eq(s.days.map(d => d.date), ['2026-10-01', '2026-10-02', '2026-10-03']);
+  eq(s.days[0].times.slice(0, 3), ['09:00', '09:30', '14:30']);
+  eq(s.days[1], { date: '2026-10-02', off: true });
+  eq(s.days[2].times.length, 23);
+  const text = JSON.stringify(s);
+  eq([text.includes('Айгуль'), text.includes('1234567'), text.includes('Болезнь')], [false, false, false]);
+});
+
+test('«сейчас» считается по часам мастера', () => {
+  // 19:30 по UTC — в Казахстане (UTC+5) уже 00:30 следующего дня
+  eq(L.masterClock(-300, Date.UTC(2026, 8, 28, 19, 30)), { date: '2026-09-29', minutes: 30 });
+});
+
 // ---------- Резервная копия ----------
 
 test('копия сохраняется и читается обратно', () => {
   const data = {
-    appointments: [appt('2026-09-10', 'paid', 12000, 5000, { name: 'Айгуль', phone: '+7 701 123 45 67' })],
+    appointments: [appt('2026-09-10', 'paid', 12000, 5000, { name: 'Айгуль', phone: '+7 701 123 45 67', photos: ['ph1'] })],
     expenses: [{ id: 'e1', date: '2026-09-05', amount: 15000, note: 'Гель-лаки' }],
     prices: [{ id: 'p1', name: 'Маникюр', price: 5000 }],
     rent: [{ from: '2000-01', amount: 70000 }],
+    settings: { dayStart: '10:00', lastStart: '19:00', duration: 120, clientName: 'Арай', whatsapp: '+7 700 111 22 33' },
+    blocks: [{ id: 'v', from: '2026-10-10', to: '2026-10-12', note: 'Отпуск' }],
   };
   const copy = L.readBackup(JSON.stringify(L.makeBackup(data, new Date(Date.UTC(2026, 8, 28)))));
   eq(copy.exportedAt, '2026-09-28T00:00:00.000Z');
@@ -203,6 +275,9 @@ test('копия сохраняется и читается обратно', () 
   eq(copy.expenses, data.expenses);
   eq(copy.prices, data.prices);
   eq(copy.rent, data.rent);
+  eq(copy.settings, data.settings);
+  eq(copy.blocks, data.blocks);
+  eq(copy.appointments[0].photos, ['ph1']);
 });
 
 test('чужой файл не принимается', () => {
@@ -221,10 +296,60 @@ test('кривые поля в копии приводятся к нужному
   eq(copy.appointments.length, 1);
   eq([copy.appointments[0].id, copy.appointments[0].total, copy.appointments[0].status], ['r0', 12000, 'booked']);
   eq(copy.rent, [{ from: '2000-01', amount: 70000 }]);
+  eq(copy.settings, L.DEFAULT_SETTINGS);
+});
+
+test('кривые настройки, закрытые дни и фото в копии', () => {
+  const copy = L.readBackup(JSON.stringify({
+    app: 'kae-zapis',
+    appointments: [{ date: '2026-09-10', photos: ['ok1', '../x', 5] }],
+    settings: { dayStart: '9', lastStart: '21:00', duration: 'abc' },
+    blocks: [{ from: '2026-10-12', to: '2026-10-10' }, { from: 'завтра', to: '2026-10-10' }],
+  }));
+  eq(copy.appointments[0].photos, ['ok1']);
+  eq([copy.settings.dayStart, copy.settings.lastStart, copy.settings.duration], ['09:00', '21:00', 150]);
+  eq(copy.blocks, [{ id: 'b0', from: '2026-10-10', to: '2026-10-12', note: '' }]);
+});
+
+// ---------- Архив копии (ZIP) ----------
+
+test('контрольная сумма CRC32', () => {
+  eq(Z.crc32(new TextEncoder().encode('The quick brown fox jumps over the lazy dog')), 0x414FA339);
+  eq(Z.crc32(new Uint8Array()), 0);
+});
+
+test('архив копии: записали и прочитали обратно', async () => {
+  const files = [
+    { name: 'data.json', data: new TextEncoder().encode('{"app":"kae-zapis","привет":1}') },
+    { name: 'photos/abc.jpg', data: new Uint8Array([255, 216, 255, 0, 1, 2, 3]) },
+  ];
+  const entries = await Z.readZip(Z.makeZip(files, new Date(2026, 8, 28, 12, 0)));
+  eq(entries.map(e => e.name), ['data.json', 'photos/abc.jpg']);
+  eq(await entries[0].blob.text(), '{"app":"kae-zapis","привет":1}');
+  eq([...new Uint8Array(await entries[1].blob.arrayBuffer())], [255, 216, 255, 0, 1, 2, 3]);
+});
+
+test('не архив — понятная ошибка', async () => {
+  let message = '';
+  try {
+    await Z.readZip(new Blob(['просто текст']));
+  } catch (e) {
+    message = e.message;
+  }
+  eq(message, 'Это не архив копии');
 });
 
 // ---------- Итог ----------
 
+const results = [];
+for (const t of tests) {
+  try {
+    await t.fn();
+    results.push({ name: t.name, ok: true });
+  } catch (e) {
+    results.push({ name: t.name, ok: false, error: e.message });
+  }
+}
 const failed = results.filter(r => !r.ok);
 document.getElementById('summary').textContent = failed.length
   ? `Ошибок: ${failed.length} из ${results.length}`
