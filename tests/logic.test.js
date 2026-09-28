@@ -375,6 +375,27 @@ test('base64url туда и обратно', () => {
   eq(L.bytesToB64u(Uint8Array.from([251, 255])), '-_8');
 });
 
+// ---------- Личная ссылка клиента ----------
+
+test('что видит клиент по ссылке: статус записи мастера', () => {
+  const a = appt('2026-10-01', 'booked', 12000, 3000, { time: '15:00', name: 'Айгуль', services: ['Маникюр', 'Педикюр'] });
+  eq(L.publicBooking(a), { status: 'confirmed', date: '2026-10-01', time: '15:00', name: 'Айгуль', services: ['Маникюр', 'Педикюр'], total: 12000, prepaid: 3000 });
+  eq([L.publicBooking({ ...a, status: 'paid' }).status, L.publicBooking({ ...a, status: 'cancelled' }).status], ['done', 'cancelled']);
+});
+
+test('проверка записи для клиента на сервере', () => {
+  const good = { status: 'confirmed', date: '2026-10-01', time: '15:00', name: ' Айгуль ', services: ['Маникюр', ' ', 5], total: '12000', prepaid: 3000 };
+  eq(L.normalizeBooking(good), { status: 'confirmed', date: '2026-10-01', time: '15:00', name: 'Айгуль', services: ['Маникюр', '5'], total: 12000, prepaid: 3000 });
+  eq([L.normalizeBooking({ ...good, status: 'booked' }), L.normalizeBooking({ ...good, date: 'завтра' }), L.normalizeBooking(null)], [null, null, null]);
+});
+
+test('сообщение клиенту о подтверждении записи', () => {
+  const a = { name: 'Айгуль', date: '2026-10-01', time: '09:30', services: ['Маникюр', 'Педикюр'], prepaid: 3000 };
+  eq(L.confirmationText(a, 'https://x/okna/?z=abc'),
+    `Здравствуйте, Айгуль! Ваша запись подтверждена: 1 октября в 9:30 (маникюр + педикюр). Предоплата 3${NB}000${NB}₸ получена. Ваша запись: https://x/okna/?z=abc`);
+  eq(L.confirmationText({ ...a, name: '', prepaid: 0 }, 'L'), 'Здравствуйте! Ваша запись подтверждена: 1 октября в 9:30 (маникюр + педикюр). Ваша запись: L');
+});
+
 // ---------- Шифрование уведомлений ----------
 
 test('шифрование уведомления совпадает с примером RFC 8291 байт в байт', async () => {

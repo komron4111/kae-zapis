@@ -306,6 +306,46 @@ export function validateRequest(body, schedule, clock) {
   return { ok: true, request: { date: b.date, time: b.time, name, phone: formatPhone(digits), services, comment } };
 }
 
+// ---------- Личная ссылка клиента на запись ----------
+
+// Что видит клиент по своей ссылке: pending — заявка ждёт ответа,
+// confirmed — подтверждена, done — состоялась, cancelled — отменена, declined — отклонена.
+export const BOOKING_STATUSES = ['confirmed', 'done', 'cancelled', 'declined'];
+
+export function publicBooking(a) {
+  return {
+    status: a.status === 'paid' ? 'done' : a.status === 'cancelled' ? 'cancelled' : 'confirmed',
+    date: a.date,
+    time: a.time,
+    name: a.name,
+    services: servicesOf(a),
+    total: a.total,
+    prepaid: a.prepaid,
+  };
+}
+
+// Проверка записи, которую телефон мастера выкладывает для клиента. null — неверная.
+export function normalizeBooking(b) {
+  if (!b || typeof b !== 'object' || !BOOKING_STATUSES.includes(b.status) || !DATE_RE.test(b.date) || !TIME_RE.test(b.time)) return null;
+  return {
+    status: b.status,
+    date: b.date,
+    time: b.time,
+    name: String(b.name || '').trim().slice(0, 60),
+    services: (Array.isArray(b.services) ? b.services : []).map(x => String(x).trim().slice(0, 60)).filter(Boolean).slice(0, 10),
+    total: toMoney(b.total),
+    prepaid: toMoney(b.prepaid),
+  };
+}
+
+// Сообщение клиенту в WhatsApp после подтверждения записи.
+export function confirmationText(a, link) {
+  const what = servicesLabel(servicesOf(a)).toLowerCase();
+  let text = `Здравствуйте${a.name ? ', ' + a.name : ''}! Ваша запись подтверждена: ${shortDate(a.date)} в ${shortTime(a.time)}${what ? ` (${what})` : ''}.`;
+  if (a.prepaid) text += ` Предоплата ${formatMoney(a.prepaid)} получена.`;
+  return `${text} Ваша запись: ${link}`;
+}
+
 // «Айгуль · 30 сентября в 14:30 · Маникюр + Педикюр» — для уведомления мастеру.
 export function requestSummary(r) {
   return `${r.name} · ${shortDate(r.date)} в ${shortTime(r.time)} · ${servicesLabel(r.services)}`;

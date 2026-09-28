@@ -6,13 +6,15 @@ import * as L from './logic.js';
 import { makeZip, readZip } from './zip.js';
 import { API_URL } from './config.js';
 
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.3.0';
 
 // ---------- Мелочи ----------
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+// Секрет личной ссылки клиента на запись.
+const newToken = () => L.bytesToB64u(crypto.getRandomValues(new Uint8Array(16)));
 const today = () => L.ymd(new Date());
 const nowMinutes = () => { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); };
 const RECORD_FORMS = ['запись', 'записи', 'записей'];
@@ -38,6 +40,7 @@ const ICONS = {
   trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
   bell: '<path d="M6 16v-5a6 6 0 0 1 12 0v5l2 2H4z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>',
   cloud: '<path d="M7 18.5a4.5 4.5 0 0 1-.6-9 6 6 0 0 1 11.6 1.6 3.8 3.8 0 0 1-.5 7.4z"/>',
+  check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
 };
 const icon = name => `<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
 
@@ -133,7 +136,8 @@ function freshData() {
 
 function freshCloud() {
   // closing — заявки, подтверждённые без связи: закроем их в облаке при следующем сохранении.
-  return { key: '', pushKey: '', pushOn: false, schedulePrint: '', backupPrint: '', savedAt: null, uploaded: [], closing: [], error: '' };
+  // bookings — что уже выложено по личным ссылкам клиентов: { token: JSON записи }.
+  return { key: '', pushKey: '', pushOn: false, schedulePrint: '', backupPrint: '', savedAt: null, uploaded: [], closing: [], bookings: {}, error: '' };
 }
 
 const settings = () => ({ ...L.DEFAULT_SETTINGS, ...data.settings });
@@ -387,6 +391,7 @@ function drawAppt(id, prefill) {
   const form = $('#appt-form');
   form.dataset.id = src ? src.id : '';
   form.dataset.request = requestId || '';
+  form.dataset.token = (src && src.token) || fields.token || '';
   const clients = L.pastClients(data.appointments);
   bindSuggest(form, 'name', clients);
   bindSuggest(form, 'phone', clients);
@@ -459,15 +464,33 @@ function refreshAppt(form) {
 
   const phone = field(form, 'phone').value;
   const links = $('#phone-links');
+  const saved = data.appointments.find(a => a.id === form.dataset.id);
   if (L.canDial(phone)) {
     const d = L.phoneDigits(phone);
-    const text = reminderText(field(form, 'name').value.trim(), chosenServices(form), date, time);
+    const token = form.dataset.token;
+    const text = reminderText(field(form, 'name').value.trim(), chosenServices(form), date, time) + (token ? ` Ваша запись: ${bookingLink(token)}` : '');
     links.innerHTML = `
       <a class="btn small secondary" href="tel:+${d}">${icon('phone')} Позвонить</a>
-      <a class="btn small secondary" href="https://wa.me/${d}?text=${encodeURIComponent(text)}" target="_blank" rel="noopener">${icon('chat')} Напомнить в WhatsApp</a>`;
+      <a class="btn small secondary" href="https://wa.me/${d}?text=${encodeURIComponent(text)}" target="_blank" rel="noopener">${icon('chat')} Напомнить в WhatsApp</a>
+      ${saved && saved.status !== 'cancelled' ? `<button type="button" class="btn small secondary" data-act="send-confirmation" data-id="${esc(saved.id)}">${icon('check')} Отправить подтверждение</button>` : ''}`;
   } else {
     links.innerHTML = '';
   }
+}
+
+function bookingLink(token) {
+  return `${clientLink()}?z=${token}`;
+}
+
+// «Отправить подтверждение»: у записи появляется личная ссылка клиента,
+// WhatsApp открывается сразу по нажатию (иначе iOS его не откроет).
+function sendConfirmation(id) {
+  const a = data.appointments.find(x => x.id === id);
+  if (!a) return;
+  if (!a.token) a.token = newToken();
+  window.open(`https://wa.me/${L.phoneDigits(a.phone)}?text=${encodeURIComponent(L.confirmationText(a, bookingLink(a.token)))}`, '_blank');
+  save();
+  scheduleSync(0);
 }
 
 function reminderText(name, services, date, time) {
@@ -500,25 +523,35 @@ async function saveAppt(form) {
 
   const now = new Date().toISOString();
   const src = data.appointments.find(a => a.id === form.dataset.id);
+  let saved = src;
   if (src) {
     Object.assign(src, rec, { updated: now });
     delete src.service;
   } else {
-    data.appointments.push({ id: uid(), ...rec, photos: [], created: now, updated: now });
+    saved = { id: uid(), ...rec, photos: [], created: now, updated: now };
+    if (form.dataset.token) saved.token = form.dataset.token;
+    data.appointments.push(saved);
   }
   if (!(await save())) return;
   ui.day = rec.date;
   ui.month = L.monthOf(rec.date);
   const requestId = form.dataset.request;
   if (requestId) {
-    // Запись создана из заявки: закрываем окно записи и окно заявки.
+    // Запись создана из заявки: закрываем окна записи и заявки и показываем,
+    // как отправить клиенту подтверждение.
     requests = requests.filter(r => r.id !== requestId);
+    updateBadge();
+    afterSheetsClosed = () => openConfirmed(saved.id);
     closeSheet(2);
     render();
-    updateBadge();
-    toast('Запись подтверждена');
     try {
-      await api('POST', `/api/requests/${requestId}/confirm`);
+      // Сначала выкладываем новое свободное время, потом закрываем заявку —
+      // иначе на пару секунд это время показалось бы клиентам свободным.
+      await syncSchedule();
+      const booking = L.publicBooking(saved);
+      await api('POST', `/api/requests/${requestId}/confirm`, { token: saved.token, booking });
+      cloud.bookings = { ...cloud.bookings, [saved.token]: JSON.stringify(booking) };
+      await dbSet('cloud', cloud).catch(() => {});
     } catch (e) {
       cloud.closing = [...(cloud.closing || []), requestId];
       await dbSet('cloud', cloud).catch(() => {});
@@ -532,6 +565,33 @@ async function saveAppt(form) {
 }
 
 // ---------- Заявки клиентов ----------
+
+function openConfirmed(id) {
+  pushSheet(() => drawConfirmed(id));
+}
+
+function drawConfirmed(id) {
+  const a = data.appointments.find(x => x.id === id);
+  if (!a) {
+    sheetHtml('Запись подтверждена', '<div class="sheet-body"><p class="empty">Запись не найдена</p></div>');
+    return;
+  }
+  const link = bookingLink(a.token);
+  const d = L.phoneDigits(a.phone);
+  sheetHtml('Запись подтверждена', `
+    <div class="sheet-body okna-done">
+      <p class="done-mark">✓</p>
+      <h2>${esc(a.name || L.formatPhone(a.phone))}</h2>
+      <p>${L.dayTitle(a.date)}, ${L.shortTime(a.time)}<br>${esc(L.servicesLabel(L.servicesOf(a)))}</p>
+      <p class="hint">Отправьте клиенту подтверждение — в сообщении будет ссылка, по которой он в любое время увидит свою запись.</p>
+      ${L.canDial(a.phone) ? `<a class="btn primary block" href="https://wa.me/${d}?text=${encodeURIComponent(L.confirmationText(a, link))}" target="_blank" rel="noopener">${icon('chat')} Отправить подтверждение в WhatsApp</a>` : ''}
+      <div class="link-box">${esc(link)}</div>
+      <div class="btn-row center">
+        <button class="btn small secondary" data-act="copy-booking" data-link="${esc(link)}">${icon('link')} Скопировать ссылку</button>
+        <button class="btn small ghost" data-act="close-sheet">Готово</button>
+      </div>
+    </div>`);
+}
 
 async function loadRequests() {
   if (!cloud.key) return;
@@ -602,6 +662,7 @@ function confirmRequest(id) {
   if (!r) return;
   openAppt(null, {
     requestId: r.id,
+    token: r.token || newToken(),
     date: r.date,
     time: r.time,
     name: r.name,
@@ -1240,13 +1301,7 @@ async function syncNow() {
     cloud.backupPrint = print;
     cloud.savedAt = new Date().toISOString();
   });
-  await step(async () => {
-    const schedule = L.buildSchedule(data);
-    const print = JSON.stringify({ ...schedule, updated: '' });
-    if (print === cloud.schedulePrint) return;
-    await api('PUT', '/api/schedule', schedule);
-    cloud.schedulePrint = print;
-  });
+  await step(syncSchedule);
   await step(async () => {
     const ids = new Set(data.appointments.flatMap(a => a.photos || []));
     for (const id of ids) {
@@ -1268,6 +1323,7 @@ async function syncNow() {
       cloud.closing = cloud.closing.filter(x => x !== id);
     }
   });
+  await step(syncBookings);
   await step(loadRequests);
 
   syncing = false;
@@ -1279,6 +1335,35 @@ async function syncNow() {
   if (syncAgain) {
     syncAgain = false;
     syncNow();
+  }
+}
+
+// Свободное время для клиентов (с ценами прайса) — только если оно изменилось.
+async function syncSchedule() {
+  const schedule = L.buildSchedule(data);
+  const print = JSON.stringify({ ...schedule, updated: '' });
+  if (print === cloud.schedulePrint) return;
+  await api('PUT', '/api/schedule', schedule);
+  cloud.schedulePrint = print;
+}
+
+// Личные ссылки клиентов: перенос, оплата, отмена сразу видны клиенту.
+// Если запись удалили, клиент увидит «Запись отменена».
+async function syncBookings() {
+  const sent = { ...(cloud.bookings || {}) };
+  const current = {};
+  for (const a of data.appointments) if (a.token) current[a.token] = JSON.stringify(L.publicBooking(a));
+  for (const [token, json] of Object.entries(current)) {
+    if (sent[token] === json) continue;
+    await api('PUT', `/api/bookings/${token}`, JSON.parse(json));
+    sent[token] = json;
+    cloud.bookings = { ...sent };
+  }
+  for (const [token, json] of Object.entries(sent)) {
+    if (current[token]) continue;
+    await api('PUT', `/api/bookings/${token}`, { ...JSON.parse(json), status: 'cancelled' });
+    delete sent[token];
+    cloud.bookings = { ...sent };
   }
 }
 
@@ -1322,6 +1407,7 @@ async function applyCloudBackup(copy) {
   cloud.backupPrint = await dataPrint(data);
   cloud.uploaded = ids;
   cloud.schedulePrint = '';
+  cloud.bookings = Object.fromEntries(data.appointments.filter(a => a.token).map(a => [a.token, JSON.stringify(L.publicBooking(a))]));
   await dbSet('cloud', cloud).catch(() => {});
   await cleanupPhotos();
   render();
@@ -1567,12 +1653,20 @@ function closeSheet(levels = 1) {
   if (n) history.go(-n);
 }
 
+// Что открыть, когда закроются все окна (например, «Запись подтверждена»).
+let afterSheetsClosed = null;
+
 // Глубина стопки хранится в истории: «Назад» на несколько окон закрывает их все.
 addEventListener('popstate', () => {
   const depth = (history.state && history.state.sheet) || 0;
   while (sheets.length > depth) sheets.pop();
   closeViewer();
   showSheet();
+  if (!sheets.length && afterSheetsClosed) {
+    const next = afterSheetsClosed;
+    afterSheetsClosed = null;
+    next();
+  }
 });
 
 let toastTimer = null;
@@ -1630,6 +1724,15 @@ const actions = {
     toast('Запись удалена');
   },
   'open-request': el => openRequest(el.dataset.id),
+  'send-confirmation': el => sendConfirmation(el.dataset.id),
+  'copy-booking': async el => {
+    try {
+      await navigator.clipboard.writeText(el.dataset.link);
+      toast('Ссылка скопирована');
+    } catch (e) {
+      toast('Не удалось скопировать — выделите ссылку пальцем');
+    }
+  },
   'confirm-request': el => confirmRequest(el.dataset.id),
   'decline-request': el => declineRequest(el.dataset.id),
   'open-client': el => openClient(el.dataset.key),

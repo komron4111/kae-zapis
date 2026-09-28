@@ -58,18 +58,20 @@ async function route(request, env, ctx) {
   const path = new URL(request.url).pathname.replace(/\/+$/, '');
   const method = request.method;
 
-  // Для всех: страница клиентов и подключение телефона.
+  let m;
+  // Для всех: страница клиентов, личная ссылка на запись и подключение телефона.
   if (path === '/api/okna' && method === 'GET') return getOkna(env);
   if (path === '/api/requests' && method === 'POST') return createRequest(request, env, ctx);
   if (path === '/api/pair' && method === 'POST') return pair(request, env);
+  if ((m = path.match(/^\/api\/bookings\/([\w-]{16,64})$/)) && method === 'GET') return getBooking(env, m[1]);
 
   // Дальше — только для подключённого телефона мастера.
   const deviceId = await authDevice(request, env);
-  let m;
   if (path === '/api/push' && method === 'PUT') return savePush(request, env, deviceId);
   if (path === '/api/schedule' && method === 'PUT') return saveSchedule(request, env);
   if (path === '/api/requests' && method === 'GET') return listRequests(env);
-  if ((m = path.match(/^\/api\/requests\/([\w-]+)\/(confirm|decline)$/)) && method === 'POST') return closeRequest(env, m[1]);
+  if ((m = path.match(/^\/api\/requests\/([\w-]+)\/(confirm|decline)$/)) && method === 'POST') return closeRequest(request, env, m[1], m[2]);
+  if ((m = path.match(/^\/api\/bookings\/([\w-]{16,64})$/)) && method === 'PUT') return putBooking(request, env, m[1]);
   if (path === '/api/backup' && method === 'PUT') return putBackup(request, env);
   if (path === '/api/backup' && method === 'GET') return getBackup(env);
   if (path === '/api/photos' && method === 'GET') return listPhotos(env);
@@ -125,12 +127,26 @@ function remember(env, kind, who) {
 
 const visitor = request => sha256hex('ip:' + (request.headers.get('CF-Connecting-IP') || 'local'));
 
-// Старые заявки и счётчики попыток не храним.
+// Старые заявки, личные ссылки (через 60 дней после записи) и счётчики попыток не храним.
 async function cleanup(env, today) {
   await env.DB.batch([
     env.DB.prepare('DELETE FROM requests WHERE date < ?').bind(today),
+    env.DB.prepare('DELETE FROM bookings WHERE date < ?').bind(L.addDays(today, -60)),
     env.DB.prepare('DELETE FROM attempts WHERE at < ?').bind(Date.now() - 864e5),
   ]);
+}
+
+const newToken = () => L.bytesToB64u(crypto.getRandomValues(new Uint8Array(16)));
+
+async function saveBooking(env, token, booking) {
+  const now = new Date().toISOString();
+  await env.DB.prepare(`
+    INSERT INTO bookings (token, created, updated, status, date, time, name, services, total, prepaid)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT (token) DO UPDATE SET updated = excluded.updated, status = excluded.status, date = excluded.date,
+      time = excluded.time, name = excluded.name, services = excluded.services, total = excluded.total, prepaid = excluded.prepaid`)
+    .bind(token, now, now, booking.status, booking.date, booking.time, booking.name, JSON.stringify(booking.services), booking.total, booking.prepaid)
+    .run();
 }
 
 async function hasDevice(env) {
@@ -190,19 +206,20 @@ async function createRequest(request, env, ctx) {
 
   const r = check.request;
   const id = crypto.randomUUID();
+  const token = newToken(); // личная ссылка клиента на эту заявку и будущую запись
   const minutes = L.toMinutes(r.time);
   // Вставляем, только если рядом по времени никто не успел оставить другую заявку.
   const result = await env.DB.prepare(`
-    INSERT INTO requests (id, created, date, time, minutes, name, phone, services, comment)
-    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+    INSERT INTO requests (id, created, date, time, minutes, name, phone, services, comment, token)
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
     WHERE NOT EXISTS (SELECT 1 FROM requests WHERE date = ? AND ABS(minutes - ?) < ?)`)
-    .bind(id, new Date().toISOString(), r.date, r.time, minutes, r.name, r.phone, JSON.stringify(r.services), r.comment,
+    .bind(id, new Date().toISOString(), r.date, r.time, minutes, r.name, r.phone, JSON.stringify(r.services), r.comment, token,
       r.date, minutes, schedule.duration || L.DEFAULT_SETTINGS.duration)
     .run();
   if (!result.meta.changes) throw new HttpError(409, 'Это время только что заняли — выберите другое');
   await remember(env, 'request', who);
   ctx.waitUntil(notifyMaster(env, { id, ...r }));
-  return json({ ok: true }, 201);
+  return json({ ok: true, token }, 201);
 }
 
 async function notifyMaster(env, r) {
@@ -280,13 +297,47 @@ async function listRequests(env) {
   const schedule = await loadSchedule(env);
   await cleanup(env, L.masterClock(schedule ? schedule.tzOffset || 0 : -300).date);
   const { results } = await env.DB.prepare(
-    'SELECT id, created, date, time, name, phone, services, comment FROM requests ORDER BY date, time').all();
+    'SELECT id, created, date, time, name, phone, services, comment, token FROM requests ORDER BY date, time').all();
   return json({ requests: results.map(r => ({ ...r, services: JSON.parse(r.services) })) });
 }
 
-async function closeRequest(env, id) {
+// «Подтвердить»: заявка становится записью по той же личной ссылке клиента (данные записи
+// присылает телефон). «Отклонить»: клиент по ссылке увидит, что заявку не приняли.
+async function closeRequest(request, env, id, action) {
+  const body = await readJson(request, 4096).catch(() => ({}));
+  const r = await env.DB.prepare('SELECT date, time, name, services, token FROM requests WHERE id = ?').bind(id).first();
+  const token = /^[\w-]{16,64}$/.test(body.token || '') ? body.token : r && r.token;
+  if (token) {
+    const booking = action === 'confirm'
+      ? L.normalizeBooking({ ...body.booking, status: 'confirmed' })
+      : r && L.normalizeBooking({ status: 'declined', date: r.date, time: r.time, name: r.name, services: JSON.parse(r.services) });
+    if (booking) await saveBooking(env, token, booking);
+  }
   const result = await env.DB.prepare('DELETE FROM requests WHERE id = ?').bind(id).run();
-  return json({ ok: true, found: result.meta.changes > 0 });
+  return json({ ok: true, found: result.meta.changes > 0, token: token || null });
+}
+
+// Телефон мастера обновляет запись клиента: перенос, изменение услуг, оплата, отмена.
+async function putBooking(request, env, token) {
+  const booking = L.normalizeBooking(await readJson(request, 4096));
+  if (!booking) throw new HttpError(400, 'Неверная запись');
+  await saveBooking(env, token, booking);
+  return json({ ok: true });
+}
+
+// Личная ссылка клиента: заявка (ждёт ответа) или запись.
+async function getBooking(env, token) {
+  const schedule = await loadSchedule(env);
+  const master = { name: (schedule && schedule.name) || 'Мастер', whatsapp: (schedule && schedule.whatsapp) || '' };
+  const b = await env.DB.prepare('SELECT status, date, time, name, services, total, prepaid, updated FROM bookings WHERE token = ?').bind(token).first();
+  if (b) return json({ ...b, services: JSON.parse(b.services), master });
+  const r = await env.DB.prepare('SELECT date, time, name, services, created FROM requests WHERE token = ?').bind(token).first();
+  if (r) {
+    const services = JSON.parse(r.services);
+    const total = L.servicesTotal(services, (schedule && schedule.services) || []);
+    return json({ status: 'pending', date: r.date, time: r.time, name: r.name, services, total, prepaid: 0, updated: r.created, master });
+  }
+  throw new HttpError(404, 'Запись не найдена');
 }
 
 async function putBackup(request, env) {
