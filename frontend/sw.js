@@ -1,7 +1,7 @@
 // Офлайн-кэш и уведомления о заявках.
 // После любой правки файлов увеличьте VERSION — телефоны скачают
 // новую версию при следующем запуске приложения.
-const VERSION = 'v9';
+const VERSION = 'v10';
 const CACHE = `zapisi-arai-${VERSION}`;
 const FILES = [
   './',
@@ -37,10 +37,21 @@ self.addEventListener('activate', event => {
   );
 });
 
+// Страница для клиентов (okna/) и её файлы всегда берутся из сети: иначе её новый код
+// может встретиться со старым logic.js из кэша приложения (пока кэш не обновился).
+async function forClientPage(event) {
+  if (new URL(event.request.url).pathname.includes('/okna/')) return true;
+  const client = event.clientId ? await self.clients.get(event.clientId) : null;
+  return Boolean(client && new URL(client.url).pathname.includes('/okna/'));
+}
+
 self.addEventListener('fetch', event => {
   const req = event.request;
   if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
-  event.respondWith(caches.match(req, { ignoreSearch: true }).then(hit => hit || fetch(req)));
+  event.respondWith((async () => {
+    if (await forClientPage(event)) return fetch(req);
+    return (await caches.match(req, { ignoreSearch: true })) || fetch(req);
+  })());
 });
 
 // Уведомление с сервера: «Новая заявка на запись». Каждое push-сообщение
