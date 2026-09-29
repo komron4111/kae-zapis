@@ -134,7 +134,7 @@ function render() {
         return `<a class="card my-booking" href="${bookingUrl(b.token)}"><b>${L.dayTitle(b.date)}, ${L.shortTime(b.time)}</b><small>${esc(L.servicesLabel(b.services || []))}</small>${label ? `<span class="badge ${tone}">${label}</span>` : ''}</a>`;
       }).join('')}
     </section>` : ''}
-    <p class="okna-intro">${intro} Одна запись занимает до ${L.formatDuration(s.duration || 150)}.
+    <p class="okna-intro">${intro} ${s.v >= 2 ? 'Сколько займёт запись, покажем после выбора услуг.' : `Одна запись занимает до ${L.formatDuration(s.duration || 150)}.`}
       ${s.whatsapp ? `<br><a href="${whatsappLink('')}" target="_blank" rel="noopener">Написать мастеру в WhatsApp</a>` : ''}</p>
     ${stale ? '<div class="banner warn"><div class="grow">Расписание давно не обновлялось — уточните время у мастера.</div></div>' : ''}
     ${rows}
