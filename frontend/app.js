@@ -8,7 +8,7 @@ import { API_URL } from './config.js';
 import { phoneMask } from './phone-input.js';
 
 const APP_NAME = 'Nailapp';
-const APP_VERSION = '1.6.0';
+const APP_VERSION = '1.7.0';
 
 phoneMask();
 
@@ -46,6 +46,11 @@ const ICONS = {
   cloud: '<path d="M7 18.5a4.5 4.5 0 0 1-.6-9 6 6 0 0 1 11.6 1.6 3.8 3.8 0 0 1-.5 7.4z"/>',
   check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
   moon: '<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/>',
+  tag: '<path d="M3.5 12.3V4.5a1 1 0 0 1 1-1h7.8l8.2 8.2a1 1 0 0 1 0 1.4l-7.8 7.8a1 1 0 0 1-1.4 0z"/><circle cx="8" cy="8" r="1.5"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/>',
+  home: '<path d="M4 10.5L12 4l8 6.5V20h-5v-6H9v6H4z"/>',
+  palette: '<path d="M12 3a9 9 0 1 0 0 18c1 0 1.6-.7 1.6-1.5s-.8-1.3-.8-2.3c0-1 .8-1.7 1.8-1.7H17a4 4 0 0 0 4-4C21 6.7 17 3 12 3z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10.5" cy="7.2" r="1"/><circle cx="15" cy="7.5" r="1"/>',
+  archive: '<rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9M10 13h4"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6l1.4 1.4M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4L6 18M18 6l1.4-1.4"/>',
 };
 const icon = name => `<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
@@ -173,8 +178,9 @@ function busyList() {
 
 // ---------- Экран ----------
 
-// monthAnim — куда уехал календарь при смене месяца ('next' или 'prev'), для анимации.
-const ui = { tab: 'records', month: L.monthOf(today()), day: today(), finMonth: L.monthOf(today()), seenToday: today(), clientQuery: '', monthAnim: null };
+// monthAnim, finAnim — куда уехал месяц в календаре и в финансах ('next' или 'prev'), для анимации;
+// settingsPage — открытый пункт настроек (null — список пунктов).
+const ui = { tab: 'records', month: L.monthOf(today()), day: today(), finMonth: L.monthOf(today()), seenToday: today(), clientQuery: '', monthAnim: null, finAnim: null, settingsPage: null };
 const view = $('#view'), fab = $('#fab'), sheet = $('#sheet'), viewer = $('#viewer');
 
 const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
@@ -190,14 +196,12 @@ function setHeader(actions = '') {
 }
 
 // ---------- Тема и режим ----------
-// Тема (розовая, пурпурная, фиолетовая) — в настройках: уходит в облако и копию.
-// Светлый или тёмный режим — только для этого телефона; пока его не выбрали
-// кнопкой в шапке, он как в настройках телефона. Копию темы и режима в
-// localStorage читает index.html, чтобы экран сразу открывался в своих цветах.
+// Тема (розовая, пурпурная, фиолетовая; исходно — пурпурная) — в настройках:
+// уходит в облако и копию. Светлый или тёмный режим — только для этого телефона:
+// исходно светлый, меняется кнопкой в шапке. Копию темы и режима в localStorage
+// читает index.html, чтобы экран сразу открывался в своих цветах.
 
-const darkQuery = matchMedia('(prefers-color-scheme: dark)');
-const colorMode = () => document.documentElement.dataset.mode || (darkQuery.matches ? 'dark' : 'light');
-darkQuery.addEventListener('change', () => { if (data) render(); });
+const colorMode = () => document.documentElement.dataset.mode || 'light';
 
 function applyTheme() {
   const root = document.documentElement;
@@ -275,6 +279,14 @@ function swipe(root, selector, { axes, move, end, enabled = () => true }) {
   };
   root.addEventListener('pointerup', finish);
   root.addEventListener('pointercancel', finish);
+  return {
+    // Прервать жест: всё, что сдвинулось, вернётся на место.
+    cancel() {
+      const done = g;
+      g = null;
+      if (done && done.axis) end({ ...done, cancelled: true });
+    },
+  };
 }
 
 // После свайпа браузер может прислать «нажатие» на то, что под пальцем, — пропускаем его.
@@ -352,32 +364,36 @@ function changeMonth(delta) {
   render();
 }
 
-// Свайп по календарю влево — следующий месяц, вправо — предыдущий.
-// Сетка дней едет за пальцем; если сдвинули мало — возвращается на место.
-swipe(view, '.cal', {
-  axes: ['x'],
-  move(g) {
-    const grid = g.target.querySelector('.cal-grid');
-    grid.style.transform = `translateX(${g.dx}px)`;
-    grid.style.opacity = 1 - Math.min(Math.abs(g.dx) / grid.clientWidth, 1) * 0.7;
-  },
-  end(g) {
-    const grid = g.target.querySelector('.cal-grid');
-    const w = grid.clientWidth;
-    const flick = Math.abs(g.vx) > 0.4 && Math.sign(g.vx) === Math.sign(g.dx);
-    grid.classList.add('settle');
-    if (g.cancelled || !(Math.abs(g.dx) > w * 0.25 || flick)) {
-      grid.style.transform = '';
-      grid.style.opacity = '';
-      setTimeout(() => grid.classList.remove('settle'), 200);
-      return;
-    }
-    const delta = g.dx < 0 ? 1 : -1;
-    grid.style.transform = `translateX(${-delta * w}px)`;
-    grid.style.opacity = 0;
-    setTimeout(() => changeMonth(delta), 150);
-  },
-});
+// Свайп влево — следующий месяц, вправо — предыдущий (календарь и финансы).
+// Блок едет за пальцем; если сдвинули мало — возвращается на место.
+function monthSwipe(selector, part, change) {
+  swipe(view, selector, {
+    axes: ['x'],
+    move(g) {
+      const el = part ? g.target.querySelector(part) : g.target;
+      el.style.transform = `translateX(${g.dx}px)`;
+      el.style.opacity = 1 - Math.min(Math.abs(g.dx) / el.clientWidth, 1) * 0.7;
+    },
+    end(g) {
+      const el = part ? g.target.querySelector(part) : g.target;
+      const w = el.clientWidth;
+      const flick = Math.abs(g.vx) > 0.4 && Math.sign(g.vx) === Math.sign(g.dx);
+      el.classList.add('settle');
+      if (g.cancelled || !(Math.abs(g.dx) > w * 0.25 || flick)) {
+        el.style.transform = '';
+        el.style.opacity = '';
+        setTimeout(() => el.classList.remove('settle'), 200);
+        return;
+      }
+      const delta = g.dx < 0 ? 1 : -1;
+      el.style.transform = `translateX(${-delta * w}px)`;
+      el.style.opacity = 0;
+      setTimeout(() => change(delta), 150);
+    },
+  });
+}
+
+monthSwipe('.cal', '.cal-grid', changeMonth);
 
 function blockRange(b) {
   return b.from === b.to ? L.shortDate(b.from) : `${L.shortDate(b.from)} – ${L.shortDate(b.to)}`;
@@ -438,14 +454,14 @@ function banners() {
     out.push(`
       <div class="banner">
         <div class="grow">Заполните прайс — тогда сумма будет подставляться в запись сама.</div>
-        <button class="btn small secondary" data-act="goto" data-to="settings">Прайс</button>
+        <button class="btn small secondary" data-act="goto" data-to="settings" data-page="prices">Прайс</button>
       </div>`);
   }
   if (!cloud.key) {
     out.push(`
       <div class="banner">
         <div class="grow">Подключите облако: записи и фото будут сохраняться сами, а клиенты смогут оставлять заявки.</div>
-        <button class="btn small secondary" data-act="goto" data-to="settings">Подключить</button>
+        <button class="btn small secondary" data-act="goto" data-to="settings" data-page="cloud">Подключить</button>
       </div>`);
   } else if (cloud.error) {
     out.push(`
@@ -1174,6 +1190,8 @@ function hideViewer(direction = 0) {
 }
 
 function closeViewer() {
+  pinch.points.clear();
+  pinch.start = null;
   viewer.hidden = true;
   viewer.innerHTML = '';
   viewer.className = 'viewer';
@@ -1181,9 +1199,9 @@ function closeViewer() {
   viewerState = null;
 }
 
-swipe(viewer, '.viewer-stage', {
+const viewerSwipe = swipe(viewer, '.viewer-stage', {
   axes: ['x', 'y'],
-  enabled: () => Boolean(viewerState && !viewerState.busy),
+  enabled: () => Boolean(viewerState && !viewerState.busy && !pinch.start),
   move(g) {
     const { list, index } = viewerState;
     if (g.axis === 'x') {
@@ -1228,6 +1246,51 @@ swipe(viewer, '.viewer-stage', {
     });
   },
 });
+
+// Два пальца на фото: развести — увеличить, свести — уменьшить. Отпустили —
+// фото плавно возвращается к обычному размеру. Пока пальцев два, свайпы не работают.
+const pinch = { points: new Map(), start: null };
+
+function pinchNow() {
+  const [a, b] = [...pinch.points.values()];
+  return { dist: Math.hypot(a.x - b.x, a.y - b.y), mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } };
+}
+
+viewer.addEventListener('pointerdown', e => {
+  if (!viewerState || !e.target.closest('.viewer-stage')) return;
+  pinch.points.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pinch.points.size !== 2 || pinch.start) return;
+  viewerSwipe.cancel(); // первый палец мог уже начать свайп
+  const img = currentSlide() && currentSlide().querySelector('img');
+  if (!img) return;
+  const { dist, mid } = pinchNow();
+  const box = img.getBoundingClientRect();
+  img.classList.remove('unzoom');
+  img.style.transformOrigin = `${mid.x - box.left}px ${mid.y - box.top}px`;
+  pinch.start = { img, dist: dist || 1, mid };
+}, true);
+
+viewer.addEventListener('pointermove', e => {
+  if (!pinch.points.has(e.pointerId)) return;
+  pinch.points.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (!pinch.start || pinch.points.size < 2) return;
+  const { dist, mid } = pinchNow();
+  const scale = Math.min(Math.max(dist / pinch.start.dist, 0.6), 5);
+  pinch.start.img.style.transform = `translate(${mid.x - pinch.start.mid.x}px, ${mid.y - pinch.start.mid.y}px) scale(${scale})`;
+}, true);
+
+function liftFinger(e) {
+  if (!pinch.points.delete(e.pointerId) || !pinch.start || pinch.points.size >= 2) return;
+  const { img } = pinch.start;
+  pinch.start = null;
+  img.classList.add('unzoom');
+  img.style.transform = '';
+  setTimeout(() => img.classList.remove('unzoom'), 300);
+}
+viewer.addEventListener('pointerup', liftFinger, true);
+viewer.addEventListener('pointercancel', liftFinger, true);
+// iPhone: двумя пальцами увеличиваем фото, а не всю страницу.
+viewer.addEventListener('gesturestart', e => e.preventDefault());
 
 async function sharePhoto() {
   if (!viewerState) return;
@@ -1334,9 +1397,12 @@ function drawBlock(id, day) {
 function renderFinance() {
   setHeader();
   const ym = ui.finMonth;
+  const anim = ui.finAnim;
+  ui.finAnim = null;
   const r = L.monthReport(data, ym);
   const expenses = data.expenses.filter(e => L.monthOf(e.date) === ym).sort((a, b) => b.date.localeCompare(a.date));
   view.innerHTML = `
+    <div class="fin-clip"><div class="fin-page${anim ? ` enter-${anim}` : ''}">
     <div class="month-nav">
       <button class="icon-btn" data-act="fin-month" data-delta="-1" aria-label="Предыдущий месяц">${icon('left')}</button>
       <b>${L.monthTitle(ym)}</b>
@@ -1368,8 +1434,17 @@ function renderFinance() {
       <button class="exp" data-act="open-expense" data-id="${esc(e.id)}">
         <span><b>${esc(e.note || 'Материалы')}</b><small>${L.shortDate(e.date)}</small></span>
         <b>${L.formatMoney(e.amount)}</b>
-      </button>`).join('')}</section>` : '<div class="empty"><p>В этом месяце расходов на материалы нет</p></div>'}`;
+      </button>`).join('')}</section>` : '<div class="empty"><p>В этом месяце расходов на материалы нет</p></div>'}
+    </div></div>`;
 }
+
+function changeFinMonth(delta) {
+  ui.finMonth = L.addMonths(ui.finMonth, delta);
+  ui.finAnim = delta > 0 ? 'next' : 'prev';
+  render();
+}
+
+monthSwipe('.fin-page', null, changeFinMonth);
 
 function openExpense(id) {
   pushSheet(() => drawExpense(id));
@@ -1405,21 +1480,61 @@ function drawExpense(id) {
 
 // ---------- Настройки ----------
 
+// Главный экран — список пунктов; каждый пункт открывается отдельно (ui.settingsPage).
+const SETTINGS_PAGES = {
+  cloud: ['cloud', 'Облако и заявки'],
+  prices: ['tag', 'Прайс'],
+  hours: ['clock', 'Рабочее время'],
+  link: ['link', 'Ссылка для клиентов'],
+  rent: ['home', 'Аренда'],
+  look: ['palette', 'Оформление'],
+  archive: ['archive', 'Архив на телефон'],
+};
+const SERVICE_FORMS = ['услуга', 'услуги', 'услуг'];
+
+// Коротко о том, что внутри пункта, — видно, не открывая его.
+function settingsSummary(page) {
+  const s = settings();
+  if (page === 'cloud') return !cloud.key ? 'Не подключено' : cloud.pushOn ? 'Подключено, уведомления включены' : 'Подключено';
+  if (page === 'prices') return data.prices.length ? `${data.prices.length} ${L.plural(data.prices.length, SERVICE_FORMS)}` : 'Услуг пока нет';
+  if (page === 'hours') return `${L.shortTime(s.dayStart)}–${L.shortTime(s.lastStart)}, между записями ${L.formatDuration(s.duration)}`;
+  if (page === 'link') return s.whatsapp ? `${s.clientName} · ${L.formatPhone(s.whatsapp)}` : s.clientName || 'Свободное время и заявки';
+  if (page === 'rent') return `${L.formatMoney(L.rentFor(data.rent, L.monthOf(today())))} в месяц`;
+  if (page === 'look') return `${L.THEMES[s.theme]}, ${colorMode() === 'dark' ? 'тёмный' : 'светлый'} режим`;
+  return data.lastBackup ? `Последний — ${formatDate(data.lastBackup)}` : 'Ещё не сохраняли';
+}
+
 function renderSettings() {
   setHeader();
-  const s = settings();
-  const rent = L.rentFor(data.rent, L.monthOf(today()));
+  const page = SETTINGS_PAGES[ui.settingsPage] ? ui.settingsPage : null;
+  if (!page) {
+    view.innerHTML = `
+      <section class="card settings-menu">${Object.entries(SETTINGS_PAGES).map(([id, [ic, title]]) => `
+        <button class="menu-row" data-act="settings-page" data-page="${id}">
+          <span class="menu-ico">${icon(ic)}</span>
+          <span class="grow"><b>${title}</b><small>${esc(settingsSummary(id))}</small></span>
+          ${icon('right')}
+        </button>`).join('')}
+      </section>
+      <p class="version">${APP_NAME} · версия ${APP_VERSION}</p>`;
+    return;
+  }
   view.innerHTML = `
-    <section class="card">
-      <h2>Облако и заявки</h2>
-      ${cloud.key ? cloudPairedHtml() : `
+    <button class="back-link" data-act="settings-page" data-page="">${icon('left')} Настройки</button>
+    <h2 class="page-title">${SETTINGS_PAGES[page][1]}</h2>
+    <section class="card page-card">${settingsPageHtml(page)}</section>`;
+}
+
+function settingsPageHtml(page) {
+  const s = settings();
+  switch (page) {
+    case 'cloud':
+      return cloud.key ? cloudPairedHtml() : `
       <p class="hint">Подключите телефон к облаку: записи и фото будут сохраняться сами после каждого изменения, клиенты смогут оставлять заявки по ссылке, а вам будут приходить уведомления. Если телефон потеряется — подключите новый тем же кодом, и всё вернётся.</p>
       <label>Код доступа<input type="password" id="access-code" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Код, который вы задали"></label>
-      <button class="btn primary block" data-act="pair">${icon('cloud')} Подключить</button>`}
-    </section>
-
-    <section class="card">
-      <h2>Прайс</h2>
+      <button class="btn primary block" data-act="pair">${icon('cloud')} Подключить</button>`;
+    case 'prices':
+      return `
       <p class="hint">Цена подставляется в запись при выборе услуги, в записи её можно поменять. Клиенты видят эти цены по ссылке.</p>
       <div class="prices">${data.prices.map(p => `
         <div class="price-row">
@@ -1430,11 +1545,9 @@ function renderSettings() {
           <button class="icon-btn" data-act="price-del" data-id="${esc(p.id)}" aria-label="Удалить услугу">${icon('close')}</button>
         </div>`).join('')}
       </div>
-      <button class="btn small secondary" data-act="price-add">${icon('plus')} Добавить услугу</button>
-    </section>
-
-    <section class="card">
-      <h2>Рабочее время</h2>
+      <button class="btn small secondary" data-act="price-add">${icon('plus')} Добавить услугу</button>`;
+    case 'hours':
+      return `
       <div class="row2">
         <label>Первая запись с<input type="time" value="${esc(s.dayStart)}" data-change="set-dayStart"></label>
         <label>Последняя запись в<input type="time" value="${esc(s.lastStart)}" data-change="set-lastStart"></label>
@@ -1442,11 +1555,9 @@ function renderSettings() {
       <label>Между записями<select data-change="set-duration">${[60, 90, 120, 150, 180, 210, 240].map(m => `
         <option value="${m}"${m === s.duration ? ' selected' : ''}>${L.formatDuration(m)}</option>`).join('')}
       </select></label>
-      <p class="hint" id="duration-hint">${durationHint(s.duration)}</p>
-    </section>
-
-    <section class="card">
-      <h2>Ссылка для клиентов</h2>
+      <p class="hint" id="duration-hint">${durationHint(s.duration)}</p>`;
+    case 'link':
+      return `
       <p class="hint">По ссылке клиенты видят свободное время на 30 дней вперёд, выбирают время и услуги и оставляют заявку. Имена и телефоны других клиентов там не видны.</p>
       <div class="link-box">${esc(clientLink())}</div>
       <div class="btn-row">
@@ -1456,39 +1567,31 @@ function renderSettings() {
       <label>Имя для клиентов<input value="${esc(s.clientName)}" enterkeyhint="done" data-change="set-clientName"></label>
       <label>WhatsApp мастера<input type="tel" value="${esc(L.phoneFieldStart(s.whatsapp))}" enterkeyhint="done" data-change="set-whatsapp"></label>
       <p class="hint">Клиенты увидят кнопку «Написать мастеру» с этим номером.</p>
-      ${cloud.key ? '' : '<p class="status warn">Заявки начнут приходить после подключения облака.</p>'}
-    </section>
-
-    <section class="card">
-      <h2>Аренда</h2>
+      ${cloud.key ? '' : '<p class="status warn">Заявки начнут приходить после подключения облака.</p>'}`;
+    case 'rent':
+      return `
       <div class="price-row">
         <span class="grow">Каждый месяц</span>
         <div class="money-wrap">
-          <input class="money" inputmode="numeric" enterkeyhint="done" value="${L.formatAmount(rent)}" placeholder="0" data-change="rent" aria-label="Аренда в месяц, тенге"><span>₸</span>
+          <input class="money" inputmode="numeric" enterkeyhint="done" value="${L.formatAmount(L.rentFor(data.rent, L.monthOf(today())))}" placeholder="0" data-change="rent" aria-label="Аренда в месяц, тенге"><span>₸</span>
         </div>
       </div>
-      <p class="hint">Новая сумма действует с текущего месяца, прошлые месяцы не меняются.</p>
-    </section>
-
-    <section class="card">
-      <h2>Оформление</h2>
+      <p class="hint">Новая сумма действует с текущего месяца, прошлые месяцы не меняются.</p>`;
+    case 'look':
+      return `
       <div class="themes" role="group" aria-label="Тема">${Object.entries(L.THEMES).map(([id, name]) => `
         <button type="button" class="theme-pick${s.theme === id ? ' on' : ''}" data-act="set-theme" data-value="${id}" aria-pressed="${s.theme === id}">
           <span class="swatch" data-theme="${id}"></span>${name}
         </button>`).join('')}
       </div>
-      <p class="hint">Тёмный режим для вечера — кнопка с луной вверху справа.</p>
-    </section>
-
-    <section class="card">
-      <h2>Архив на телефон</h2>
+      <p class="hint">Тёмный режим для вечера — кнопка с луной вверху справа.</p>`;
+    default:
+      return `
       <p class="hint">${cloud.key ? 'Облако сохраняет всё само. Архив — дополнительная копия файлом, на всякий случай.' : 'Пока облако не подключено, раз в неделю сохраняйте архив — например, отправьте файл себе в Telegram.'}</p>
       <p>Последний архив: <b>${data.lastBackup ? formatDate(data.lastBackup) : 'ещё не сохраняли'}</b></p>
       <button class="btn secondary block" data-act="backup">Сохранить архив</button>
-      <label class="btn secondary block">Восстановить из архива<input type="file" class="file-input" accept=".zip,.json,application/zip,application/json" data-change="restore"></label>
-    </section>
-
-    <p class="version">${APP_NAME} · версия ${APP_VERSION}</p>`;
+      <label class="btn secondary block">Восстановить из архива<input type="file" class="file-input" accept=".zip,.json,application/zip,application/json" data-change="restore"></label>`;
+  }
 }
 
 function cloudPairedHtml() {
@@ -2079,7 +2182,7 @@ const actions = {
     render();
     toast('Запись снова открыта');
   },
-  'fin-month': el => { ui.finMonth = L.addMonths(ui.finMonth, Number(el.dataset.delta)); render(); },
+  'fin-month': el => changeFinMonth(Number(el.dataset.delta)),
   'new-expense': () => openExpense(null),
   'open-expense': el => openExpense(el.dataset.id),
   'delete-expense': async el => {
@@ -2130,7 +2233,8 @@ const actions = {
   'cloud-restore': () => restoreFromCloud(),
   'backup': () => prepareBackup(),
   'send-backup': () => sendBackup(),
-  'goto': el => { ui.tab = el.dataset.to; render(); scrollTo(0, 0); },
+  'goto': el => { ui.tab = el.dataset.to; ui.settingsPage = el.dataset.page || null; render(); scrollTo(0, 0); },
+  'settings-page': el => { ui.settingsPage = el.dataset.page || null; render(); scrollTo(0, 0); },
   'install': async () => {
     if (!installEvent) return;
     installEvent.prompt();
@@ -2206,6 +2310,7 @@ document.addEventListener('click', e => {
   const tab = e.target.closest('[data-tab]');
   if (tab) {
     ui.tab = tab.dataset.tab;
+    if (ui.tab === 'settings') ui.settingsPage = null; // «Настройки» — всегда к списку пунктов
     render();
     scrollTo(0, 0);
     return;
@@ -2286,6 +2391,13 @@ async function start() {
     a.services = a.service ? [a.service] : [];
     delete a.service;
     migrated = true;
+  }
+  if (stored && !pref('plumDefault')) {
+    if (data.settings.theme === 'rose') {
+      data.settings.theme = 'plum';
+      migrated = true;
+    }
+    pref('plumDefault', '1');
   }
   render();
   if (migrated) save();

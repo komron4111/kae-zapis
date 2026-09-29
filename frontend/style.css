@@ -1,20 +1,20 @@
 /* Nailapp — оформление. Цвета — переменные.
-   Три темы: розовая (по умолчанию), пурпурная и фиолетовая — html[data-theme].
-   У каждой светлый и тёмный режим. Режим — html[data-mode] (кнопка в шапке),
-   без него — как в настройках телефона (так работает и страница для клиентов). */
+   Три темы: пурпурная (исходная), розовая и фиолетовая — html[data-theme].
+   У каждой светлый и тёмный режим. Режим — html[data-mode]: в приложении исходно
+   светлый, меняется кнопкой в шапке; без него (страница для клиентов) — как в телефоне. */
 
 /* Палитры: --l-* для светлого режима, --d-* для тёмного. */
-:root, [data-theme="rose"] {
-  --l-bg: #FCF6F8; --l-text: #2B2126; --l-muted: #7E6B73; --l-line: #EFE0E6;
-  --l-accent: #B8456F; --l-accent-soft: #F9E3EC; --l-bar1: #D6739B; --l-bar2: #AE4169;
-  --d-bg: #151012; --d-card: #211A1D; --d-field: #1A1417; --d-text: #F3EBEE; --d-muted: #A8979E; --d-line: #362B30;
-  --d-accent: #E0719A; --d-accent-ink: #2A0F1A; --d-accent-soft: #3B2230; --d-bar1: #6A2F4B; --d-bar2: #3F1C2E;
-}
-[data-theme="plum"] {
+:root, [data-theme="plum"] {
   --l-bg: #FBF6FA; --l-text: #2A2029; --l-muted: #7A6A78; --l-line: #ECDFEA;
   --l-accent: #A04596; --l-accent-soft: #F5E3F2; --l-bar1: #C06BB6; --l-bar2: #933C8B;
   --d-bg: #140F14; --d-card: #201A20; --d-field: #191419; --d-text: #F2EAF1; --d-muted: #A796A5; --d-line: #352A34;
   --d-accent: #D67BCB; --d-accent-ink: #2A0F27; --d-accent-soft: #3A2238; --d-bar1: #62305B; --d-bar2: #3C1C39;
+}
+[data-theme="rose"] {
+  --l-bg: #FCF6F8; --l-text: #2B2126; --l-muted: #7E6B73; --l-line: #EFE0E6;
+  --l-accent: #B8456F; --l-accent-soft: #F9E3EC; --l-bar1: #D6739B; --l-bar2: #AE4169;
+  --d-bg: #151012; --d-card: #211A1D; --d-field: #1A1417; --d-text: #F3EBEE; --d-muted: #A8979E; --d-line: #362B30;
+  --d-accent: #E0719A; --d-accent-ink: #2A0F1A; --d-accent-soft: #3B2230; --d-bar1: #6A2F4B; --d-bar2: #3F1C2E;
 }
 [data-theme="lavender"] {
   --l-bg: #F8F6FC; --l-text: #25212F; --l-muted: #6E6880; --l-line: #E6E0F1;
@@ -269,10 +269,14 @@ main { max-width: 560px; margin: 0 auto; padding: 12px 16px 96px; }
 .cal-head { display: flex; align-items: center; justify-content: space-between; padding: 0 2px 4px; }
 .cal-head b, .month-nav b { font-size: 17px; }
 .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
-/* Смена месяца: сетка уезжает за пальцем, новый месяц въезжает с той же стороны. */
-.cal-grid.settle { transition: transform .15s ease-out, opacity .15s; }
-.cal-grid.enter-next { animation: cal-next .22s ease-out; }
-.cal-grid.enter-prev { animation: cal-prev .22s ease-out; }
+/* Смена месяца (календарь и финансы): блок уезжает за пальцем, новый месяц въезжает с той же стороны. */
+.cal-grid.settle, .fin-page.settle { transition: transform .15s ease-out, opacity .15s; }
+.cal-grid.enter-next, .fin-page.enter-next { animation: cal-next .22s ease-out; }
+.cal-grid.enter-prev, .fin-page.enter-prev { animation: cal-prev .22s ease-out; }
+/* Финансы: вертикальную прокрутку ведёт браузер, свайп вбок — приложение.
+   Поле обрезки шире страницы на отступы, чтобы не резались тени карточек. */
+.fin-clip { overflow: hidden; margin: 0 -16px; padding: 0 16px; }
+.fin-page { touch-action: pan-y; }
 @keyframes cal-next { from { opacity: 0; transform: translateX(48px); } }
 @keyframes cal-prev { from { opacity: 0; transform: translateX(-48px); } }
 .wd { padding: 4px 0; text-align: center; color: var(--muted); font-size: 12px; font-weight: 600; }
@@ -550,6 +554,29 @@ legend { margin-bottom: 8px; padding: 0; color: var(--muted); font-size: 13px; f
 .card > .btn.small { margin-top: 12px; }
 .version { margin: 8px 0 0; color: var(--muted); font-size: 13px; text-align: center; }
 
+/* ---------- Настройки: список пунктов и отдельные страницы ---------- */
+
+.settings-menu { padding: 0; overflow: hidden; }
+.menu-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 12px 12px 14px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: none;
+  text-align: left;
+}
+.menu-row:last-child { border-bottom: 0; }
+.menu-row b { display: block; font-size: 16px; }
+.menu-row small { display: block; overflow: hidden; color: var(--muted); font-size: 13px; white-space: nowrap; text-overflow: ellipsis; }
+.menu-row > .ico { color: var(--muted); }
+.menu-ico { display: grid; place-items: center; width: 36px; height: 36px; flex: none; border-radius: 10px; background: var(--accent-soft); color: var(--accent); }
+.back-link { display: inline-flex; align-items: center; gap: 2px; margin: 0 0 2px -8px; padding: 6px 8px; border: 0; background: none; color: var(--accent); font-size: 16px; font-weight: 600; }
+.page-title { margin: 0 0 12px; font-size: 26px; }
+.page-card > :first-child { margin-top: 0; }
+
 /* ---------- Выбор темы ---------- */
 
 .themes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 10px; }
@@ -707,10 +734,12 @@ fieldset .btn.small { margin-top: 6px; }
 .viewer.settle { transition: background-color .25s, opacity .25s; }
 .viewer.settle .viewer-bar { transition: opacity .25s; }
 .viewer.settle .viewer-track, .viewer.settle .viewer-slide { transition: transform .25s ease-out; }
+/* После увеличения двумя пальцами фото плавно возвращается. */
+.viewer-slide img.unzoom { transition: transform .25s ease-out; }
 
 @media (prefers-reduced-motion: reduce) {
-  .viewer, .cal-grid { animation: none !important; }
-  .viewer.settle, .viewer.settle *, .cal-grid.settle { transition: none !important; }
+  .viewer, .cal-grid, .fin-page { animation: none !important; }
+  .viewer.settle, .viewer.settle *, .cal-grid.settle, .fin-page.settle, .viewer-slide img.unzoom { transition: none !important; }
 }
 
 /* ---------- Ссылка для клиентов ---------- */

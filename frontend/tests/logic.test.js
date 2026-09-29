@@ -326,9 +326,9 @@ test('копия сохраняется и читается обратно', () 
   eq(copy.appointments[0].photos, ['ph1']);
 });
 
-test('тема оформления в копии: своя сохраняется, неизвестная — розовая', () => {
+test('тема оформления в копии: своя сохраняется, неизвестная — пурпурная (исходная)', () => {
   const read = theme => L.readBackup(JSON.stringify({ app: 'kae-zapis', appointments: [], settings: { theme } })).settings.theme;
-  eq([read('lavender'), read('plum'), read('neon'), read(undefined)], ['lavender', 'plum', 'rose', 'rose']);
+  eq([read('lavender'), read('rose'), read('neon'), read(undefined)], ['lavender', 'rose', 'plum', 'plum']);
   eq(Object.keys(L.THEMES), ['rose', 'plum', 'lavender']);
 });
 

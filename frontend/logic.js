@@ -14,7 +14,7 @@ export const DEFAULT_RENT = 70000;
 
 // Рабочее время: запись можно начать с dayStart до lastStart включительно,
 // между началами записей — не меньше duration минут (наращивание — 2 ч 30 мин).
-export const DEFAULT_SETTINGS = { dayStart: '09:00', lastStart: '20:00', duration: 150, clientName: 'Арай', whatsapp: '', theme: 'rose' };
+export const DEFAULT_SETTINGS = { dayStart: '09:00', lastStart: '20:00', duration: 150, clientName: 'Арай', whatsapp: '', theme: 'plum' };
 // Темы оформления: id → название в «Настройках». Цвета — в style.css.
 export const THEMES = { rose: 'Розовая', plum: 'Пурпурная', lavender: 'Фиолетовая' };
 // Клиентам время предлагается с шагом 30 минут.
