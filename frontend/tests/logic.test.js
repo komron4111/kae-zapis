@@ -171,6 +171,22 @@ test('поле телефона: что показать и что сохран�
   eq(L.phoneFieldDigits('+7 701 12'), '70112');
 });
 
+test('клиенты, добавленные вручную: в общем списке и без повторов', () => {
+  const list = L.pastClients([
+    appt('2026-09-01', 'paid', 1, 0, { name: 'Айгуль', phone: '+7 701 123 45 67' }),
+  ], [
+    { id: 'm1', name: 'Айгуль Н.', phone: '87011234567' },
+    { id: 'm2', name: 'Жанна', phone: '+7 702 000 00 01' },
+    { id: 'm3', name: 'Мира', phone: '' },
+  ]);
+  eq(list.map(c => [c.name, c.visits, c.last, c.id || '']), [
+    ['Айгуль', 1, '2026-09-01', 'm1'],
+    ['Жанна', 0, '', 'm2'],
+    ['Мира', 0, '', 'm3'],
+  ]);
+  eq([L.findTwin(list, '', '8 702 000 00 01').name, L.findTwin(list, 'мира', '').name, L.findTwin(list, 'Лейла', '')], ['Жанна', 'Мира', undefined]);
+});
+
 test('клиенты из записей: без повторов, данные из свежей записи', () => {
   const list = L.pastClients([
     appt('2026-08-01', 'paid', 1, 0, { name: 'Айгуль', phone: '8 701 123 45 67' }),
@@ -295,6 +311,7 @@ test('копия сохраняется и читается обратно', () 
     rent: [{ from: '2000-01', amount: 70000 }],
     settings: { dayStart: '10:00', lastStart: '19:00', duration: 120, clientName: 'Арай', whatsapp: '+7 700 111 22 33', theme: 'lavender' },
     blocks: [{ id: 'v', from: '2026-10-10', to: '2026-10-12', note: 'Отпуск' }],
+    clients: [{ id: 'c1', name: 'Жанна', phone: '+7 702 000 00 01', created: '2026-09-28T10:00:00.000Z' }],
   };
   const copy = L.readBackup(JSON.stringify(L.makeBackup(data, new Date(Date.UTC(2026, 8, 28)))));
   eq(copy.exportedAt, '2026-09-28T00:00:00.000Z');
@@ -305,6 +322,7 @@ test('копия сохраняется и читается обратно', () 
   eq(copy.rent, data.rent);
   eq(copy.settings, data.settings);
   eq(copy.blocks, data.blocks);
+  eq(copy.clients, data.clients);
   eq(copy.appointments[0].photos, ['ph1']);
 });
 
@@ -331,6 +349,7 @@ test('кривые поля в копии приводятся к нужному
   eq([copy.appointments[0].id, copy.appointments[0].total, copy.appointments[0].status], ['r0', 12000, 'booked']);
   eq(copy.rent, [{ from: '2000-01', amount: 70000 }]);
   eq(copy.settings, L.DEFAULT_SETTINGS);
+  eq(copy.clients, []);
 });
 
 test('кривые настройки, закрытые дни и фото в копии', () => {

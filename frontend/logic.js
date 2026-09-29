@@ -423,8 +423,8 @@ export function phoneFromField(value) {
 }
 
 // ---------- Сохранённые клиенты ----------
-// Отдельной базы клиентов нет: клиент сохраняется вместе с записью,
-// а список собирается из записей.
+// Список клиентов собирается из записей. Отдельно хранятся только клиенты,
+// которых мастер добавила вручную, без записи: data.clients — {id, name, phone, created}.
 
 const norm = s => String(s || '').toLowerCase().replace(/ё/g, 'е').trim();
 
@@ -432,7 +432,9 @@ const newestFirst = (a, b) => (b.date + b.time).localeCompare(a.date + a.time);
 
 // Один клиент — один номер (без номера — одно имя). Имя и номер берутся
 // из самой свежей записи. visits — записи без отменённых, last — дата последней.
-export function pastClients(appointments) {
+// saved — клиенты, добавленные вручную: у кого записей нет, visits = 0 и last = '';
+// id — номер такого клиента в data.clients (по нему его можно удалить).
+export function pastClients(appointments, saved = []) {
   const byKey = new Map();
   for (const a of [...appointments].sort(newestFirst)) {
     const key = phoneDigits(a.phone) || norm(a.name);
@@ -440,6 +442,13 @@ export function pastClients(appointments) {
     let c = byKey.get(key);
     if (!c) byKey.set(key, c = { key, name: a.name, phone: a.phone, visits: 0, last: a.date });
     if (a.status !== 'cancelled') c.visits++;
+  }
+  for (const s of saved) {
+    const key = phoneDigits(s.phone) || norm(s.name);
+    if (!key) continue;
+    const c = byKey.get(key);
+    if (c) c.id = s.id;
+    else byKey.set(key, { key, name: s.name, phone: s.phone, visits: 0, last: '', id: s.id });
   }
   // Записи без номера с тем же именем, что у клиента с номером, — это он же.
   const byName = new Map();
@@ -453,8 +462,15 @@ export function pastClients(appointments) {
     }
     owner.visits += c.visits;
     if (c.last > owner.last) owner.last = c.last;
+    if (c.id && !owner.id) owner.id = c.id;
   }
   return out;
+}
+
+// Такой клиент уже есть? По номеру, а если номера нет — по имени.
+export function findTwin(clients, name, phone) {
+  const pd = phoneDigits(phone);
+  return pd ? clients.find(c => phoneDigits(c.phone) === pd) : clients.find(c => norm(c.name) === norm(name));
 }
 
 // Все записи клиента, свежие первыми (по тем же правилам, что pastClients).
@@ -500,6 +516,7 @@ export function makeBackup(data, now = new Date()) {
     rent: data.rent,
     settings: data.settings,
     blocks: data.blocks,
+    clients: data.clients || [],
   };
 }
 
@@ -543,6 +560,9 @@ export function readBackup(text) {
     to: b.from < b.to ? b.to : b.from,
     note: str(b.note),
   }));
+  const clients = list(obj.clients).filter(c => c && (str(c.name).trim() || phoneDigits(c.phone))).map((c, i) => ({
+    id: str(c.id) || 'c' + i, name: str(c.name).trim(), phone: str(c.phone), created: c.created || null,
+  }));
   return {
     appointments,
     expenses,
@@ -550,6 +570,7 @@ export function readBackup(text) {
     rent: rent.length ? rent : [{ from: '2000-01', amount: DEFAULT_RENT }],
     settings: readSettings(obj.settings),
     blocks,
+    clients,
     exportedAt: obj.exportedAt || null,
   };
 }

@@ -8,7 +8,7 @@ import { API_URL } from './config.js';
 import { phoneMask } from './phone-input.js';
 
 const APP_NAME = 'Nailapp';
-const APP_VERSION = '1.5.0';
+const APP_VERSION = '1.6.0';
 
 phoneMask();
 
@@ -136,6 +136,7 @@ function freshData() {
     rent: [{ from: '2000-01', amount: L.DEFAULT_RENT }],
     settings: { ...L.DEFAULT_SETTINGS },
     blocks: [],
+    clients: [],
     lastBackup: null,
   };
 }
@@ -215,7 +216,9 @@ function render() {
   const tabs = [['records', 'calendar', 'Записи'], ['clients', 'users', 'Клиенты'], ['finance', 'chart', 'Финансы'], ['settings', 'sliders', 'Настройки']];
   $('#tabbar').innerHTML = tabs.map(([id, ic, label]) =>
     `<button data-tab="${id}"${ui.tab === id ? ' class="active" aria-current="page"' : ''}>${icon(ic)}<span>${label}</span>${id === 'records' && requests.length ? `<i class="tab-badge">${requests.length}</i>` : ''}</button>`).join('');
-  fab.hidden = ui.tab !== 'records';
+  fab.hidden = ui.tab !== 'records' && ui.tab !== 'clients';
+  fab.dataset.act = ui.tab === 'clients' ? 'new-client' : 'new-appt';
+  fab.setAttribute('aria-label', ui.tab === 'clients' ? 'Новый клиент' : 'Новая запись');
   if (ui.tab === 'records') renderRecords();
   else if (ui.tab === 'clients') renderClients();
   else if (ui.tab === 'finance') renderFinance();
@@ -521,7 +524,7 @@ function drawAppt(id, prefill) {
   form.dataset.id = src ? src.id : '';
   form.dataset.request = requestId || '';
   form.dataset.token = (src && src.token) || fields.token || '';
-  const clients = L.pastClients(data.appointments);
+  const clients = L.pastClients(data.appointments, data.clients);
   bindSuggest(form, 'name', clients);
   bindSuggest(form, 'phone', clients);
   form.addEventListener('input', () => refreshAppt(form));
@@ -863,7 +866,7 @@ function toggleClients() {
     panel.innerHTML = '';
     return;
   }
-  const clients = L.sortByName(L.pastClients(data.appointments));
+  const clients = L.sortByName(L.pastClients(data.appointments, data.clients));
   if (!clients.length) {
     panel.innerHTML = '<div class="panel"><p class="hint">Сохранённых клиентов пока нет. Впишите имя и телефон ниже — после сохранения записи клиент появится в этом списке.</p></div>';
     return;
@@ -884,9 +887,13 @@ function toggleClients() {
 
 function renderClients() {
   setHeader();
-  const clients = L.sortByName(L.pastClients(data.appointments));
+  const clients = L.sortByName(L.pastClients(data.appointments, data.clients));
   if (!clients.length) {
-    view.innerHTML = '<div class="empty"><p>Клиентов пока нет. Они появятся здесь после первой записи.</p></div>';
+    view.innerHTML = `
+      <div class="empty">
+        <p>Клиентов пока нет. Они появятся здесь после первой записи — или добавьте клиента сами.</p>
+        <button class="btn secondary small" data-act="new-client">${icon('plus')} Добавить клиента</button>
+      </div>`;
     return;
   }
   view.innerHTML = `
@@ -896,7 +903,11 @@ function renderClients() {
   const show = () => {
     ui.clientQuery = q.value;
     const found = L.findClients(clients, q.value);
-    $('#clients-list').innerHTML = found.length ? found.map(clientRow).join('') : '<p class="hint list-empty">Никого не нашли</p>';
+    $('#clients-list').innerHTML = found.length ? found.map(clientRow).join('') : `
+      <div class="list-empty">
+        <p class="hint">Никого не нашли</p>
+        <button class="btn secondary small" data-act="new-client" data-q="${esc(q.value.trim())}">${icon('plus')} Добавить клиента</button>
+      </div>`;
   };
   q.addEventListener('input', show);
   show();
@@ -906,7 +917,7 @@ function clientRow(c) {
   return `
     <button class="client-row" data-act="open-client" data-key="${esc(c.key)}">
       <span><b>${esc(c.name || L.formatPhone(c.phone))}</b><small>${esc(c.name ? L.formatPhone(c.phone) : '')}</small></span>
-      <span class="meta">${c.visits} ${L.plural(c.visits, RECORD_FORMS)}<small>последняя ${L.shortDate(c.last)}</small></span>
+      <span class="meta">${c.last ? `${c.visits} ${L.plural(c.visits, RECORD_FORMS)}<small>последняя ${L.shortDate(c.last)}</small>` : 'без записей'}</span>
     </button>`;
 }
 
@@ -915,7 +926,7 @@ function openClient(key) {
 }
 
 function drawClient(key) {
-  const c = L.pastClients(data.appointments).find(x => x.key === key);
+  const c = L.pastClients(data.appointments, data.clients).find(x => x.key === key);
   if (!c) {
     sheetHtml('Клиент', '<div class="sheet-body"><p class="empty">Записей этого клиента больше нет</p></div>');
     return;
@@ -933,9 +944,44 @@ function drawClient(key) {
       </div>` : ''}
       <button class="btn primary block" data-act="new-appt-for" data-name="${esc(c.name)}" data-phone="${esc(c.phone)}">${icon('plus')} Новая запись</button>
       <h3 class="section-title">Записи · ${visits.length}</h3>
-      ${visits.map(a => visitRow(a, t)).join('')}
+      ${visits.length ? visits.map(a => visitRow(a, t)).join('') : '<p class="hint">Записей пока нет.</p>'}
+      ${c.id && !visits.length ? `<button class="btn danger block" data-act="delete-client" data-id="${esc(c.id)}">Удалить клиента</button>` : ''}
     </div>`);
   loadPhotos(sheet);
+}
+
+// Новый клиент без записи: имя и телефон. Он появится в списке клиентов
+// и в «Выбрать клиента» при записи.
+function openNewClient(prefill = {}) {
+  pushSheet(() => {
+    sheetHtml('Новый клиент', `
+      <form id="client-form" class="sheet-body" novalidate autocomplete="off">
+        <label>Имя клиента<input name="name" value="${esc(prefill.name)}" autocapitalize="words" enterkeyhint="done" placeholder="Например, Айгуль"></label>
+        <label>Телефон<input name="phone" type="tel" value="${esc(L.phoneFieldValue(prefill.phone))}" enterkeyhint="done"></label>
+        <p class="hint form-note">Клиент появится в списке и в «Выбрать клиента», когда будете делать запись.</p>
+        <button type="submit" class="btn primary block">Сохранить клиента</button>
+      </form>`);
+    const form = $('#client-form');
+    form.addEventListener('submit', e => {
+      e.preventDefault();
+      saveClient(form);
+    });
+  });
+}
+
+async function saveClient(form) {
+  const name = field(form, 'name').value.trim().slice(0, 60);
+  const phone = L.phoneFromField(field(form, 'phone').value);
+  if (!name && !phone) return toast('Укажите имя или телефон клиента');
+  if (phone && L.phoneFieldDigits(phone).length < 10) return toast('Номер телефона неполный');
+  const twin = L.findTwin(L.pastClients(data.appointments, data.clients), name, phone);
+  if (twin) return toast(`Такой клиент уже есть: ${twin.name || L.formatPhone(twin.phone)}`);
+  data.clients = [...(data.clients || []), { id: uid(), name, phone, created: new Date().toISOString() }];
+  if (!(await save())) return;
+  closeSheet();
+  ui.clientQuery = '';
+  render();
+  toast('Клиент добавлен');
 }
 
 function visitRow(a, t) {
@@ -1531,7 +1577,7 @@ async function gunzip(bytes) {
 }
 
 // Отпечаток данных без даты выгрузки: без изменений копию заново не отправляем.
-const dataPrint = d => sha256(JSON.stringify([d.appointments, d.expenses, d.prices, d.rent, d.settings, d.blocks]));
+const dataPrint = d => sha256(JSON.stringify([d.appointments, d.expenses, d.prices, d.rent, d.settings, d.blocks, d.clients]));
 
 let syncTimer = null, syncing = false, syncAgain = false;
 
@@ -1669,6 +1715,7 @@ async function applyCloudBackup(copy) {
     rent: copy.rent,
     settings: copy.settings,
     blocks: copy.blocks,
+    clients: copy.clients,
     lastBackup: data.lastBackup,
   };
   await dbSet('data', data);
@@ -1703,7 +1750,7 @@ async function pairDevice() {
   try {
     remote = await fetchCloudBackup();
   } catch (e) { /* покажем ниже как ошибку сохранения */ }
-  if (remote && remote.copy.appointments.length) {
+  if (remote && (remote.copy.appointments.length || remote.copy.clients.length)) {
     const n = remote.copy.appointments.length;
     const question = data.appointments.length
       ? `В облаке есть копия от ${formatDateTime(remote.created)}: ${n} ${L.plural(n, RECORD_FORMS)}. Заменить данные этого телефона копией из облака? «Отмена» — оставить данные телефона и сохранить их в облако.`
@@ -1868,6 +1915,7 @@ async function restoreBackup(file) {
     rent: copy.rent,
     settings: copy.settings,
     blocks: copy.blocks,
+    clients: copy.clients,
     lastBackup: copy.exportedAt,
   };
   if (!(await save())) return;
@@ -1954,6 +2002,19 @@ const actions = {
   'day': el => { ui.day = el.dataset.day; ui.month = L.monthOf(ui.day); render(); },
   'new-appt': () => openAppt(null),
   'new-appt-for': el => openAppt(null, { name: el.dataset.name, phone: el.dataset.phone, date: today() }),
+  // Из пустого поиска: введённое имя или номер сразу попадает в форму.
+  'new-client': el => {
+    const q = el.dataset.q || '';
+    openNewClient(q.replace(/\D/g, '').length >= 3 ? { phone: q } : { name: q });
+  },
+  'delete-client': async el => {
+    if (!confirm('Удалить клиента из списка?')) return;
+    data.clients = (data.clients || []).filter(c => c.id !== el.dataset.id);
+    if (!(await save())) return;
+    closeSheet();
+    render();
+    toast('Клиент удалён');
+  },
   'open-appt': el => openAppt(el.dataset.id),
   'close-sheet': () => closeSheet(),
   'pick-client': () => toggleClients(),

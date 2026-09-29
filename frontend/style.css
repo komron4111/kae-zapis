@@ -128,8 +128,8 @@ p + p { margin-top: 8px; }
 /* ---------- Верхняя панель ---------- */
 
 /* Стеклянная глянцевая полоса: цвет темы чуть прозрачный, под ним размывается то,
-   что прокручивается, сверху — блик. Такая же — у окон записи и клиента. */
-.appbar, .sheet-head {
+   что прокручивается, сверху — блик. Такая же — у окон записи и клиента и внизу, у вкладок. */
+.appbar, .sheet-head, .tabbar {
   background: var(--bar);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, var(--sheen)) 0%, rgba(255, 255, 255, 0) 62%),
@@ -354,8 +354,9 @@ main { max-width: 560px; margin: 0 auto; padding: 12px 16px 96px; }
   display: flex;
   justify-content: center;
   padding: 0 8px env(safe-area-inset-bottom);
-  background: var(--card);
-  border-top: 1px solid var(--line);
+  border-top: 1px solid rgba(255, 255, 255, .28);
+  border-bottom: 0;
+  box-shadow: 0 -10px 28px -16px rgba(60, 10, 40, .6);
 }
 .tabbar button {
   display: flex;
@@ -367,11 +368,12 @@ main { max-width: 560px; margin: 0 auto; padding: 12px 16px 96px; }
   padding: 8px 0;
   border: 0;
   background: none;
-  color: var(--muted);
+  color: rgba(255, 255, 255, .72);
   font-size: 12px;
   font-weight: 600;
 }
-.tabbar button.active { color: var(--accent); }
+.tabbar button.active { color: #fff; }
+.tabbar button.active .ico { filter: drop-shadow(0 0 6px rgba(255, 255, 255, .55)); }
 .tabbar .ico { width: 26px; height: 26px; }
 
 /* ---------- Окно записи и формы ---------- */
@@ -653,7 +655,8 @@ select {
 .client-row b { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .client-row small { color: var(--muted); font-size: 13px; }
 .client-row .meta { flex: none; align-items: flex-end; font-size: 14px; text-align: right; }
-.list-empty { padding: 14px 0; }
+.list-empty { padding: 14px 0; text-align: center; }
+.list-empty .btn { margin-top: 10px; }
 
 .client-phone { margin: 10px 2px 0; font-size: 17px; }
 .section-title { margin: 22px 2px 10px; font-size: 17px; }
@@ -763,6 +766,7 @@ body.okna main { padding-bottom: 24px; }
   padding: 0 5px;
   border-radius: 9px;
   background: var(--danger);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, .85);
   color: #fff;
   font-size: 11px;
   font-style: normal;
