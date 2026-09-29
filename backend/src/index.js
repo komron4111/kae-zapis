@@ -179,9 +179,10 @@ async function loadSchedule(env) {
   return null;
 }
 
+// Заявки, которые ждут ответа: занимают время по своим услугам.
 async function holds(env) {
-  const { results } = await env.DB.prepare('SELECT date, time FROM requests').all();
-  return results;
+  const { results } = await env.DB.prepare('SELECT date, time, services FROM requests').all();
+  return results.map(r => ({ date: r.date, time: r.time, services: JSON.parse(r.services || '[]') }));
 }
 
 async function getOkna(env) {
@@ -210,13 +211,14 @@ async function createRequest(request, env, ctx) {
   const id = crypto.randomUUID();
   const token = newToken(); // личная ссылка клиента на эту заявку и будущую запись
   const minutes = L.toMinutes(r.time);
-  // Вставляем, только если рядом по времени никто не успел оставить другую заявку.
+  const fallback = L.scheduleSettings(schedule).duration; // у заявок до 1.8.0 длительности нет
+  // Вставляем, только если никто не успел оставить заявку, которая пересекается по времени.
   const result = await env.DB.prepare(`
-    INSERT INTO requests (id, created, date, time, minutes, name, phone, services, comment, token)
-    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-    WHERE NOT EXISTS (SELECT 1 FROM requests WHERE date = ? AND ABS(minutes - ?) < ?)`)
-    .bind(id, new Date().toISOString(), r.date, r.time, minutes, r.name, r.phone, JSON.stringify(r.services), r.comment, token,
-      r.date, minutes, schedule.duration || L.DEFAULT_SETTINGS.duration)
+    INSERT INTO requests (id, created, date, time, minutes, name, phone, services, comment, token, duration)
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    WHERE NOT EXISTS (SELECT 1 FROM requests WHERE date = ? AND minutes < ? AND ? < minutes + (CASE WHEN duration > 0 THEN duration ELSE ? END))`)
+    .bind(id, new Date().toISOString(), r.date, r.time, minutes, r.name, r.phone, JSON.stringify(r.services), r.comment, token, r.duration,
+      r.date, minutes + r.duration, minutes, fallback)
     .run();
   if (!result.meta.changes) throw new HttpError(409, 'Это время только что заняли — выберите другое');
   await remember(env, 'request', who);

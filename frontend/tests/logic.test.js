@@ -289,9 +289,10 @@ test('расписание для клиентов: без имён и теле�
   const s = L.buildSchedule(data, new Date(2026, 9, 1, 10, 0), 3);
   eq([s.kind, s.name, s.whatsapp, s.duration], ['okna', 'Арай', '77001112233', 150]);
   eq(s.days.map(d => d.date), ['2026-10-01', '2026-10-02', '2026-10-03']);
-  eq(s.days[0].times.slice(0, 3), ['09:00', '09:30', '14:30']);
+  eq(s.days[0].busy, [[720, 870]]); // услуги нет в прайсе — 2 ч 30 мин по умолчанию
+  eq(L.scheduleTimes(s, s.days[0], 150).slice(0, 3), ['09:00', '09:30', '14:30']);
   eq(s.days[1], { date: '2026-10-02', off: true });
-  eq(s.days[2].times.length, 23);
+  eq(L.scheduleTimes(s, s.days[2], 150).length, 23);
   const text = JSON.stringify(s);
   eq([text.includes('Айгуль'), text.includes('1234567'), text.includes('Болезнь')], [false, false, false]);
 });
@@ -307,7 +308,7 @@ test('копия сохраняется и читается обратно', () 
   const data = {
     appointments: [appt('2026-09-10', 'paid', 12000, 5000, { name: 'Айгуль', phone: '+7 701 123 45 67', photos: ['ph1'] })],
     expenses: [{ id: 'e1', date: '2026-09-05', amount: 15000, note: 'Гель-лаки' }],
-    prices: [{ id: 'p1', name: 'Маникюр', price: 5000 }],
+    prices: [{ id: 'p1', name: 'Маникюр', price: 5000, duration: 60 }],
     rent: [{ from: '2000-01', amount: 70000 }],
     settings: { dayStart: '10:00', lastStart: '19:00', duration: 120, clientName: 'Арай', whatsapp: '+7 700 111 22 33', theme: 'lavender' },
     blocks: [{ id: 'v', from: '2026-10-10', to: '2026-10-12', note: 'Отпуск' }],
@@ -385,7 +386,7 @@ test('копия: старая запись с одной услугой чит�
 
 test('клиенты видят услуги с ценами из прайса', () => {
   const s = L.buildSchedule({ appointments: [], blocks: [], settings: {}, prices: [{ name: 'Маникюр', price: 5000 }, { name: ' ', price: 0 }] }, new Date(2026, 9, 1), 1);
-  eq(s.services, [{ name: 'Маникюр', price: 5000 }]);
+  eq(s.services, [{ name: 'Маникюр', price: 5000, duration: 0 }]);
 });
 
 const SCHEDULE = {
@@ -407,13 +408,98 @@ test('заявка занимает время для других клиент�
 test('проверка заявки клиента', () => {
   const good = { date: '2026-10-01', time: '14:30', name: '  Айгуль   А. ', phone: '8 701 111 22 33', services: ['Маникюр', 'Маникюр', 'Педикюр'], comment: 'Френч' };
   eq(L.validateRequest(good, SCHEDULE, CLOCK), { ok: true, request: {
-    date: '2026-10-01', time: '14:30', name: 'Айгуль А.', phone: '+7 701 111 22 33', services: ['Маникюр', 'Педикюр'], comment: 'Френч',
+    date: '2026-10-01', time: '14:30', name: 'Айгуль А.', phone: '+7 701 111 22 33', services: ['Маникюр', 'Педикюр'], comment: 'Френч', duration: 150,
   } });
   const error = patch => L.validateRequest({ ...good, ...patch }, SCHEDULE, CLOCK).error;
   const busy = 'Это время уже занято — выберите другое';
   eq([error({ name: ' ' }), error({ phone: '123' }), error({ services: [] }), error({ services: ['Стрижка'] }), error({ time: '14:00' }), error({ date: '2026-10-02' }), error({ date: 'завтра' })],
     ['Укажите имя', 'Укажите номер телефона', 'Выберите вид работы', 'Такой услуги нет в прайсе', busy, busy, 'Выберите день и время']);
   eq(L.validateRequest(good, SCHEDULE, { date: '2026-10-01', minutes: 900 }).status, 409); // 14:30 уже прошло
+});
+
+// ---------- Длительность услуг (1.8.0) ----------
+
+const PRICES = L.DEFAULT_SERVICES.map(([name, duration], i) => ({ id: 'p' + i, name, price: 0, duration }));
+const at = (time, services, extra = {}) => ({ id: time, date: '2026-10-01', time, status: 'booked', services, ...extra });
+const freeWith = (items, need) => L.formatRanges(L.toRanges(L.freeTimes(items, '2026-10-01', S, -1, undefined, { prices: PRICES, need })));
+
+test('длительность записи — по услугам из прайса', () => {
+  eq(L.servicesDuration(['Снятие маникюра'], PRICES, S), 20);
+  eq(L.servicesDuration(['Снятие маникюра', 'Педикюр'], PRICES, S), 80);
+  eq(L.servicesDuration(['Стрижка'], PRICES, S), 150); // нет в прайсе — по умолчанию
+  eq(L.servicesDuration([], PRICES, S), 150);
+  eq(L.shortestService(PRICES, S), 20);
+  eq(L.shortestService([{ name: 'Маникюр', price: 0 }], S), 150);
+});
+
+test('свободное время — от услуги предыдущей записи', () => {
+  const short = L.shortestService(PRICES, S);
+  eq(freeWith([at('12:00', ['Снятие маникюра'])], short), '9:00–11:30, 12:30–20:00');
+  eq(freeWith([at('12:00', ['Наращивание'])], short), '9:00–11:30, 14:30–20:00');
+  eq(freeWith([at('12:00', ['Наращивание+Педикюр со стопой'])], short), '9:00–11:30, 16:00–20:00');
+  // Новой записи на 2 ч 30 мин нужно закончить до 12:00 — начать не позже 9:30.
+  eq(freeWith([at('12:00', ['Снятие маникюра'])], 150), '9:00–9:30, 12:30–20:00');
+  eq(L.conflicts([at('12:00', ['Снятие маникюра'])], '2026-10-01', '12:30', 60, undefined, { prices: PRICES, settings: S }), []);
+  eq(L.conflicts([at('12:00', ['Наращивание'])], '2026-10-01', '14:00', 60, undefined, { prices: PRICES, settings: S }).map(a => a.id), ['12:00']);
+});
+
+const SCHEDULE2 = L.buildSchedule({
+  appointments: [at('12:00', ['Снятие маникюра'], { name: 'Айгуль' })],
+  blocks: [],
+  settings: { ...L.DEFAULT_SETTINGS },
+  prices: PRICES,
+}, new Date(2026, 9, 1, 8, 0), 2);
+
+test('расписание v2: занятое время и длительности услуг, без имён', () => {
+  eq([SCHEDULE2.v, SCHEDULE2.dayStart, SCHEDULE2.lastStart, SCHEDULE2.duration], [2, '09:00', '20:00', 150]);
+  eq(SCHEDULE2.days[0].busy, [[720, 740]]);
+  eq(SCHEDULE2.services[0], { name: 'Снятие маникюра', price: 0, duration: 20 });
+  eq(JSON.stringify(SCHEDULE2).includes('Айгуль'), false);
+  eq(L.scheduleTimes(SCHEDULE2, SCHEDULE2.days[0], 20).slice(5, 7), ['11:30', '12:30']);
+  eq(L.scheduleTimes(SCHEDULE2, SCHEDULE2.days[0], 20, L.toMinutes('19:00')), ['19:30', '20:00']);
+});
+
+test('расписание v2: заявка занимает время по своим услугам', () => {
+  const held = L.applyHolds(SCHEDULE2, [{ date: '2026-10-01', time: '15:00', services: ['Педикюр'] }]);
+  eq(held.days[0].busy, [[720, 740], [900, 960]]);
+  eq(L.scheduleTimes(held, held.days[0], 20).includes('15:30'), false);
+  eq(L.scheduleTimes(held, held.days[0], 20).includes('16:00'), true);
+});
+
+test('расписание v2: проверка заявки с учётом длительности услуг', () => {
+  const clock = { date: '2026-09-30', minutes: 600 };
+  const good = { date: '2026-10-01', time: '10:00', name: 'Дана', phone: '8 701 111 22 33', services: ['Педикюр'] };
+  eq(L.validateRequest(good, SCHEDULE2, clock).request.duration, 60);
+  eq(L.validateRequest({ ...good, time: '12:30' }, SCHEDULE2, clock).ok, true); // снятие маникюра закончилось в 12:20
+  const long = L.validateRequest({ ...good, time: '11:00', services: ['Наращивание'] }, SCHEDULE2, clock);
+  eq([long.status, long.error], [409, 'На это время выбранные услуги не поместятся — выберите время раньше или меньше услуг']);
+  eq(L.validateRequest({ ...good, time: '12:00' }, SCHEDULE2, clock).error, 'Это время уже занято — выберите другое');
+});
+
+test('прайс мастера: новые услуги добавляются, цены и названия прежних остаются', () => {
+  let n = 0;
+  const merged = L.mergePrices([
+    { id: 'a', name: 'Маникюр', price: 8000 },
+    { id: 'b', name: 'Наращивание', price: 15000 },
+    { id: 'c', name: 'маникюр + педикюр', price: 16000 },
+  ], L.DEFAULT_SERVICES, () => 'n' + n++);
+  eq(merged.length, 14);
+  eq(merged.find(p => p.id === 'b'), { id: 'b', name: 'Наращивание', price: 15000, duration: 150 });
+  eq(merged.find(p => p.id === 'c'), { id: 'c', name: 'маникюр + педикюр', price: 16000, duration: 90 });
+  eq(merged[0], { id: 'n0', name: 'Снятие маникюра', price: 0, duration: 20 });
+  eq(merged[merged.length - 1], { id: 'a', name: 'Маникюр', price: 8000 }); // нет в списке — в конце, как была
+});
+
+test('копия: длительность услуг и отметки об оплате аренды', () => {
+  const copy = L.readBackup(JSON.stringify({
+    app: 'kae-zapis',
+    appointments: [],
+    prices: [{ id: 'p', name: 'Педикюр', price: 7000, duration: 60 }, { id: 'q', name: 'Маникюр', price: 5000, duration: 'много' }],
+    rentPaid: { '2026-09': '2026-09-05', '2026-10': 'завтра', 'сентябрь': '2026-09-01' },
+  }));
+  eq(copy.prices.map(p => p.duration), [60, 0]);
+  eq(copy.rentPaid, { '2026-09': '2026-09-05' });
+  eq(L.readBackup(JSON.stringify({ app: 'kae-zapis', appointments: [] })).rentPaid, {});
 });
 
 test('текст уведомления о заявке', () => {

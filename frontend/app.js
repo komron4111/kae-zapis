@@ -8,7 +8,7 @@ import { API_URL } from './config.js';
 import { phoneMask } from './phone-input.js';
 
 const APP_NAME = 'Nailapp';
-const APP_VERSION = '1.7.0';
+const APP_VERSION = '1.8.0';
 
 phoneMask();
 
@@ -137,11 +137,12 @@ function freshData() {
   return {
     appointments: [],
     expenses: [],
-    prices: L.DEFAULT_SERVICES.map(name => ({ id: uid(), name, price: 0 })),
+    prices: L.DEFAULT_SERVICES.map(([name, duration]) => ({ id: uid(), name, price: 0, duration })),
     rent: [{ from: '2000-01', amount: L.DEFAULT_RENT }],
     settings: { ...L.DEFAULT_SETTINGS },
     blocks: [],
     clients: [],
+    rentPaid: {}, // оплата аренды: { 'YYYY-MM': 'YYYY-MM-DD' }
     lastBackup: null,
   };
 }
@@ -172,7 +173,7 @@ async function save() {
 // Заявки занимают время так же, как записи (в свободном времени и предупреждениях).
 function busyList() {
   return data.appointments.concat(requests.map(r => ({
-    id: `req:${r.id}`, date: r.date, time: r.time, status: 'booked', name: `${r.name} (заявка)`, phone: r.phone,
+    id: `req:${r.id}`, date: r.date, time: r.time, status: 'booked', name: `${r.name} (заявка)`, phone: r.phone, services: r.services,
   })));
 }
 
@@ -180,7 +181,7 @@ function busyList() {
 
 // monthAnim, finAnim — куда уехал месяц в календаре и в финансах ('next' или 'prev'), для анимации;
 // settingsPage — открытый пункт настроек (null — список пунктов).
-const ui = { tab: 'records', month: L.monthOf(today()), day: today(), finMonth: L.monthOf(today()), seenToday: today(), clientQuery: '', monthAnim: null, finAnim: null, settingsPage: null };
+const ui = { tab: 'records', month: L.monthOf(today()), day: today(), finMonth: L.monthOf(today()), seenToday: today(), clientQuery: '', monthAnim: null, finAnim: null, settingsPage: null, rentYear: Number(today().slice(0, 4)), rentAnim: null };
 const view = $('#view'), fab = $('#fab'), sheet = $('#sheet'), viewer = $('#viewer');
 
 const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
@@ -330,7 +331,9 @@ function renderRecords() {
         <button class="btn small secondary" data-act="edit-block" data-id="${esc(block.id)}">Изменить</button>
       </div>`;
   } else if (ui.day >= t) {
-    const times = L.freeTimes(busyList(), ui.day, settings(), ui.day === t ? nowMinutes() : -1);
+    // Время свободно, если в него помещается хотя бы самая короткая услуга прайса.
+    const times = L.freeTimes(busyList(), ui.day, settings(), ui.day === t ? nowMinutes() : -1, undefined,
+      { prices: data.prices, need: L.shortestService(data.prices, settings()) });
     dayInfo = `<p class="free-line">${times.length ? `Свободно: ${L.formatRanges(L.toRanges(times))}` : 'Свободного времени нет'}</p>`;
   }
   view.innerHTML = `
@@ -580,15 +583,18 @@ function refreshAppt(form) {
   const s = settings();
   const busy = busyList();
   const date = field(form, 'date').value, time = field(form, 'time').value;
+  // Сколько займёт эта запись: по выбранным услугам; пока их нет — самая короткая услуга.
+  const chosen = chosenServices(form);
+  const need = chosen.length ? L.servicesDuration(chosen, data.prices, s) : L.shortestService(data.prices, s);
   const block = date ? L.blockFor(data.blocks, date) : null;
   const hint = $('#time-hint');
   if (!date || date < today() || block) {
     hint.innerHTML = '';
   } else {
-    const times = L.freeTimes(busy, date, s, date === today() ? nowMinutes() : -1, selfId(form));
+    const times = L.freeTimes(busy, date, s, date === today() ? nowMinutes() : -1, selfId(form), { prices: data.prices, need });
     const ranges = L.toRanges(times);
     hint.innerHTML = times.length
-      ? `<span>Свободно: ${L.formatRanges(ranges)}</span>
+      ? `<span>Свободно${chosen.length ? ` для этих услуг (${L.formatDuration(need)})` : ''}: ${L.formatRanges(ranges)}</span>
          <div class="time-chips">${ranges.map(([from]) => `<button type="button" class="chip small" data-act="pick-time" data-time="${from}">${L.shortTime(from)}</button>`).join('')}</div>`
       : '<span>В этот день свободного времени нет</span>';
   }
@@ -596,10 +602,10 @@ function refreshAppt(form) {
   const warnings = [];
   if (block) warnings.push(`Этот день закрыт для записи${block.note ? `: ${block.note}` : ''}.`);
   if (date && time) {
-    const near = L.conflicts(busy, date, time, s.duration, selfId(form));
+    const near = L.conflicts(busy, date, time, need, selfId(form), { prices: data.prices, settings: s });
     if (near.length) {
       const who = near.map(x => `${x.name || x.phone} в ${L.shortTime(x.time)}`).join(', ');
-      warnings.push(`Пересекается с записью: ${who}. Между записями нужно ${L.formatDuration(s.duration)}.`);
+      warnings.push(`Пересекается с записью: ${who}.${chosen.length ? ` Эта запись займёт ${L.formatDuration(need)}.` : ''}`);
     }
     const m = L.toMinutes(time);
     if (m < L.toMinutes(s.dayStart) || m > L.toMinutes(s.lastStart)) {
@@ -785,7 +791,8 @@ function drawRequest(id) {
   const d = L.phoneDigits(r.phone);
   const what = L.servicesLabel(r.services).toLowerCase();
   const text = `Здравствуйте, ${r.name}! Получила вашу заявку на ${L.shortDate(r.date)} в ${L.shortTime(r.time)} (${what}). Чтобы подтвердить запись, внесите, пожалуйста, предоплату.`;
-  const near = L.conflicts(data.appointments, r.date, r.time, settings().duration);
+  const near = L.conflicts(data.appointments, r.date, r.time, L.servicesDuration(r.services, data.prices, settings()), undefined,
+    { prices: data.prices, settings: settings() });
   const block = L.blockFor(data.blocks, r.date);
   sheetHtml('Заявка на запись', `
     <div class="sheet-body">
@@ -1419,7 +1426,10 @@ function renderFinance() {
         <b class="in">${L.formatMoney(r.income)}</b>
       </div>
       <div class="line"><span>Материалы</span><b>${L.formatMoney(-r.materials)}</b></div>
-      <div class="line"><span>Аренда<small>каждый месяц, сумма — в «Настройках»</small></span><b>${L.formatMoney(-r.rent)}</b></div>
+      <button class="line line-btn" data-act="rent-month" data-month="${ym}">
+        <span>Аренда<small>${rentPaid(ym) ? `оплачена ${L.shortDate(rentPaid(ym))}` : 'оплата не отмечена — нажмите, чтобы отметить'}</small></span>
+        <b>${L.formatMoney(-r.rent)}</b>
+      </button>
       ${r.expected ? `
       <div class="line soft">
         <span>Ожидается ещё<small>остатки по записям, которые пока не оплачены</small></span>
@@ -1497,9 +1507,12 @@ function settingsSummary(page) {
   const s = settings();
   if (page === 'cloud') return !cloud.key ? 'Не подключено' : cloud.pushOn ? 'Подключено, уведомления включены' : 'Подключено';
   if (page === 'prices') return data.prices.length ? `${data.prices.length} ${L.plural(data.prices.length, SERVICE_FORMS)}` : 'Услуг пока нет';
-  if (page === 'hours') return `${L.shortTime(s.dayStart)}–${L.shortTime(s.lastStart)}, между записями ${L.formatDuration(s.duration)}`;
+  if (page === 'hours') return `${L.shortTime(s.dayStart)}–${L.shortTime(s.lastStart)}`;
   if (page === 'link') return s.whatsapp ? `${s.clientName} · ${L.formatPhone(s.whatsapp)}` : s.clientName || 'Свободное время и заявки';
-  if (page === 'rent') return `${L.formatMoney(L.rentFor(data.rent, L.monthOf(today())))} в месяц`;
+  if (page === 'rent') {
+    const month = L.monthOf(today());
+    return `${L.formatMoney(L.rentFor(data.rent, month))} в месяц · ${L.MONTHS[Number(month.slice(5)) - 1].toLowerCase()} ${rentPaid(month) ? 'оплачен' : 'не оплачен'}`;
+  }
   if (page === 'look') return `${L.THEMES[s.theme]}, ${colorMode() === 'dark' ? 'тёмный' : 'светлый'} режим`;
   return data.lastBackup ? `Последний — ${formatDate(data.lastBackup)}` : 'Ещё не сохраняли';
 }
@@ -1522,42 +1535,54 @@ function renderSettings() {
   view.innerHTML = `
     <button class="back-link" data-act="settings-page" data-page="">${icon('left')} Настройки</button>
     <h2 class="page-title">${SETTINGS_PAGES[page][1]}</h2>
-    <section class="card page-card">${settingsPageHtml(page)}</section>`;
+    ${settingsPageHtml(page)}`;
 }
+
+const card = (html, cls = '') => `<section class="card page-card${cls}">${html}</section>`;
+// Длительность услуги в прайсе, минут; 0 — «по умолчанию» (из «Рабочего времени»).
+const DURATIONS = [20, 30, 40, 45, 60, 75, 90, 105, 120, 150, 180, 210, 240, 270, 300];
 
 function settingsPageHtml(page) {
   const s = settings();
   switch (page) {
     case 'cloud':
-      return cloud.key ? cloudPairedHtml() : `
+      return card(cloud.key ? cloudPairedHtml() : `
       <p class="hint">Подключите телефон к облаку: записи и фото будут сохраняться сами после каждого изменения, клиенты смогут оставлять заявки по ссылке, а вам будут приходить уведомления. Если телефон потеряется — подключите новый тем же кодом, и всё вернётся.</p>
       <label>Код доступа<input type="password" id="access-code" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Код, который вы задали"></label>
-      <button class="btn primary block" data-act="pair">${icon('cloud')} Подключить</button>`;
+      <button class="btn primary block" data-act="pair">${icon('cloud')} Подключить</button>`);
     case 'prices':
-      return `
-      <p class="hint">Цена подставляется в запись при выборе услуги, в записи её можно поменять. Клиенты видят эти цены по ссылке.</p>
+      return card(`
+      <p class="hint">Цена подставляется в запись при выборе услуги, в записи её можно поменять. Клиенты видят эти цены по ссылке. По длительности услуги считается, когда освободится время после записи.</p>
       <div class="prices">${data.prices.map(p => `
-        <div class="price-row">
-          <input value="${esc(p.name)}" placeholder="Название услуги" enterkeyhint="done" data-change="price-name" data-id="${esc(p.id)}" aria-label="Услуга">
-          <div class="money-wrap">
-            <input class="money" inputmode="numeric" enterkeyhint="done" value="${L.formatAmount(p.price)}" placeholder="0" data-change="price" data-id="${esc(p.id)}" aria-label="Цена, тенге"><span>₸</span>
+        <div class="price-item">
+          <div class="price-row">
+            <input value="${esc(p.name)}" placeholder="Название услуги" enterkeyhint="done" data-change="price-name" data-id="${esc(p.id)}" aria-label="Услуга">
+            <button class="icon-btn" data-act="price-del" data-id="${esc(p.id)}" aria-label="Удалить услугу">${icon('close')}</button>
           </div>
-          <button class="icon-btn" data-act="price-del" data-id="${esc(p.id)}" aria-label="Удалить услугу">${icon('close')}</button>
+          <div class="price-row">
+            <div class="money-wrap">
+              <input class="money" inputmode="numeric" enterkeyhint="done" value="${L.formatAmount(p.price)}" placeholder="0" data-change="price" data-id="${esc(p.id)}" aria-label="Цена, тенге"><span>₸</span>
+            </div>
+            <select data-change="price-duration" data-id="${esc(p.id)}" aria-label="Сколько длится">
+              <option value="0">Время: по умолчанию (${L.formatDuration(s.duration)})</option>${[...new Set([...DURATIONS, p.duration || 0])].filter(Boolean).sort((a, b) => a - b).map(m => `
+              <option value="${m}"${m === p.duration ? ' selected' : ''}>${L.formatDuration(m)}</option>`).join('')}
+            </select>
+          </div>
         </div>`).join('')}
       </div>
-      <button class="btn small secondary" data-act="price-add">${icon('plus')} Добавить услугу</button>`;
+      <button class="btn small secondary" data-act="price-add">${icon('plus')} Добавить услугу</button>`);
     case 'hours':
-      return `
+      return card(`
       <div class="row2">
         <label>Первая запись с<input type="time" value="${esc(s.dayStart)}" data-change="set-dayStart"></label>
         <label>Последняя запись в<input type="time" value="${esc(s.lastStart)}" data-change="set-lastStart"></label>
       </div>
-      <label>Между записями<select data-change="set-duration">${[60, 90, 120, 150, 180, 210, 240].map(m => `
+      <label>Если у услуги не указано время<select data-change="set-duration">${[60, 90, 120, 150, 180, 210, 240].map(m => `
         <option value="${m}"${m === s.duration ? ' selected' : ''}>${L.formatDuration(m)}</option>`).join('')}
       </select></label>
-      <p class="hint" id="duration-hint">${durationHint(s.duration)}</p>`;
+      <p class="hint" id="duration-hint">${durationHint(s.duration)}</p>`);
     case 'link':
-      return `
+      return card(`
       <p class="hint">По ссылке клиенты видят свободное время на 30 дней вперёд, выбирают время и услуги и оставляют заявку. Имена и телефоны других клиентов там не видны.</p>
       <div class="link-box">${esc(clientLink())}</div>
       <div class="btn-row">
@@ -1567,31 +1592,100 @@ function settingsPageHtml(page) {
       <label>Имя для клиентов<input value="${esc(s.clientName)}" enterkeyhint="done" data-change="set-clientName"></label>
       <label>WhatsApp мастера<input type="tel" value="${esc(L.phoneFieldStart(s.whatsapp))}" enterkeyhint="done" data-change="set-whatsapp"></label>
       <p class="hint">Клиенты увидят кнопку «Написать мастеру» с этим номером.</p>
-      ${cloud.key ? '' : '<p class="status warn">Заявки начнут приходить после подключения облака.</p>'}`;
+      ${cloud.key ? '' : '<p class="status warn">Заявки начнут приходить после подключения облака.</p>'}`);
     case 'rent':
-      return `
+      return card(`
       <div class="price-row">
         <span class="grow">Каждый месяц</span>
         <div class="money-wrap">
           <input class="money" inputmode="numeric" enterkeyhint="done" value="${L.formatAmount(L.rentFor(data.rent, L.monthOf(today())))}" placeholder="0" data-change="rent" aria-label="Аренда в месяц, тенге"><span>₸</span>
         </div>
       </div>
-      <p class="hint">Новая сумма действует с текущего месяца, прошлые месяцы не меняются.</p>`;
+      <p class="hint">Новая сумма действует с текущего месяца, прошлые месяцы не меняются.</p>`) + rentYearHtml();
     case 'look':
-      return `
+      return card(`
       <div class="themes" role="group" aria-label="Тема">${Object.entries(L.THEMES).map(([id, name]) => `
         <button type="button" class="theme-pick${s.theme === id ? ' on' : ''}" data-act="set-theme" data-value="${id}" aria-pressed="${s.theme === id}">
           <span class="swatch" data-theme="${id}"></span>${name}
         </button>`).join('')}
       </div>
-      <p class="hint">Тёмный режим для вечера — кнопка с луной вверху справа.</p>`;
+      <p class="hint">Тёмный режим для вечера — кнопка с луной вверху справа.</p>`);
     default:
-      return `
+      return card(`
       <p class="hint">${cloud.key ? 'Облако сохраняет всё само. Архив — дополнительная копия файлом, на всякий случай.' : 'Пока облако не подключено, раз в неделю сохраняйте архив — например, отправьте файл себе в Telegram.'}</p>
       <p>Последний архив: <b>${data.lastBackup ? formatDate(data.lastBackup) : 'ещё не сохраняли'}</b></p>
       <button class="btn secondary block" data-act="backup">Сохранить архив</button>
-      <label class="btn secondary block">Восстановить из архива<input type="file" class="file-input" accept=".zip,.json,application/zip,application/json" data-change="restore"></label>`;
+      <label class="btn secondary block">Восстановить из архива<input type="file" class="file-input" accept=".zip,.json,application/zip,application/json" data-change="restore"></label>`);
   }
+}
+
+// ---------- Оплата аренды ----------
+// График по месяцам года: отмечено ли, что аренда оплачена, и когда.
+// data.rentPaid — { 'YYYY-MM': 'YYYY-MM-DD' }. Год листается стрелками и свайпом.
+
+const rentPaid = month => (data.rentPaid || {})[month] || '';
+const dayMonth = date => `${Number(date.slice(8))}.${date.slice(5, 7)}`;
+
+function rentYearHtml() {
+  const year = ui.rentYear;
+  const anim = ui.rentAnim;
+  ui.rentAnim = null;
+  const current = L.monthOf(today());
+  const cells = L.MONTHS.map((name, i) => {
+    const month = `${year}-${String(i + 1).padStart(2, '0')}`;
+    const paid = rentPaid(month);
+    const state = paid ? 'paid' : month === current ? 'due' : month < current ? 'past' : 'future';
+    const note = paid ? `оплачено ${dayMonth(paid)}` : state === 'due' ? 'не оплачено' : state === 'past' ? 'не отмечено' : '';
+    return `
+      <button class="rent-month ${state}" data-act="rent-month" data-month="${month}" aria-label="${name} ${year}: ${note || 'ещё не наступил'}">
+        <b>${name}</b><small>${L.formatAmount(L.rentFor(data.rent, month))} ₸</small><i>${paid ? icon('check') : ''}${note}</i>
+      </button>`;
+  }).join('');
+  const paidCount = L.MONTHS.filter((_, i) => rentPaid(`${year}-${String(i + 1).padStart(2, '0')}`)).length;
+  return card(`
+    <div class="rent-head">
+      <h3>Оплата аренды</h3>
+      <div class="year-nav">
+        <button class="icon-btn" data-act="rent-year" data-delta="-1" aria-label="Предыдущий год">${icon('left')}</button>
+        <b>${year}</b>
+        <button class="icon-btn" data-act="rent-year" data-delta="1" aria-label="Следующий год">${icon('right')}</button>
+      </div>
+    </div>
+    <div class="rent-cal"><div class="rent-grid${anim ? ` enter-${anim}` : ''}">${cells}</div></div>
+    <p class="hint">Оплачено месяцев: ${paidCount} из 12. Нажмите на месяц, чтобы отметить оплату или снять отметку.</p>`, ' rent-card');
+}
+
+function changeRentYear(delta) {
+  ui.rentYear += delta;
+  ui.rentAnim = delta > 0 ? 'next' : 'prev';
+  render();
+}
+
+monthSwipe('.rent-cal', '.rent-grid', changeRentYear);
+
+function openRentMonth(month) {
+  pushSheet(() => {
+    const paid = rentPaid(month);
+    sheetHtml(`Аренда · ${L.monthTitle(month)}`, `
+      <form id="rent-form" class="sheet-body" novalidate>
+        <p class="lead"><b>${L.formatMoney(L.rentFor(data.rent, month))}</b></p>
+        <p class="hint">${paid ? `Оплата отмечена: ${L.shortDate(paid)} ${paid.slice(0, 4)}.` : 'Оплата за этот месяц ещё не отмечена.'}</p>
+        <label>Дата оплаты<input type="date" name="date" value="${esc(paid || today())}"></label>
+        <button type="submit" class="btn primary block">${paid ? 'Сохранить дату' : 'Отметить оплату'}</button>
+        ${paid ? `<button type="button" class="btn danger block" data-act="rent-unpaid" data-month="${month}">Снять отметку</button>` : ''}
+      </form>`);
+    const form = $('#rent-form');
+    form.addEventListener('submit', async e => {
+      e.preventDefault();
+      const date = field(form, 'date').value;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return toast('Укажите дату оплаты');
+      data.rentPaid = { ...(data.rentPaid || {}), [month]: date };
+      if (!(await save())) return;
+      closeSheet();
+      render();
+      toast(`Аренда за ${L.MONTHS[Number(month.slice(5)) - 1].toLowerCase()} отмечена`);
+    });
+  });
 }
 
 function cloudPairedHtml() {
@@ -1623,7 +1717,7 @@ function showCloudStatus() {
 }
 
 function durationHint(duration) {
-  return `Например, клиент записан на 12:00 — следующему приложение предложит время не раньше ${L.shortTime(L.fromMinutes(12 * 60 + duration))}.`;
+  return `Время каждой услуги указано в «Прайсе». После записи время освобождается по её услугам: например, после снятия маникюра (20 мин) следующую запись можно поставить через полчаса. Если у услуги время не указано, считается ${L.formatDuration(duration)}.`;
 }
 
 function clientLink() {
@@ -1680,7 +1774,7 @@ async function gunzip(bytes) {
 }
 
 // Отпечаток данных без даты выгрузки: без изменений копию заново не отправляем.
-const dataPrint = d => sha256(JSON.stringify([d.appointments, d.expenses, d.prices, d.rent, d.settings, d.blocks, d.clients]));
+const dataPrint = d => sha256(JSON.stringify([d.appointments, d.expenses, d.prices, d.rent, d.settings, d.blocks, d.clients, d.rentPaid]));
 
 let syncTimer = null, syncing = false, syncAgain = false;
 
@@ -1819,6 +1913,7 @@ async function applyCloudBackup(copy) {
     settings: copy.settings,
     blocks: copy.blocks,
     clients: copy.clients,
+    rentPaid: copy.rentPaid,
     lastBackup: data.lastBackup,
   };
   await dbSet('data', data);
@@ -2019,6 +2114,7 @@ async function restoreBackup(file) {
     settings: copy.settings,
     blocks: copy.blocks,
     clients: copy.clients,
+    rentPaid: copy.rentPaid,
     lastBackup: copy.exportedAt,
   };
   if (!(await save())) return;
@@ -2194,7 +2290,7 @@ const actions = {
     toast('Расход удалён');
   },
   'price-add': async () => {
-    data.prices.push({ id: uid(), name: '', price: 0 });
+    data.prices.push({ id: uid(), name: '', price: 0, duration: 0 });
     await save();
     render();
     const inputs = view.querySelectorAll('[data-change="price-name"]');
@@ -2235,6 +2331,18 @@ const actions = {
   'send-backup': () => sendBackup(),
   'goto': el => { ui.tab = el.dataset.to; ui.settingsPage = el.dataset.page || null; render(); scrollTo(0, 0); },
   'settings-page': el => { ui.settingsPage = el.dataset.page || null; render(); scrollTo(0, 0); },
+  'rent-year': el => changeRentYear(Number(el.dataset.delta)),
+  'rent-month': el => openRentMonth(el.dataset.month),
+  'rent-unpaid': async el => {
+    if (!confirm('Снять отметку об оплате аренды за этот месяц?')) return;
+    const rest = { ...(data.rentPaid || {}) };
+    delete rest[el.dataset.month];
+    data.rentPaid = rest;
+    if (!(await save())) return;
+    closeSheet();
+    render();
+    toast('Отметка снята');
+  },
   'install': async () => {
     if (!installEvent) return;
     installEvent.prompt();
@@ -2265,6 +2373,9 @@ async function onChange(el) {
       break;
     case 'price':
       if (p) { p.price = L.toMoney(el.value); if (await save()) toast('Прайс сохранён'); }
+      break;
+    case 'price-duration':
+      if (p) { p.duration = L.toDuration(el.value); if (await save()) toast('Прайс сохранён'); }
       break;
     case 'rent':
       data.rent = L.setRent(data.rent, L.monthOf(today()), L.toMoney(el.value));
@@ -2392,6 +2503,13 @@ async function start() {
     delete a.service;
     migrated = true;
   }
+  // 1.8.0: в прайс добавляются услуги мастера с длительностью (цены прежних остаются).
+  // Если у какой-то услуги длительность уже есть — прайс уже обновлён (например, из копии).
+  if (stored && !pref('prices18') && !data.prices.some(p => p.duration > 0)) {
+    data.prices = L.mergePrices(data.prices, L.DEFAULT_SERVICES, uid);
+    migrated = true;
+  }
+  pref('prices18', '1');
   if (stored && !pref('plumDefault')) {
     if (data.settings.theme === 'rose') {
       data.settings.theme = 'plum';

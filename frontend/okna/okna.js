@@ -81,9 +81,12 @@ function render() {
   appbar.innerHTML = `<h1>${esc(name)} · запись</h1>`;
 
   const clock = L.masterClock(s.tzOffset || 0);
+  // Время свободно, если в него помещается хотя бы самая короткая услуга;
+  // подходят ли выбранные услуги, форма проверит после выбора.
+  const need = L.shortestService(s.services, L.scheduleSettings(s));
   const days = (s.days || []).filter(d => d.date >= clock.date).map(d => ({
     ...d,
-    times: d.off ? [] : (d.times || []).filter(t => d.date > clock.date || L.toMinutes(t) > clock.minutes),
+    times: L.scheduleTimes(s, d, need, d.date === clock.date ? clock.minutes : -1),
   })).filter(d => d.date > clock.date || d.off || d.times.length); // сегодня без времени — не показываем
   if (!days.length) {
     view.innerHTML = '<div class="empty"><p>Свободное время скоро появится. Загляните позже.</p></div>';
@@ -162,6 +165,7 @@ function openForm(date, time) {
         </div>
       </fieldset>
       <div class="summary" id="total" hidden></div>
+      <p id="fit-warn" class="warn-text" hidden></p>
       <label>Комментарий (необязательно)<input name="comment" enterkeyhint="done" maxlength="300" placeholder="Дизайн, длина, пожелания"></label>
       <input name="website" class="trap" tabindex="-1" autocomplete="off" aria-hidden="true">
       <p id="form-error" class="warn-text" hidden></p>
@@ -174,14 +178,29 @@ function openForm(date, time) {
 
   const form = $('#request-form');
   const chosen = () => [...form.querySelectorAll('.chip.on')].map(c => c.dataset.service);
+  // Сколько займут услуги и успеют ли они до следующей записи (расписание с 1.8.0).
+  const day = (schedule.days || []).find(d => d.date === date);
+  const timed = Boolean(day && Array.isArray(day.busy));
+  const minutesOf = names => L.servicesDuration(names, schedule.services, L.scheduleSettings(schedule));
+  const fits = names => {
+    if (!timed || !names.length) return true;
+    const clock = L.masterClock(schedule.tzOffset || 0);
+    return L.scheduleTimes(schedule, day, minutesOf(names), date === clock.date ? clock.minutes : -1).includes(time);
+  };
+  const tooLong = `На ${L.shortTime(time)} эти услуги не поместятся — до следующей записи не хватит времени. Выберите время раньше или меньше услуг.`;
   form.addEventListener('click', e => {
     const chip = e.target.closest('.chip[data-service]');
     if (!chip) return;
     chip.classList.toggle('on');
+    const names = chosen();
     const sum = [...form.querySelectorAll('.chip.on')].reduce((t, c) => t + Number(c.dataset.price), 0);
+    const minutes = timed && names.length ? minutesOf(names) : 0;
     const box = $('#total');
-    box.hidden = !sum;
-    box.innerHTML = `<span>Примерная стоимость</span><b>${L.formatMoney(sum)}</b>`;
+    box.hidden = !sum && !minutes;
+    box.innerHTML = `<span>${sum ? 'Примерная стоимость' : 'Время'}${minutes ? `<small>займёт около ${L.formatDuration(minutes)}</small>` : ''}</span><b>${sum ? L.formatMoney(sum) : ''}</b>`;
+    const warn = $('#fit-warn');
+    warn.hidden = fits(names);
+    warn.textContent = tooLong;
   });
   form.addEventListener('submit', async e => {
     e.preventDefault();
@@ -190,6 +209,7 @@ function openForm(date, time) {
     const error = !body.name ? 'Укажите имя'
       : L.phoneFieldDigits(body.phone).length < 10 ? 'Укажите номер телефона полностью'
       : !body.services.length ? 'Выберите вид работы'
+      : !fits(body.services) ? tooLong
       : '';
     if (error) return showError(error);
     const button = form.querySelector('button[type=submit]');

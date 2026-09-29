@@ -8,12 +8,27 @@ export const MONTHS_GEN = ['января', 'февраля', 'марта', 'ап
 export const WEEKDAYS = ['Воскресенье', 'Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота'];
 export const WEEKDAYS_SHORT = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
 
-// Стартовый прайс без цен: цены Арай вносит сама в «Настройках».
-export const DEFAULT_SERVICES = ['Наращивание', 'Маникюр', 'Снятие маникюра', 'Педикюр', 'Маникюр+Педикюр'];
+// Прайс мастера (список от 29.09.2026): услуга и сколько она длится, минут.
+// Цен здесь нет — их вносит Арай в «Настройках».
+export const DEFAULT_SERVICES = [
+  ['Снятие маникюра', 20],
+  ['Снятие+Маникюр', 60],
+  ['Маникюр с укреплением', 90],
+  ['Наращивание', 150],
+  ['Снятие педикюра', 20],
+  ['Педикюр', 60],
+  ['Педикюр с покрытием', 90],
+  ['Педикюр со стопой', 90],
+  ['Маникюр+Педикюр', 90],
+  ['Маникюр с укреплением + Педикюр с покрытием', 150],
+  ['Наращивание+Педикюр с покрытием', 210],
+  ['Наращивание+Педикюр со стопой', 240],
+  ['Маникюр+Педикюр со стопой', 210],
+];
 export const DEFAULT_RENT = 70000;
 
-// Рабочее время: запись можно начать с dayStart до lastStart включительно,
-// между началами записей — не меньше duration минут (наращивание — 2 ч 30 мин).
+// Рабочее время: запись можно начать с dayStart до lastStart включительно.
+// duration — сколько длится услуга, у которой в прайсе не указана длительность.
 export const DEFAULT_SETTINGS = { dayStart: '09:00', lastStart: '20:00', duration: 150, clientName: 'Арай', whatsapp: '', theme: 'plum' };
 // Темы оформления: id → название в «Настройках». Цвета — в style.css.
 export const THEMES = { rose: 'Розовая', plum: 'Пурпурная', lavender: 'Фиолетовая' };
@@ -204,25 +219,63 @@ export function blockFor(blocks, date) {
   return (blocks || []).find(b => b.from <= date && date <= b.to) || null;
 }
 
-function busyStarts(appointments, date, excludeId) {
-  return appointments.filter(a => a.date === date && a.status !== 'cancelled' && a.time && a.id !== excludeId);
+// ---------- Длительность услуг ----------
+
+// Сколько минут длится услуга по прайсу; без длительности — duration из настроек.
+export function serviceMinutes(name, prices, settings) {
+  const p = (prices || []).find(x => x.name === name);
+  return p && p.duration > 0 ? p.duration : settings.duration;
 }
 
-// Записи, которые мешают начать новую в time: между началами меньше duration.
-export function conflicts(appointments, date, time, duration, excludeId) {
-  const t = toMinutes(time);
-  return busyStarts(appointments, date, excludeId).filter(a => Math.abs(toMinutes(a.time) - t) < duration);
+// Сколько займёт запись: сумма её услуг. Без услуг — duration из настроек.
+export function servicesDuration(services, prices, settings) {
+  const list = (services || []).filter(Boolean);
+  return list.length ? list.reduce((sum, name) => sum + serviceMinutes(name, prices, settings), 0) : settings.duration;
 }
 
-// Свободное время начала записи в этот день, с шагом SLOT_STEP.
-// after — минуты: время не позже него не предлагается (для сегодняшнего дня).
-export function freeTimes(appointments, date, settings, after = -1, excludeId) {
-  const busy = busyStarts(appointments, date, excludeId).map(a => toMinutes(a.time));
+// Самая короткая услуга прайса. Пока услуги не выбраны, время свободно,
+// если в него помещается хотя бы она.
+export function shortestService(prices, settings) {
+  const list = (prices || []).filter(p => p.name && p.name.trim()).map(p => (p.duration > 0 ? p.duration : settings.duration));
+  return list.length ? Math.min(...list) : settings.duration;
+}
+
+// ---------- Свободное время ----------
+
+const activeOn = (items, date, excludeId) => items.filter(a => a.date === date && a.status !== 'cancelled' && a.time && a.id !== excludeId);
+
+// Занятое время дня: [начало, конец) в минутах — записи (кроме отменённых) и заявки.
+// Конец — по услугам записи: после снятия маникюра время освобождается через 20 минут.
+export function busyIntervals(items, date, prices, settings, excludeId) {
+  return activeOn(items, date, excludeId).map(a => {
+    const start = toMinutes(a.time);
+    return [start, start + servicesDuration(servicesOf(a), prices, settings)];
+  }).sort((x, y) => x[0] - y[0]);
+}
+
+// Свободные начала записи с шагом SLOT_STEP: не внутри занятого времени, и запись
+// длиной need успевает закончиться до следующей. after — минуты: не позже него не предлагаем.
+export function freeStarts(busy, settings, need, after = -1) {
   const out = [];
   for (let s = toMinutes(settings.dayStart); s <= toMinutes(settings.lastStart); s += SLOT_STEP) {
-    if (s > after && busy.every(b => Math.abs(b - s) >= settings.duration)) out.push(fromMinutes(s));
+    if (s > after && busy.every(([b, e]) => s >= e || s + need <= b)) out.push(fromMinutes(s));
   }
   return out;
+}
+
+// Свободное время дня по записям (и заявкам) — для приложения мастера.
+// need — сколько длится новая запись (по умолчанию duration из настроек).
+export function freeTimes(items, date, settings, after = -1, excludeId, { prices = [], need = settings.duration } = {}) {
+  return freeStarts(busyIntervals(items, date, prices, settings, excludeId), settings, need, after);
+}
+
+// Записи, с которыми пересечётся новая запись в time длиной need.
+export function conflicts(items, date, time, need, excludeId, { prices = [], settings = DEFAULT_SETTINGS } = {}) {
+  const start = toMinutes(time);
+  return activeOn(items, date, excludeId).filter(a => {
+    const b = toMinutes(a.time);
+    return start < b + servicesDuration(servicesOf(a), prices, settings) && b < start + need;
+  });
 }
 
 // ['09:00', '09:30', '14:30'] → [['09:00', '09:30'], ['14:30', '14:30']]
@@ -241,27 +294,49 @@ export function formatRanges(ranges) {
   return ranges.map(([a, b]) => (a === b ? shortTime(a) : `${shortTime(a)}–${shortTime(b)}`)).join(', ');
 }
 
-// Что видят клиенты: свободное время на days дней вперёд, без имён и телефонов.
-// Прошедшее время сегодняшнего дня страница клиентов отсекает сама.
+// Что видят клиенты: занятое время на days дней вперёд (без имён и телефонов),
+// рабочие часы и услуги с ценами и длительностью. Свободное время страница клиентов
+// и сервер считают сами — под выбранные услуги. Прошедшее время сегодня отсекается там же.
 export function buildSchedule(data, now = new Date(), days = HORIZON_DAYS) {
   const s = { ...DEFAULT_SETTINGS, ...data.settings };
+  const prices = data.prices || [];
   const first = ymd(now);
   const list = [];
   for (let i = 0; i < days; i++) {
     const date = addDays(first, i);
-    list.push(blockFor(data.blocks, date) ? { date, off: true } : { date, times: freeTimes(data.appointments, date, s) });
+    list.push(blockFor(data.blocks, date) ? { date, off: true } : { date, busy: busyIntervals(data.appointments, date, prices, s) });
   }
   return {
     app: BACKUP_APP,
     kind: 'okna',
+    v: 2,
     name: s.clientName,
     whatsapp: phoneDigits(s.whatsapp),
+    dayStart: s.dayStart,
+    lastStart: s.lastStart,
     duration: s.duration,
     tzOffset: now.getTimezoneOffset(),
-    services: (data.prices || []).filter(p => p.name && p.name.trim()).map(p => ({ name: p.name.trim(), price: p.price })),
+    services: prices.filter(p => p.name && p.name.trim()).map(p => ({ name: p.name.trim(), price: p.price, duration: p.duration > 0 ? p.duration : 0 })),
     updated: now.toISOString(),
     days: list,
   };
+}
+
+// Рабочие часы из расписания.
+export function scheduleSettings(schedule) {
+  return {
+    dayStart: TIME_RE.test(schedule.dayStart) ? schedule.dayStart : DEFAULT_SETTINGS.dayStart,
+    lastStart: TIME_RE.test(schedule.lastStart) ? schedule.lastStart : DEFAULT_SETTINGS.lastStart,
+    duration: schedule.duration > 0 ? schedule.duration : DEFAULT_SETTINGS.duration,
+  };
+}
+
+// Свободные начала в день расписания для записи длиной need.
+// Расписание прежнего вида (до 1.8.0) — готовый список времени.
+export function scheduleTimes(schedule, day, need, after = -1) {
+  if (!day || day.off) return [];
+  if (!Array.isArray(day.busy)) return (day.times || []).filter(t => toMinutes(t) > after);
+  return freeStarts(day.busy, scheduleSettings(schedule), need, after);
 }
 
 // «Сейчас» по часам мастера: tzOffset — как getTimezoneOffset() на её телефоне.
@@ -276,15 +351,25 @@ export function masterClock(tzOffset, nowMs = Date.now()) {
 // ---------- Заявки клиентов ----------
 
 // Заявки, которые ждут подтверждения, занимают время так же, как записи.
+// holds — { date, time, services }.
 export function applyHolds(schedule, holds) {
   const byDate = {};
-  for (const h of holds) (byDate[h.date] = byDate[h.date] || []).push(toMinutes(h.time));
+  for (const h of holds) (byDate[h.date] = byDate[h.date] || []).push(h);
+  const settings = scheduleSettings(schedule);
   return {
     ...schedule,
-    days: schedule.days.map(d => (d.off || !byDate[d.date] ? d : {
-      ...d,
-      times: d.times.filter(t => byDate[d.date].every(h => Math.abs(h - toMinutes(t)) >= schedule.duration)),
-    })),
+    days: schedule.days.map(d => {
+      if (d.off || !byDate[d.date]) return d;
+      if (!Array.isArray(d.busy)) {
+        // Расписание прежнего вида: между началами — duration.
+        return { ...d, times: d.times.filter(t => byDate[d.date].every(h => Math.abs(toMinutes(h.time) - toMinutes(t)) >= settings.duration)) };
+      }
+      const held = byDate[d.date].map(h => {
+        const start = toMinutes(h.time);
+        return [start, start + servicesDuration(h.services, schedule.services, settings)];
+      });
+      return { ...d, busy: [...d.busy, ...held].sort((x, y) => x[0] - y[0]) };
+    }),
   };
 }
 
@@ -304,9 +389,17 @@ export function validateRequest(body, schedule, clock) {
   if (!DATE_RE.test(b.date) || !TIME_RE.test(b.time)) return fail('Выберите день и время');
   const day = (schedule.days || []).find(d => d.date === b.date);
   const past = b.date < clock.date || (b.date === clock.date && toMinutes(b.time) <= clock.minutes);
-  if (!day || day.off || past || !(day.times || []).includes(b.time)) return fail('Это время уже занято — выберите другое', 409);
+  const settings = scheduleSettings(schedule);
+  const v2 = Boolean(day && Array.isArray(day.busy));
+  const duration = v2 ? servicesDuration(services, schedule.services, settings) : settings.duration;
+  const after = b.date === clock.date ? clock.minutes : -1;
+  if (!day || day.off || past || !scheduleTimes(schedule, day, duration, after).includes(b.time)) {
+    // Время свободно, но выбранные услуги не успеют закончиться до следующей записи.
+    const fitsShort = v2 && !past && scheduleTimes(schedule, day, shortestService(schedule.services, settings), after).includes(b.time);
+    return fail(fitsShort ? 'На это время выбранные услуги не поместятся — выберите время раньше или меньше услуг' : 'Это время уже занято — выберите другое', 409);
+  }
   const comment = String(b.comment || '').trim().slice(0, 300);
-  return { ok: true, request: { date: b.date, time: b.time, name, phone: formatPhone(digits), services, comment } };
+  return { ok: true, request: { date: b.date, time: b.time, name, phone: formatPhone(digits), services, comment, duration } };
 }
 
 // ---------- Личная ссылка клиента на запись ----------
@@ -467,6 +560,21 @@ export function pastClients(appointments, saved = []) {
   return out;
 }
 
+// Добавляет в прайс услуги из списка [название, минуты]: совпавшие по названию
+// получают длительность (цена и название остаются), новые — с ценой 0.
+// Порядок — как в списке, прежние услуги, которых в списке нет, — после.
+export function mergePrices(prices, list, makeId) {
+  const key = name => norm(name).replace(/\s*\+\s*/g, '+');
+  const rest = [...prices];
+  const merged = list.map(([name, duration]) => {
+    const i = rest.findIndex(p => key(p.name) === key(name));
+    if (i < 0) return { id: makeId(), name, price: 0, duration };
+    const [p] = rest.splice(i, 1);
+    return { ...p, duration: p.duration > 0 ? p.duration : duration };
+  });
+  return [...merged, ...rest];
+}
+
 // Такой клиент уже есть? По номеру, а если номера нет — по имени.
 export function findTwin(clients, name, phone) {
   const pd = phoneDigits(phone);
@@ -517,6 +625,7 @@ export function makeBackup(data, now = new Date()) {
     settings: data.settings,
     blocks: data.blocks,
     clients: data.clients || [],
+    rentPaid: data.rentPaid || {},
   };
 }
 
@@ -549,8 +658,12 @@ export function readBackup(text) {
     id: str(e.id) || 'e' + i, date: e.date, amount: toMoney(e.amount), note: str(e.note),
   }));
   const prices = list(obj.prices).filter(p => p && p.name).map((p, i) => ({
-    id: str(p.id) || 'p' + i, name: str(p.name), price: toMoney(p.price),
+    id: str(p.id) || 'p' + i, name: str(p.name), price: toMoney(p.price), duration: toDuration(p.duration),
   }));
+  const rentPaid = {};
+  for (const [month, date] of Object.entries(obj.rentPaid && typeof obj.rentPaid === 'object' ? obj.rentPaid : {})) {
+    if (/^\d{4}-\d{2}$/.test(month) && DATE_RE.test(date)) rentPaid[month] = date;
+  }
   const rent = list(obj.rent).filter(r => r && /^\d{4}-\d{2}$/.test(r.from)).map(r => ({
     from: r.from, amount: toMoney(r.amount),
   }));
@@ -571,11 +684,18 @@ export function readBackup(text) {
     settings: readSettings(obj.settings),
     blocks,
     clients,
+    rentPaid,
     exportedAt: obj.exportedAt || null,
   };
 }
 
 const TIME_RE = /^\d{2}:\d{2}$/;
+
+// Длительность услуги в минутах: 5–600, иначе 0 — «не указана».
+export function toDuration(value) {
+  const m = Math.round(Number(value));
+  return m >= 5 && m <= 600 ? m : 0;
+}
 
 function readSettings(src) {
   const s = src && typeof src === 'object' ? src : {};
