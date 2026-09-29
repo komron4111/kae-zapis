@@ -8,7 +8,7 @@ import { API_URL } from './config.js';
 import { phoneMask } from './phone-input.js';
 
 const APP_NAME = 'Nailapp';
-const APP_VERSION = '1.9.0';
+const APP_VERSION = '1.10.0';
 
 phoneMask();
 
@@ -24,6 +24,8 @@ const nowMinutes = () => { const d = new Date(); return d.getHours() * 60 + d.ge
 const RECORD_FORMS = ['запись', 'записи', 'записей'];
 const VISIT_FORMS = ['оплаченная запись', 'оплаченные записи', 'оплаченных записей'];
 const REQUEST_FORMS = ['заявка', 'заявки', 'заявок'];
+const DAY_FORMS = ['день', 'дня', 'дней'];
+const YEAR_FORMS = ['год', 'года', 'лет'];
 
 const ICONS = {
   calendar: '<rect x="3" y="4.5" width="18" height="16.5" rx="3"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4"/>',
@@ -46,6 +48,10 @@ const ICONS = {
   cloud: '<path d="M7 18.5a4.5 4.5 0 0 1-.6-9 6 6 0 0 1 11.6 1.6 3.8 3.8 0 0 1-.5 7.4z"/>',
   check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
   moon: '<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/>',
+  instagram: '<rect x="3.5" y="3.5" width="17" height="17" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.2" cy="6.8" r=".4"/>',
+  gift: '<rect x="3.5" y="9" width="17" height="11.5" rx="1.5"/><path d="M3.5 13h17M12 9v11.5M12 9c-1.2-3.2-5-4.2-5-1.8 0 1.3 1.8 1.8 5 1.8zM12 9c1.2-3.2 5-4.2 5-1.8 0 1.3-1.8 1.8-5 1.8z"/>',
+  pin: '<path d="M12 21s-6.5-5.8-6.5-11a6.5 6.5 0 0 1 13 0c0 5.2-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/>',
+  edit: '<path d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17z"/><path d="M13.5 8.5l3 3"/>',
   tag: '<path d="M3.5 12.3V4.5a1 1 0 0 1 1-1h7.8l8.2 8.2a1 1 0 0 1 0 1.4l-7.8 7.8a1 1 0 0 1-1.4 0z"/><circle cx="8" cy="8" r="1.5"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/>',
   home: '<path d="M4 10.5L12 4l8 6.5V20h-5v-6H9v6H4z"/>',
@@ -145,6 +151,15 @@ function freshData() {
     rentPaid: {}, // оплата аренды: { 'YYYY-MM': 'YYYY-MM-DD' }
     lastBackup: null,
   };
+}
+
+// Прайс мастера (с 1.8.0): если ни у одной услуги нет длительности, прайс старый —
+// в том числе только что восстановленный из копии. Приводим его к услугам мастера
+// (цены совпавших услуг остаются, пустые прежние убираются).
+function ensurePriceList() {
+  if (data.prices.some(p => p.duration > 0)) return false;
+  data.prices = L.mergePrices(data.prices, L.DEFAULT_SERVICES, uid);
+  return true;
 }
 
 function freshCloud() {
@@ -970,6 +985,7 @@ function drawClient(key) {
         <a class="btn small secondary" href="tel:+${d}">${icon('phone')} Позвонить</a>
         <a class="btn small secondary" href="https://wa.me/${d}" target="_blank" rel="noopener">${icon('chat')} WhatsApp</a>
       </div>` : ''}
+      ${profileHtml(c, t)}
       <button class="btn primary block" data-act="new-appt-for" data-name="${esc(c.name)}" data-phone="${esc(c.phone)}">${icon('plus')} Новая запись</button>
       <h3 class="section-title">Записи · ${visits.length}</h3>
       ${visits.length ? visits.map(a => visitRow(a, t)).join('') : '<p class="hint">Записей пока нет.</p>'}
@@ -978,14 +994,83 @@ function drawClient(key) {
   loadPhotos(sheet);
 }
 
-// Новый клиент без записи: имя и телефон. Он появится в списке клиентов
-// и в «Выбрать клиента» при записи.
+// О клиенте: Instagram, день рождения, откуда пришёл. Хранится в data.clients
+// (у клиента из записей запись там появляется, когда эти данные впервые вносят).
+function profileHtml(c, t) {
+  const rows = [];
+  if (c.instagram) {
+    rows.push(`<a class="profile-row" href="https://instagram.com/${esc(c.instagram)}" target="_blank" rel="noopener">${icon('instagram')}<span>@${esc(c.instagram)}</span></a>`);
+  }
+  if (c.birthday) {
+    const age = L.ageOn(c.birthday, t), soon = L.daysToBirthday(c.birthday, t);
+    const when = soon === 0 ? ' · сегодня день рождения!' : soon <= 14 ? ` · через ${soon} ${L.plural(soon, DAY_FORMS)}` : '';
+    rows.push(`<div class="profile-row">${icon('gift')}<span>${L.shortDate(c.birthday)} ${c.birthday.slice(0, 4)}${age == null ? '' : ` · ${age} ${L.plural(age, YEAR_FORMS)}`}${when}</span></div>`);
+  }
+  if (c.source) rows.push(`<div class="profile-row">${icon('pin')}<span>Откуда: ${esc(c.source)}</span></div>`);
+  return `
+    <section class="profile">
+      ${rows.join('') || '<p class="hint">Instagram, день рождения и откуда пришёл клиент — пока не указаны.</p>'}
+      <button class="btn small secondary" data-act="edit-client" data-key="${esc(c.key)}">${icon(rows.length ? 'edit' : 'plus')} ${rows.length ? 'Изменить' : 'Добавить'}</button>
+    </section>`;
+}
+
+function profileFieldsHtml(c = {}) {
+  return `
+    <label>Instagram<input name="instagram" value="${esc(c.instagram ? '@' + c.instagram : '')}" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="done" placeholder="@ник или ссылка на профиль"></label>
+    <label>День рождения<input type="date" name="birthday" value="${esc(c.birthday || '')}"></label>
+    <label>Откуда пришёл клиент<input name="source" value="${esc(c.source || '')}" enterkeyhint="done" placeholder="Например, Instagram или по рекомендации"></label>
+    <div class="chips source-chips">${L.CLIENT_SOURCES.map(x => `<button type="button" class="chip small" data-act="pick-source" data-value="${esc(x)}">${esc(x)}</button>`).join('')}</div>`;
+}
+
+// Поля карточки из формы; null — Instagram вписан, но на ник не похож.
+function readProfile(form) {
+  const instagram = field(form, 'instagram').value.trim();
+  const profile = L.clientProfile({ instagram, birthday: field(form, 'birthday').value, source: field(form, 'source').value.replace(/:\s*$/, '') });
+  return instagram && !profile.instagram ? null : profile;
+}
+
+function openClientProfile(key) {
+  pushSheet(() => {
+    const c = L.pastClients(data.appointments, data.clients).find(x => x.key === key);
+    if (!c) {
+      sheetHtml('Клиент', '<div class="sheet-body"><p class="empty">Клиент не найден</p></div>');
+      return;
+    }
+    sheetHtml(c.name || L.formatPhone(c.phone), `
+      <form id="profile-form" class="sheet-body" novalidate autocomplete="off">
+        ${profileFieldsHtml(c)}
+        <button type="submit" class="btn primary block">Сохранить</button>
+      </form>`);
+    const form = $('#profile-form');
+    form.addEventListener('submit', e => {
+      e.preventDefault();
+      saveClientProfile(form, c);
+    });
+  });
+}
+
+async function saveClientProfile(form, c) {
+  const profile = readProfile(form);
+  if (!profile) return toast('Instagram: впишите @ник или ссылку на профиль');
+  const list = data.clients || [];
+  const saved = c.id ? list.find(x => x.id === c.id) : null;
+  const base = saved || { id: uid(), name: c.name, phone: c.phone, created: new Date().toISOString() };
+  const entry = { id: base.id, name: base.name, phone: base.phone, created: base.created, ...profile };
+  data.clients = saved ? list.map(x => (x.id === saved.id ? entry : x)) : [...list, entry];
+  if (!(await save())) return;
+  closeSheet(); // назад в карточку — она нарисуется заново
+  toast('Данные клиента сохранены');
+}
+
+// Новый клиент без записи: имя, телефон и, если известно, Instagram, день рождения,
+// откуда пришёл. Он появится в списке клиентов и в «Выбрать клиента» при записи.
 function openNewClient(prefill = {}) {
   pushSheet(() => {
     sheetHtml('Новый клиент', `
       <form id="client-form" class="sheet-body" novalidate autocomplete="off">
         <label>Имя клиента<input name="name" value="${esc(prefill.name)}" autocapitalize="words" enterkeyhint="done" placeholder="Например, Айгуль"></label>
         <label>Телефон<input name="phone" type="tel" value="${esc(L.phoneFieldValue(prefill.phone))}" enterkeyhint="done"></label>
+        ${profileFieldsHtml()}
         <p class="hint form-note">Клиент появится в списке и в «Выбрать клиента», когда будете делать запись.</p>
         <button type="submit" class="btn primary block">Сохранить клиента</button>
       </form>`);
@@ -1002,9 +1087,11 @@ async function saveClient(form) {
   const phone = L.phoneFromField(field(form, 'phone').value);
   if (!name && !phone) return toast('Укажите имя или телефон клиента');
   if (phone && L.phoneFieldDigits(phone).length < 10) return toast('Номер телефона неполный');
+  const profile = readProfile(form);
+  if (!profile) return toast('Instagram: впишите @ник или ссылку на профиль');
   const twin = L.findTwin(L.pastClients(data.appointments, data.clients), name, phone);
   if (twin) return toast(`Такой клиент уже есть: ${twin.name || L.formatPhone(twin.phone)}`);
-  data.clients = [...(data.clients || []), { id: uid(), name, phone, created: new Date().toISOString() }];
+  data.clients = [...(data.clients || []), { id: uid(), name, phone, created: new Date().toISOString(), ...profile }];
   if (!(await save())) return;
   closeSheet();
   ui.clientQuery = '';
@@ -1964,6 +2051,7 @@ async function applyCloudBackup(copy) {
     rentPaid: copy.rentPaid,
     lastBackup: data.lastBackup,
   };
+  ensurePriceList();
   await dbSet('data', data);
   cloud.backupPrint = await dataPrint(data);
   cloud.uploaded = ids;
@@ -2165,6 +2253,7 @@ async function restoreBackup(file) {
     rentPaid: copy.rentPaid,
     lastBackup: copy.exportedAt,
   };
+  ensurePriceList();
   if (!(await save())) return;
   await cleanupPhotos();
   render();
@@ -2253,6 +2342,17 @@ const actions = {
   'new-client': el => {
     const q = el.dataset.q || '';
     openNewClient(q.replace(/\D/g, '').length >= 3 ? { phone: q } : { name: q });
+  },
+  'edit-client': el => openClientProfile(el.dataset.key),
+  // Подсказка «откуда пришёл»: для рекомендации сразу можно дописать, кто посоветовал.
+  'pick-source': el => {
+    const input = field(el.closest('form'), 'source');
+    const recommended = el.dataset.value === 'По рекомендации';
+    input.value = recommended ? 'По рекомендации: ' : el.dataset.value;
+    if (recommended) {
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    }
   },
   'delete-client': async el => {
     if (!confirm('Удалить клиента из списка?')) return;
@@ -2551,13 +2651,7 @@ async function start() {
     delete a.service;
     migrated = true;
   }
-  // 1.8.0: в прайс добавляются услуги мастера с длительностью (цены прежних остаются).
-  // Если у какой-то услуги длительность уже есть — прайс уже обновлён (например, из копии).
-  if (stored && !pref('prices18') && !data.prices.some(p => p.duration > 0)) {
-    data.prices = L.mergePrices(data.prices, L.DEFAULT_SERVICES, uid);
-    migrated = true;
-  }
-  pref('prices18', '1');
+  if (ensurePriceList()) migrated = true;
   if (stored && !pref('plumDefault')) {
     if (data.settings.theme === 'rose') {
       data.settings.theme = 'plum';

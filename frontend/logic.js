@@ -516,8 +516,9 @@ export function phoneFromField(value) {
 }
 
 // ---------- Сохранённые клиенты ----------
-// Список клиентов собирается из записей. Отдельно хранятся только клиенты,
-// которых мастер добавила вручную, без записи: data.clients — {id, name, phone, created}.
+// Список клиентов собирается из записей. Отдельно хранятся клиенты, которых мастер
+// добавила вручную, и данные карточки (Instagram, день рождения, откуда пришёл):
+// data.clients — {id, name, phone, created, instagram?, birthday?, source?}.
 
 const norm = s => String(s || '').toLowerCase().replace(/ё/g, 'е').trim();
 
@@ -539,9 +540,10 @@ export function pastClients(appointments, saved = []) {
   for (const s of saved) {
     const key = phoneDigits(s.phone) || norm(s.name);
     if (!key) continue;
-    const c = byKey.get(key);
-    if (c) c.id = s.id;
-    else byKey.set(key, { key, name: s.name, phone: s.phone, visits: 0, last: '', id: s.id });
+    let c = byKey.get(key);
+    if (!c) byKey.set(key, c = { key, name: s.name, phone: s.phone, visits: 0, last: '' });
+    c.id = s.id;
+    for (const f of PROFILE_FIELDS) if (s[f]) c[f] = s[f];
   }
   // Записи без номера с тем же именем, что у клиента с номером, — это он же.
   const byName = new Map();
@@ -556,13 +558,15 @@ export function pastClients(appointments, saved = []) {
     owner.visits += c.visits;
     if (c.last > owner.last) owner.last = c.last;
     if (c.id && !owner.id) owner.id = c.id;
+    for (const f of PROFILE_FIELDS) if (c[f] && !owner[f]) owner[f] = c[f];
   }
   return out;
 }
 
-// Добавляет в прайс услуги из списка [название, минуты]: совпавшие по названию
+// Приводит прайс к списку услуг мастера [название, минуты]: совпавшие по названию
 // получают длительность (цена и название остаются), новые — с ценой 0.
-// Порядок — как в списке, прежние услуги, которых в списке нет, — после.
+// Порядок — как в списке. Прежние услуги не из списка остаются в конце, только если
+// у них есть цена или длительность; пустые (без цены и времени) убираются.
 export function mergePrices(prices, list, makeId) {
   const key = name => norm(name).replace(/\s*\+\s*/g, '+');
   const rest = [...prices];
@@ -572,7 +576,53 @@ export function mergePrices(prices, list, makeId) {
     const [p] = rest.splice(i, 1);
     return { ...p, duration: p.duration > 0 ? p.duration : duration };
   });
-  return [...merged, ...rest];
+  return [...merged, ...rest.filter(p => p.price > 0 || p.duration > 0)];
+}
+
+// ---------- Карточка клиента: Instagram, день рождения, откуда пришёл ----------
+
+// Подсказки для «Откуда пришёл клиент» (можно вписать и своё).
+export const CLIENT_SOURCES = ['Instagram', 'TikTok', '2ГИС', 'По рекомендации', 'Вывеска'];
+const PROFILE_FIELDS = ['instagram', 'birthday', 'source'];
+
+// «@aigul.nails», «https://www.instagram.com/aigul.nails/?igsh=…» → «aigul.nails».
+// Если не похоже на ник Instagram — ''.
+export function instagramName(value) {
+  let name = String(value || '').trim();
+  const link = name.match(/instagram\.com\/([^/?#\s]+)/i);
+  if (link) name = link[1];
+  name = name.replace(/^@+/, '');
+  return /^[A-Za-z0-9._]{1,30}$/.test(name) ? name.toLowerCase() : '';
+}
+
+// Сколько лет исполнилось к дате today (даты — 'YYYY-MM-DD').
+export function ageOn(birthday, today) {
+  if (!DATE_RE.test(birthday || '')) return null;
+  let age = Number(today.slice(0, 4)) - Number(birthday.slice(0, 4));
+  if (today.slice(5) < birthday.slice(5)) age--;
+  return age >= 0 && age < 120 ? age : null;
+}
+
+// Через сколько дней ближайший день рождения (0 — сегодня). 29 февраля в обычный год — 1 марта.
+export function daysToBirthday(birthday, today) {
+  if (!DATE_RE.test(birthday || '')) return null;
+  const [, bm, bd] = birthday.split('-').map(Number);
+  const [ty, tm, td] = today.split('-').map(Number);
+  const now = Date.UTC(ty, tm - 1, td);
+  let next = Date.UTC(ty, bm - 1, bd);
+  if (next < now) next = Date.UTC(ty + 1, bm - 1, bd);
+  return Math.round((next - now) / 864e5);
+}
+
+// Поля карточки клиента из копии или формы: только правильные и непустые.
+export function clientProfile(src) {
+  const out = {};
+  const instagram = instagramName(src && src.instagram);
+  if (instagram) out.instagram = instagram;
+  if (src && DATE_RE.test(src.birthday)) out.birthday = src.birthday;
+  const source = String((src && src.source) || '').trim().slice(0, 60);
+  if (source) out.source = source;
+  return out;
 }
 
 // Такой клиент уже есть? По номеру, а если номера нет — по имени.
@@ -674,7 +724,7 @@ export function readBackup(text) {
     note: str(b.note),
   }));
   const clients = list(obj.clients).filter(c => c && (str(c.name).trim() || phoneDigits(c.phone))).map((c, i) => ({
-    id: str(c.id) || 'c' + i, name: str(c.name).trim(), phone: str(c.phone), created: c.created || null,
+    id: str(c.id) || 'c' + i, name: str(c.name).trim(), phone: str(c.phone), created: c.created || null, ...clientProfile(c),
   }));
   return {
     appointments,

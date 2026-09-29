@@ -490,6 +490,41 @@ test('прайс мастера: новые услуги добавляются,
   eq(merged[merged.length - 1], { id: 'a', name: 'Маникюр', price: 8000 }); // нет в списке — в конце, как была
 });
 
+test('прайс мастера: пустые прежние услуги (без цены и времени) убираются', () => {
+  const phone = ['Наращивание', 'Маникюр', 'Снятие', 'Педикюр', 'Маникюр+Педикюр'].map((name, i) => ({ id: 'o' + i, name, price: 0 }));
+  let n = 0;
+  const merged = L.mergePrices(phone, L.DEFAULT_SERVICES, () => 'n' + n++);
+  eq(merged.map(p => p.name), L.DEFAULT_SERVICES.map(([name]) => name));
+  eq(merged.find(p => p.name === 'Наращивание').id, 'o0'); // прежняя услуга, не новая
+});
+
+// ---------- Карточка клиента (1.10.0) ----------
+
+test('Instagram: ник из @ника и из ссылки на профиль', () => {
+  eq(['@Aigul.Nails', 'https://www.instagram.com/aigul.nails/?igsh=abc', 'instagram.com/aigul_nails', 'не ник', ''].map(L.instagramName),
+    ['aigul.nails', 'aigul.nails', 'aigul_nails', '', '']);
+});
+
+test('день рождения: возраст и сколько дней осталось', () => {
+  eq([L.ageOn('1992-03-12', '2026-09-29'), L.ageOn('1992-10-01', '2026-09-29'), L.ageOn('', '2026-09-29')], [34, 33, null]);
+  eq([L.daysToBirthday('1992-10-01', '2026-09-29'), L.daysToBirthday('1992-09-29', '2026-09-29'), L.daysToBirthday('1992-09-28', '2026-09-29')], [2, 0, 364]);
+  eq(L.daysToBirthday('2000-02-29', '2027-02-27'), 2); // в обычный год — 1 марта
+});
+
+test('карточка клиента: поля переходят к клиенту из записей и сохраняются в копии', () => {
+  const list = L.pastClients([appt('2026-09-01', 'paid', 1, 0, { name: 'Айгуль', phone: '+7 701 123 45 67' })],
+    [{ id: 'm', name: 'Айгуль', phone: '87011234567', instagram: 'aigul', birthday: '1992-10-01', source: 'Instagram' }]);
+  eq([list.length, list[0].visits, list[0].id, list[0].instagram, list[0].birthday, list[0].source], [1, 1, 'm', 'aigul', '1992-10-01', 'Instagram']);
+  const copy = L.readBackup(JSON.stringify({ app: 'kae-zapis', appointments: [], clients: [
+    { id: 'm', name: 'Айгуль', phone: '+7 701 123 45 67', instagram: 'https://instagram.com/Aigul/', birthday: '1992-10-01', source: ' По рекомендации: Дана ' },
+    { id: 'k', name: 'Мира', phone: '', instagram: 'не ник', birthday: 'вчера', source: '' },
+  ] }));
+  eq(copy.clients, [
+    { id: 'm', name: 'Айгуль', phone: '+7 701 123 45 67', created: null, instagram: 'aigul', birthday: '1992-10-01', source: 'По рекомендации: Дана' },
+    { id: 'k', name: 'Мира', phone: '', created: null },
+  ]);
+});
+
 test('копия: длительность услуг и отметки об оплате аренды', () => {
   const copy = L.readBackup(JSON.stringify({
     app: 'kae-zapis',

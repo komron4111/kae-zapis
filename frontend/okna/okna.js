@@ -12,7 +12,7 @@ let API = API_URL;
 try { API = localStorage.getItem('kae:api') || API_URL; } catch (e) { /* приватный режим */ }
 
 const $ = sel => document.querySelector(sel);
-const view = $('#view'), appbar = $('#appbar'), sheet = $('#sheet');
+const view = $('#view'), sheet = $('#sheet');
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const chevron = '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>';
 const closeIcon = '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>';
@@ -78,7 +78,8 @@ function render() {
   const s = schedule;
   const name = s.name || 'Мастер';
   document.title = `Запись — ${name}`;
-  appbar.innerHTML = `<h1>${esc(name)} · запись</h1>`;
+  // Шапка — как в приложении (логотип и Nailapp, в okna/index.html), имя мастера — в заголовке.
+  const title = `<h2 class="okna-title">Запись к мастеру ${esc(name)}</h2>`;
 
   const clock = L.masterClock(s.tzOffset || 0);
   // Время свободно, если в него помещается хотя бы самая короткая услуга;
@@ -89,7 +90,7 @@ function render() {
     times: L.scheduleTimes(s, d, need, d.date === clock.date ? clock.minutes : -1),
   })).filter(d => d.date > clock.date || d.off || d.times.length); // сегодня без времени — не показываем
   if (!days.length) {
-    view.innerHTML = '<div class="empty"><p>Свободное время скоро появится. Загляните позже.</p></div>';
+    view.innerHTML = `${title}<div class="empty"><p>Свободное время скоро появится. Загляните позже.</p></div>`;
     return;
   }
 
@@ -126,6 +127,7 @@ function render() {
     : s.whatsapp ? 'Выберите день и время начала — откроется WhatsApp, чтобы записаться.' : 'Чтобы записаться, напишите мастеру.';
   const mine = myBookings().filter(b => b.date >= clock.date);
   view.innerHTML = `
+    ${title}
     ${mine.length ? `
     <section class="my-bookings">
       <h2 class="section-title">Мои записи</h2>
@@ -287,12 +289,12 @@ async function loadBooking(token) {
 function renderBooking(b) {
   const master = (b.master && b.master.name) || 'Мастер';
   document.title = `Моя запись — ${master}`;
-  appbar.innerHTML = `<h1>Моя запись · ${esc(master)}</h1>`;
   const [tone, label] = BOOKING_STATUS[b.status] || BOOKING_STATUS.pending;
   const due = Math.max((b.total || 0) - (b.prepaid || 0), 0);
   const active = b.status === 'pending' || b.status === 'confirmed';
   const whatsapp = b.master && b.master.whatsapp;
   view.innerHTML = `
+    <h2 class="okna-title">Моя запись<small>мастер ${esc(master)}</small></h2>
     <p class="status ${tone} booking-status">${label}</p>
     <section class="card booking-card${active ? '' : ' past'}">
       <p class="lead"><b>${L.dayTitle(b.date)}, ${L.shortTime(b.time)}</b></p>
@@ -316,8 +318,7 @@ async function startBooking(token) {
     return;
   }
   if (b.missing) {
-    appbar.innerHTML = '<h1>Моя запись</h1>';
-    view.innerHTML = `<div class="empty"><p>Запись не найдена. Возможно, ссылка устарела.</p><a class="btn secondary small" href="${location.pathname}">Свободное время</a></div>`;
+    view.innerHTML = `<h2 class="okna-title">Моя запись</h2><div class="empty"><p>Запись не найдена. Возможно, ссылка устарела.</p><a class="btn secondary small" href="${location.pathname}">Свободное время</a></div>`;
     return;
   }
   renderBooking(b);
