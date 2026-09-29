@@ -1,7 +1,7 @@
 // Офлайн-кэш и уведомления о заявках.
 // После любой правки файлов увеличьте VERSION — телефоны скачают
 // новую версию при следующем запуске приложения.
-const VERSION = 'v5';
+const VERSION = 'v6';
 const CACHE = `zapisi-arai-${VERSION}`;
 const FILES = [
   './',
@@ -11,8 +11,10 @@ const FILES = [
   './logic.js',
   './zip.js',
   './config.js',
+  './phone-input.js',
   './manifest.webmanifest',
   './icons/icon.svg',
+  './icons/logo-neon.png',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/icon-maskable-512.png',

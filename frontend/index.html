@@ -16,10 +16,21 @@
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
   <link rel="stylesheet" href="style.css">
+  <script>
+    // Тема и светлый/тёмный режим — до первой отрисовки, чтобы экран не мигал (см. app.js).
+    try {
+      const theme = localStorage.getItem('kae:theme'), mode = localStorage.getItem('kae:mode');
+      if (theme) document.documentElement.dataset.theme = theme;
+      if (mode) document.documentElement.dataset.mode = mode;
+    } catch (e) { /* приватный режим — цвета по умолчанию */ }
+  </script>
   <script type="module" src="app.js"></script>
 </head>
 <body>
-  <header class="appbar" id="appbar"><h1>Nailapp</h1></header>
+  <header class="appbar" id="appbar">
+    <h1 class="brand"><img src="icons/logo-neon.png" alt="" width="42" height="42">Nailapp</h1>
+    <div class="appbar-actions" id="appbar-actions"></div>
+  </header>
   <main id="view"></main>
   <button class="fab" id="fab" data-act="new-appt" aria-label="Новая запись" hidden></button>
   <nav class="tabbar" id="tabbar"></nav>

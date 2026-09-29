@@ -5,9 +5,12 @@
 import * as L from './logic.js';
 import { makeZip, readZip } from './zip.js';
 import { API_URL } from './config.js';
+import { phoneMask } from './phone-input.js';
 
 const APP_NAME = 'Nailapp';
-const APP_VERSION = '1.4.0';
+const APP_VERSION = '1.5.0';
+
+phoneMask();
 
 // ---------- Мелочи ----------
 
@@ -42,6 +45,8 @@ const ICONS = {
   bell: '<path d="M6 16v-5a6 6 0 0 1 12 0v5l2 2H4z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>',
   cloud: '<path d="M7 18.5a4.5 4.5 0 0 1-.6-9 6 6 0 0 1 11.6 1.6 3.8 3.8 0 0 1-.5 7.4z"/>',
   check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+  moon: '<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6l1.4 1.4M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4L6 18M18 6l1.4-1.4"/>',
 };
 const icon = name => `<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
 
@@ -169,18 +174,44 @@ function busyList() {
 
 // monthAnim — куда уехал календарь при смене месяца ('next' или 'prev'), для анимации.
 const ui = { tab: 'records', month: L.monthOf(today()), day: today(), finMonth: L.monthOf(today()), seenToday: today(), clientQuery: '', monthAnim: null };
-const appbar = $('#appbar'), view = $('#view'), fab = $('#fab'), sheet = $('#sheet'), viewer = $('#viewer');
+const view = $('#view'), fab = $('#fab'), sheet = $('#sheet'), viewer = $('#viewer');
 
 const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 let installEvent = null;
 
-// Вверху каждого раздела — название приложения; раздел виден по нижней панели.
+// Вверху каждого раздела — логотип и название приложения (они в index.html),
+// справа — кнопки раздела и переключатель светлого и тёмного режима.
 function setHeader(actions = '') {
-  appbar.innerHTML = `<h1>${APP_NAME}</h1>${actions}`;
+  const dark = colorMode() === 'dark';
+  $('#appbar-actions').innerHTML = `${actions}
+    <button class="hbtn round" data-act="toggle-mode" aria-label="${dark ? 'Светлый режим' : 'Тёмный режим'}">${icon(dark ? 'sun' : 'moon')}</button>`;
+}
+
+// ---------- Тема и режим ----------
+// Тема (розовая, пурпурная, фиолетовая) — в настройках: уходит в облако и копию.
+// Светлый или тёмный режим — только для этого телефона; пока его не выбрали
+// кнопкой в шапке, он как в настройках телефона. Копию темы и режима в
+// localStorage читает index.html, чтобы экран сразу открывался в своих цветах.
+
+const darkQuery = matchMedia('(prefers-color-scheme: dark)');
+const colorMode = () => document.documentElement.dataset.mode || (darkQuery.matches ? 'dark' : 'light');
+darkQuery.addEventListener('change', () => { if (data) render(); });
+
+function applyTheme() {
+  const root = document.documentElement;
+  const { theme } = settings();
+  if (root.dataset.theme !== theme) {
+    root.dataset.theme = theme;
+    pref('theme', theme);
+  }
+  // Цвет строки браузера — как у шапки.
+  const bar = getComputedStyle(root).getPropertyValue('--bar2').trim();
+  if (bar) document.querySelectorAll('meta[name="theme-color"]').forEach(m => { m.content = bar; });
 }
 
 function render() {
+  applyTheme();
   const tabs = [['records', 'calendar', 'Записи'], ['clients', 'users', 'Клиенты'], ['finance', 'chart', 'Финансы'], ['settings', 'sliders', 'Настройки']];
   $('#tabbar').innerHTML = tabs.map(([id, ic, label]) =>
     `<button data-tab="${id}"${ui.tab === id ? ' class="active" aria-current="page"' : ''}>${icon(ic)}<span>${label}</span>${id === 'records' && requests.length ? `<i class="tab-badge">${requests.length}</i>` : ''}</button>`).join('');
@@ -450,7 +481,7 @@ function drawAppt(id, prefill) {
       <div id="client-panel"></div>
       <label>Имя клиента<input name="name" value="${esc(a.name)}" autocapitalize="words" enterkeyhint="done" placeholder="Например, Айгуль"></label>
       <div class="suggest" data-for="name"></div>
-      <label>Телефон<input name="phone" type="tel" value="${esc(a.phone)}" enterkeyhint="done" placeholder="+7 700 000 00 00"></label>
+      <label>Телефон<input name="phone" type="tel" value="${esc(L.phoneFieldStart(a.phone))}" enterkeyhint="done"></label>
       <div class="suggest" data-for="phone"></div>
       <div class="phone-links" id="phone-links"></div>
       <fieldset>
@@ -604,7 +635,7 @@ async function saveAppt(form) {
     date: v('date'),
     time: v('time'),
     name: v('name').trim(),
-    phone: L.formatPhone(v('phone')),
+    phone: L.phoneFromField(v('phone')),
     services: chosenServices(form),
     total: L.toMoney(v('total')),
     prepaid: L.toMoney(v('prepaid')),
@@ -819,7 +850,7 @@ function bindSuggest(form, name, clients) {
 
 function fillClient(form, name, phone) {
   if (name) field(form, 'name').value = name;
-  field(form, 'phone').value = L.formatPhone(phone);
+  field(form, 'phone').value = L.phoneFieldStart(phone);
   $('#client-panel').innerHTML = '';
   form.querySelectorAll('.suggest').forEach(box => { box.innerHTML = ''; });
   refreshAppt(form);
@@ -1377,7 +1408,7 @@ function renderSettings() {
         <button class="btn small secondary" data-act="copy-link">${icon('link')} Скопировать</button>
       </div>
       <label>Имя для клиентов<input value="${esc(s.clientName)}" enterkeyhint="done" data-change="set-clientName"></label>
-      <label>WhatsApp мастера<input type="tel" value="${esc(s.whatsapp)}" enterkeyhint="done" placeholder="+7 700 000 00 00" data-change="set-whatsapp"></label>
+      <label>WhatsApp мастера<input type="tel" value="${esc(L.phoneFieldStart(s.whatsapp))}" enterkeyhint="done" data-change="set-whatsapp"></label>
       <p class="hint">Клиенты увидят кнопку «Написать мастеру» с этим номером.</p>
       ${cloud.key ? '' : '<p class="status warn">Заявки начнут приходить после подключения облака.</p>'}
     </section>
@@ -1391,6 +1422,16 @@ function renderSettings() {
         </div>
       </div>
       <p class="hint">Новая сумма действует с текущего месяца, прошлые месяцы не меняются.</p>
+    </section>
+
+    <section class="card">
+      <h2>Оформление</h2>
+      <div class="themes" role="group" aria-label="Тема">${Object.entries(L.THEMES).map(([id, name]) => `
+        <button type="button" class="theme-pick${s.theme === id ? ' on' : ''}" data-act="set-theme" data-value="${id}" aria-pressed="${s.theme === id}">
+          <span class="swatch" data-theme="${id}"></span>${name}
+        </button>`).join('')}
+      </div>
+      <p class="hint">Тёмный режим для вечера — кнопка с луной вверху справа.</p>
     </section>
 
     <section class="card">
@@ -2037,6 +2078,17 @@ const actions = {
     render();
   },
   'hide-install': () => { pref('installHidden', '1'); render(); },
+  'toggle-mode': () => {
+    const mode = colorMode() === 'dark' ? 'light' : 'dark';
+    document.documentElement.dataset.mode = mode;
+    pref('mode', mode);
+    render();
+  },
+  'set-theme': el => {
+    data.settings = { ...settings(), theme: el.dataset.value };
+    render();
+    save();
+  },
 };
 
 async function onChange(el) {
@@ -2074,8 +2126,8 @@ async function onChange(el) {
       if (await save()) toast('Сохранено');
       break;
     case 'set-whatsapp':
-      el.value = L.formatPhone(el.value);
-      data.settings = { ...s, whatsapp: el.value };
+      data.settings = { ...s, whatsapp: L.phoneFromField(el.value) };
+      el.value = L.phoneFieldStart(data.settings.whatsapp);
       if (await save()) toast('Сохранено');
       break;
     case 'photo':

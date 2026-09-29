@@ -4,6 +4,9 @@
 
 import * as L from '../logic.js';
 import { API_URL } from '../config.js';
+import { phoneMask } from '../phone-input.js';
+
+phoneMask();
 
 let API = API_URL;
 try { API = localStorage.getItem('kae:api') || API_URL; } catch (e) { /* приватный режим */ }
@@ -149,7 +152,7 @@ function openForm(date, time) {
     <form id="request-form" class="sheet-body" novalidate autocomplete="on">
       <p class="lead"><b>${L.dayTitle(date)}, ${L.shortTime(time)}</b></p>
       <label>Ваше имя<input name="name" autocomplete="name" autocapitalize="words" enterkeyhint="next" value="${esc(me.name)}" placeholder="Например, Айгуль"></label>
-      <label>Телефон (WhatsApp)<input name="phone" type="tel" autocomplete="tel" enterkeyhint="done" value="${esc(me.phone)}" placeholder="+7 700 000 00 00"></label>
+      <label>Телефон (WhatsApp)<input name="phone" type="tel" autocomplete="tel" enterkeyhint="done" value="${esc(L.phoneFieldStart(me.phone))}"></label>
       <fieldset>
         <legend>Что будем делать — можно несколько</legend>
         <div class="chips">${services.map(p => `
@@ -185,7 +188,7 @@ function openForm(date, time) {
     const v = name => form.elements.namedItem(name).value;
     const body = { date, time, name: v('name').trim(), phone: v('phone'), services: chosen(), comment: v('comment').trim(), website: v('website') };
     const error = !body.name ? 'Укажите имя'
-      : L.phoneDigits(body.phone).length < 10 ? 'Укажите номер телефона'
+      : L.phoneFieldDigits(body.phone).length < 10 ? 'Укажите номер телефона полностью'
       : !body.services.length ? 'Выберите вид работы'
       : '';
     if (error) return showError(error);

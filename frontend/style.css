@@ -1,16 +1,44 @@
-/* Nailapp — оформление. Цвета — переменные: светлая и тёмная тема. */
+/* Nailapp — оформление. Цвета — переменные.
+   Три темы: розовая (по умолчанию), пурпурная и фиолетовая — html[data-theme].
+   У каждой светлый и тёмный режим. Режим — html[data-mode] (кнопка в шапке),
+   без него — как в настройках телефона (так работает и страница для клиентов). */
 
+/* Палитры: --l-* для светлого режима, --d-* для тёмного. */
+:root, [data-theme="rose"] {
+  --l-bg: #FCF6F8; --l-text: #2B2126; --l-muted: #7E6B73; --l-line: #EFE0E6;
+  --l-accent: #B8456F; --l-accent-soft: #F9E3EC; --l-bar1: #D6739B; --l-bar2: #AE4169;
+  --d-bg: #151012; --d-card: #211A1D; --d-field: #1A1417; --d-text: #F3EBEE; --d-muted: #A8979E; --d-line: #362B30;
+  --d-accent: #E0719A; --d-accent-ink: #2A0F1A; --d-accent-soft: #3B2230; --d-bar1: #6A2F4B; --d-bar2: #3F1C2E;
+}
+[data-theme="plum"] {
+  --l-bg: #FBF6FA; --l-text: #2A2029; --l-muted: #7A6A78; --l-line: #ECDFEA;
+  --l-accent: #A04596; --l-accent-soft: #F5E3F2; --l-bar1: #C06BB6; --l-bar2: #933C8B;
+  --d-bg: #140F14; --d-card: #201A20; --d-field: #191419; --d-text: #F2EAF1; --d-muted: #A796A5; --d-line: #352A34;
+  --d-accent: #D67BCB; --d-accent-ink: #2A0F27; --d-accent-soft: #3A2238; --d-bar1: #62305B; --d-bar2: #3C1C39;
+}
+[data-theme="lavender"] {
+  --l-bg: #F8F6FC; --l-text: #25212F; --l-muted: #6E6880; --l-line: #E6E0F1;
+  --l-accent: #7858B8; --l-accent-soft: #EEE8F9; --l-bar1: #9C82D8; --l-bar2: #7056B8;
+  --d-bg: #110F17; --d-card: #1C1924; --d-field: #16141D; --d-text: #EEEAF6; --d-muted: #9D96AE; --d-line: #2E2A3B;
+  --d-accent: #A992EA; --d-accent-ink: #1C1433; --d-accent-soft: #2C2645; --d-bar1: #44356E; --d-bar2: #2A2046;
+}
+
+/* Светлый режим */
 :root {
-  --bg: #FBF7F8;
+  --bg: var(--l-bg);
   --card: #FFFFFF;
   --field: #FFFFFF;
-  --text: #2B2126;
-  --muted: #7B6B72;
-  --line: #ECE1E5;
-  --bar: #B8456F;
-  --accent: #B8456F;
+  --text: var(--l-text);
+  --muted: var(--l-muted);
+  --line: var(--l-line);
+  --accent: var(--l-accent);
   --accent-ink: #FFFFFF;
-  --accent-soft: #F8E4EC;
+  --accent-soft: var(--l-accent-soft);
+  --bar1: var(--l-bar1);
+  --bar2: var(--l-bar2);
+  --bar: var(--l-bar2);
+  --sheen: .26;
+  --sheen2: .13;
   --ok: #1F7A50;
   --ok-soft: #E0F2E8;
   --warn: #8F5500;
@@ -22,18 +50,24 @@
   color-scheme: light;
 }
 
+/* Тёмный режим: выбран кнопкой в шапке или включён в телефоне.
+   Два одинаковых блока — так проще, чем хитрые селекторы. */
 @media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #151012;
-    --card: #211A1D;
-    --field: #1A1417;
-    --text: #F3EBEE;
-    --muted: #A8979E;
-    --line: #362B30;
-    --bar: #4A2233;
-    --accent: #E0719A;
-    --accent-ink: #2A0F1A;
-    --accent-soft: #3B2230;
+  :root:not([data-mode="light"]) {
+    --bg: var(--d-bg);
+    --card: var(--d-card);
+    --field: var(--d-field);
+    --text: var(--d-text);
+    --muted: var(--d-muted);
+    --line: var(--d-line);
+    --accent: var(--d-accent);
+    --accent-ink: var(--d-accent-ink);
+    --accent-soft: var(--d-accent-soft);
+    --bar1: var(--d-bar1);
+    --bar2: var(--d-bar2);
+    --bar: var(--d-bar2);
+    --sheen: .12;
+    --sheen2: .06;
     --ok: #62CC94;
     --ok-soft: #173026;
     --warn: #F0B454;
@@ -43,6 +77,30 @@
     --shadow: none;
     color-scheme: dark;
   }
+}
+:root[data-mode="dark"] {
+  --bg: var(--d-bg);
+  --card: var(--d-card);
+  --field: var(--d-field);
+  --text: var(--d-text);
+  --muted: var(--d-muted);
+  --line: var(--d-line);
+  --accent: var(--d-accent);
+  --accent-ink: var(--d-accent-ink);
+  --accent-soft: var(--d-accent-soft);
+  --bar1: var(--d-bar1);
+  --bar2: var(--d-bar2);
+  --bar: var(--d-bar2);
+  --sheen: .12;
+  --sheen2: .06;
+  --ok: #62CC94;
+  --ok-soft: #173026;
+  --warn: #F0B454;
+  --warn-soft: #3A2C14;
+  --danger: #F2796C;
+  --danger-soft: #3A1D1A;
+  --shadow: none;
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -69,6 +127,21 @@ p + p { margin-top: 8px; }
 
 /* ---------- Верхняя панель ---------- */
 
+/* Стеклянная глянцевая полоса: цвет темы чуть прозрачный, под ним размывается то,
+   что прокручивается, сверху — блик. Такая же — у окон записи и клиента. */
+.appbar, .sheet-head {
+  background: var(--bar);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, var(--sheen)) 0%, rgba(255, 255, 255, 0) 62%),
+    linear-gradient(115deg, rgba(255, 255, 255, 0) 38%, rgba(255, 255, 255, var(--sheen2)) 50%, rgba(255, 255, 255, 0) 62%),
+    linear-gradient(135deg, color-mix(in srgb, var(--bar1) 74%, transparent), color-mix(in srgb, var(--bar2) 82%, transparent));
+  -webkit-backdrop-filter: blur(18px) saturate(170%);
+  backdrop-filter: blur(18px) saturate(170%);
+  border-bottom: 1px solid rgba(255, 255, 255, .28);
+  box-shadow: inset 0 -1px 0 rgba(0, 0, 0, .06), 0 10px 28px -16px rgba(60, 10, 40, .6);
+  color: #fff;
+}
+
 .appbar {
   position: sticky;
   top: 0;
@@ -78,11 +151,13 @@ p + p { margin-top: 8px; }
   justify-content: space-between;
   gap: 12px;
   min-height: 56px;
-  padding: calc(env(safe-area-inset-top) + 10px) var(--gutter) 10px;
-  background: var(--bar);
-  color: #fff;
+  padding: calc(env(safe-area-inset-top) + 8px) var(--gutter) 8px;
 }
-.appbar h1 { font-size: 22px; font-weight: 700; letter-spacing: -.01em; }
+.appbar h1 { font-size: 22px; font-weight: 700; letter-spacing: -.01em; text-shadow: 0 1px 2px rgba(40, 0, 25, .25); }
+.brand { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* Неоновый рисунок: белые линии с розовым свечением, фон прозрачный. */
+.brand img { width: 42px; height: 42px; flex: none; margin: -4px -2px -4px -6px; filter: drop-shadow(0 0 1px rgba(255, 255, 255, .9)) drop-shadow(0 0 5px rgba(255, 30, 150, .95)); }
+.appbar-actions { display: flex; align-items: center; gap: 8px; }
 
 .hbtn {
   border: 0;
@@ -93,6 +168,7 @@ p + p { margin-top: 8px; }
   font-size: 15px;
   font-weight: 600;
 }
+.hbtn.round { display: inline-grid; place-items: center; width: 38px; height: 38px; padding: 0; }
 
 main { max-width: 560px; margin: 0 auto; padding: 12px 16px 96px; }
 
@@ -262,7 +338,8 @@ main { max-width: 560px; margin: 0 auto; padding: 12px 16px 96px; }
   border-radius: 50%;
   background: var(--accent);
   color: var(--accent-ink);
-  box-shadow: 0 8px 20px rgba(184, 69, 111, .35);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, .18);
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--accent) 35%, transparent);
 }
 .fab .ico { width: 28px; height: 28px; }
 
@@ -319,8 +396,6 @@ main { max-width: 560px; margin: 0 auto; padding: 12px 16px 96px; }
   grid-template-columns: 44px 1fr 44px;
   align-items: center;
   padding: calc(env(safe-area-inset-top) + 6px) calc(var(--gutter) - 10px) 6px;
-  background: var(--bar);
-  color: #fff;
 }
 .sheet-head h2 { font-size: 17px; text-align: center; }
 .sheet-head .icon-btn { color: #fff; }
@@ -472,6 +547,31 @@ legend { margin-bottom: 8px; padding: 0; color: var(--muted); font-size: 13px; f
 .money-wrap span { position: absolute; right: 9px; top: 50%; transform: translateY(-50%); color: var(--muted); pointer-events: none; }
 .card > .btn.small { margin-top: 12px; }
 .version { margin: 8px 0 0; color: var(--muted); font-size: 13px; text-align: center; }
+
+/* ---------- Выбор темы ---------- */
+
+.themes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 10px; }
+.theme-pick {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 6px 10px;
+  border: 2px solid var(--line);
+  border-radius: 14px;
+  background: var(--card);
+  font-size: 14px;
+  font-weight: 600;
+}
+.theme-pick.on { border-color: var(--accent); color: var(--accent); }
+.theme-pick .swatch {
+  width: 100%;
+  height: 34px;
+  border-radius: 9px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, .3), rgba(255, 255, 255, 0) 65%),
+    linear-gradient(135deg, var(--l-bar1), var(--l-bar2));
+}
 
 /* ---------- Уведомление ---------- */
 

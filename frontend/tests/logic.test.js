@@ -144,6 +144,33 @@ test('красивый номер', () => {
   eq([L.canDial('123'), L.canDial('8701 123 45 67')], [false, true]);
 });
 
+test('поле телефона: «+7» на месте, номер группами по 3-3-2-2', () => {
+  eq(L.phoneFieldValue(''), '+7 ');
+  eq(L.phoneFieldValue('+7 '), '+7 ');
+  eq(L.phoneFieldValue('+7 7011'), '+7 701 1');
+  eq(L.phoneFieldValue('+7 70112345'), '+7 701 123 45');
+  eq(L.phoneFieldValue('+7 701 123 45 678'), '+7 701 123 45 67');
+  // стёрли пробел, «+» или «7» у приставки — она возвращается
+  eq(L.phoneFieldValue('+7701 123'), '+7 701 123');
+  eq(L.phoneFieldValue('7 701 123'), '+7 701 123');
+  eq(L.phoneFieldValue('+ 701 123'), '+7 701 123');
+  // вставили номер целиком
+  eq(L.phoneFieldValue('8 (701) 123-45-67'), '+7 701 123 45 67');
+  eq(L.phoneFieldValue('87011234567'), '+7 701 123 45 67');
+  eq(L.phoneFieldValue('+77011234567'), '+7 701 123 45 67');
+  eq(L.phoneFieldValue('7011234567'), '+7 701 123 45 67');
+});
+
+test('поле телефона: что показать и что сохранить', () => {
+  eq(L.phoneFieldStart(''), '+7 ');
+  eq(L.phoneFieldStart('8 701 123 45 67'), '+7 701 123 45 67');
+  eq(L.phoneFieldStart('+998 90 123 45 67'), '+998 90 123 45 67');
+  eq(L.phoneFromField('+7 '), '');
+  eq(L.phoneFromField('+7 701 123 45 67'), '+7 701 123 45 67');
+  eq(L.phoneFromField('+7 701 12'), '+7 701 12');
+  eq(L.phoneFieldDigits('+7 701 12'), '70112');
+});
+
 test('клиенты из записей: без повторов, данные из свежей записи', () => {
   const list = L.pastClients([
     appt('2026-08-01', 'paid', 1, 0, { name: 'Айгуль', phone: '8 701 123 45 67' }),
@@ -266,7 +293,7 @@ test('копия сохраняется и читается обратно', () 
     expenses: [{ id: 'e1', date: '2026-09-05', amount: 15000, note: 'Гель-лаки' }],
     prices: [{ id: 'p1', name: 'Маникюр', price: 5000 }],
     rent: [{ from: '2000-01', amount: 70000 }],
-    settings: { dayStart: '10:00', lastStart: '19:00', duration: 120, clientName: 'Арай', whatsapp: '+7 700 111 22 33' },
+    settings: { dayStart: '10:00', lastStart: '19:00', duration: 120, clientName: 'Арай', whatsapp: '+7 700 111 22 33', theme: 'lavender' },
     blocks: [{ id: 'v', from: '2026-10-10', to: '2026-10-12', note: 'Отпуск' }],
   };
   const copy = L.readBackup(JSON.stringify(L.makeBackup(data, new Date(Date.UTC(2026, 8, 28)))));
@@ -279,6 +306,12 @@ test('копия сохраняется и читается обратно', () 
   eq(copy.settings, data.settings);
   eq(copy.blocks, data.blocks);
   eq(copy.appointments[0].photos, ['ph1']);
+});
+
+test('тема оформления в копии: своя сохраняется, неизвестная — розовая', () => {
+  const read = theme => L.readBackup(JSON.stringify({ app: 'kae-zapis', appointments: [], settings: { theme } })).settings.theme;
+  eq([read('lavender'), read('plum'), read('neon'), read(undefined)], ['lavender', 'plum', 'rose', 'rose']);
+  eq(Object.keys(L.THEMES), ['rose', 'plum', 'lavender']);
 });
 
 test('чужой файл не принимается', () => {

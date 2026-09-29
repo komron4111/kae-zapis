@@ -14,7 +14,9 @@ export const DEFAULT_RENT = 70000;
 
 // Рабочее время: запись можно начать с dayStart до lastStart включительно,
 // между началами записей — не меньше duration минут (наращивание — 2 ч 30 мин).
-export const DEFAULT_SETTINGS = { dayStart: '09:00', lastStart: '20:00', duration: 150, clientName: 'Арай', whatsapp: '' };
+export const DEFAULT_SETTINGS = { dayStart: '09:00', lastStart: '20:00', duration: 150, clientName: 'Арай', whatsapp: '', theme: 'rose' };
+// Темы оформления: id → название в «Настройках». Цвета — в style.css.
+export const THEMES = { rose: 'Розовая', plum: 'Пурпурная', lavender: 'Фиолетовая' };
 // Клиентам время предлагается с шагом 30 минут.
 export const SLOT_STEP = 30;
 // На сколько дней вперёд публикуются свободные окошки.
@@ -387,6 +389,39 @@ export function canDial(phone) {
   return phoneDigits(phone).length >= 10;
 }
 
+// Поле ввода телефона: «+7» в начале не меняется, дальше до 10 цифр
+// группами «705 102 70 37». Вставленный номер «8 705…», «+7 (705)…», «7705…» приводится к тому же виду.
+export const PHONE_PREFIX = '+7 ';
+
+export function phoneFieldDigits(value) {
+  const s = String(value || '').trim();
+  let d;
+  if (s.startsWith('+7')) d = s.slice(2).replace(/\D/g, '');
+  else if (/^7\s/.test(s)) d = s.slice(1).replace(/\D/g, ''); // стёрли «+» у «+7»
+  else {
+    d = s.replace(/\D/g, '');
+    if (d.length === 11 && (d[0] === '7' || d[0] === '8')) d = d.slice(1);
+  }
+  return d.slice(0, 10);
+}
+
+export function phoneFieldValue(value) {
+  const d = phoneFieldDigits(value);
+  return PHONE_PREFIX + [d.slice(0, 3), d.slice(3, 6), d.slice(6, 8), d.slice(8, 10)].filter(Boolean).join(' ');
+}
+
+// Что показать в поле: пустое — «+7 », номер +7 — по группам, другой номер — как был.
+export function phoneFieldStart(phone) {
+  if (!String(phone || '').trim()) return PHONE_PREFIX;
+  const d = phoneDigits(phone);
+  return d.length === 11 && d[0] === '7' ? phoneFieldValue('+' + d) : String(phone).trim();
+}
+
+// Что сохранить из поля: одно «+7» — номера нет.
+export function phoneFromField(value) {
+  return phoneFieldDigits(value) ? phoneFieldValue(value) : '';
+}
+
 // ---------- Сохранённые клиенты ----------
 // Отдельной базы клиентов нет: клиент сохраняется вместе с записью,
 // а список собирается из записей.
@@ -530,5 +565,6 @@ function readSettings(src) {
   if (duration >= 15 && duration <= 600) out.duration = duration;
   if (typeof s.clientName === 'string') out.clientName = s.clientName;
   if (typeof s.whatsapp === 'string') out.whatsapp = s.whatsapp;
+  if (typeof s.theme === 'string' && Object.keys(THEMES).includes(s.theme)) out.theme = s.theme;
   return out;
 }
