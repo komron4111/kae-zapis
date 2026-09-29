@@ -275,8 +275,12 @@ main { max-width: 560px; margin: 0 auto; padding: 12px 16px 96px; }
 .cal-grid.enter-prev, .fin-page.enter-prev, .rent-grid.enter-prev { animation: cal-prev .22s ease-out; }
 /* Финансы: вертикальную прокрутку ведёт браузер, свайп вбок — приложение.
    Поле обрезки шире страницы на отступы, чтобы не резались тени карточек. */
-.fin-clip { overflow: hidden; margin: 0 -16px; padding: 0 16px; }
-.fin-page { touch-action: pan-y; }
+.slide-clip { overflow: hidden; margin: 0 -16px -24px; padding: 0 16px 24px; }
+.fin-page, .settings-page { touch-action: pan-y; }
+/* Настройки: пункт въезжает справа, список при возврате — слева; свайп вправо — назад. */
+.settings-page.settle { transition: transform .15s ease-out, opacity .15s; }
+.settings-page.enter-next { animation: cal-next .22s ease-out; }
+.settings-home.enter-prev { animation: cal-prev .22s ease-out; }
 @keyframes cal-next { from { opacity: 0; transform: translateX(48px); } }
 @keyframes cal-prev { from { opacity: 0; transform: translateX(-48px); } }
 .wd { padding: 4px 0; text-align: center; color: var(--muted); font-size: 12px; font-weight: 600; }
@@ -771,8 +775,8 @@ fieldset .btn.small { margin-top: 6px; }
 .viewer-slide img.unzoom { transition: transform .25s ease-out; }
 
 @media (prefers-reduced-motion: reduce) {
-  .viewer, .cal-grid, .fin-page, .rent-grid { animation: none !important; }
-  .viewer.settle, .viewer.settle *, .cal-grid.settle, .fin-page.settle, .rent-grid.settle, .viewer-slide img.unzoom { transition: none !important; }
+  .viewer, .cal-grid, .fin-page, .rent-grid, .settings-page, .settings-home { animation: none !important; }
+  .viewer.settle, .viewer.settle *, .cal-grid.settle, .fin-page.settle, .rent-grid.settle, .settings-page.settle, .viewer-slide img.unzoom { transition: none !important; }
 }
 
 /* ---------- Ссылка для клиентов ---------- */

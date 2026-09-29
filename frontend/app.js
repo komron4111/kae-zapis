@@ -8,7 +8,7 @@ import { API_URL } from './config.js';
 import { phoneMask } from './phone-input.js';
 
 const APP_NAME = 'Nailapp';
-const APP_VERSION = '1.8.0';
+const APP_VERSION = '1.9.0';
 
 phoneMask();
 
@@ -181,7 +181,7 @@ function busyList() {
 
 // monthAnim, finAnim — куда уехал месяц в календаре и в финансах ('next' или 'prev'), для анимации;
 // settingsPage — открытый пункт настроек (null — список пунктов).
-const ui = { tab: 'records', month: L.monthOf(today()), day: today(), finMonth: L.monthOf(today()), seenToday: today(), clientQuery: '', monthAnim: null, finAnim: null, settingsPage: null, rentYear: Number(today().slice(0, 4)), rentAnim: null };
+const ui = { tab: 'records', month: L.monthOf(today()), day: today(), finMonth: L.monthOf(today()), seenToday: today(), clientQuery: '', monthAnim: null, finAnim: null, settingsPage: null, settingsAnim: null, rentYear: Number(today().slice(0, 4)), rentAnim: null };
 const view = $('#view'), fab = $('#fab'), sheet = $('#sheet'), viewer = $('#viewer');
 
 const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
@@ -235,14 +235,19 @@ function render() {
 // по горизонтали ('x') или по вертикали ('y'). Если оно есть в axes, вызываем move(g)
 // на каждое движение и end(g) в конце. В g: target, сдвиг dx и dy, скорость vx и vy
 // (пикселей в миллисекунду) и cancelled — жест прервала система.
+// skip — внутри этих элементов свой жест, этот свайп там не начинается.
+// В поле, где сейчас печатают, свайп тоже не начинается: там палец двигает курсор.
 
 let swipedAt = 0;
 
-function swipe(root, selector, { axes, move, end, enabled = () => true }) {
+function swipe(root, selector, { axes, move, end, enabled = () => true, skip }) {
   let g = null;
   root.addEventListener('pointerdown', e => {
     const target = e.target.closest(selector);
     if (!target || !e.isPrimary || e.button > 0 || !enabled()) return;
+    if (skip && e.target.closest(skip)) return;
+    const typing = e.target.closest('input, select, textarea');
+    if (typing && typing === document.activeElement) return;
     g = { target, id: e.pointerId, x: e.clientX, y: e.clientY, axis: null, dx: 0, dy: 0, vx: 0, vy: 0, cancelled: false, path: [] };
   });
   root.addEventListener('pointermove', e => {
@@ -1409,7 +1414,7 @@ function renderFinance() {
   const r = L.monthReport(data, ym);
   const expenses = data.expenses.filter(e => L.monthOf(e.date) === ym).sort((a, b) => b.date.localeCompare(a.date));
   view.innerHTML = `
-    <div class="fin-clip"><div class="fin-page${anim ? ` enter-${anim}` : ''}">
+    <div class="slide-clip"><div class="fin-page${anim ? ` enter-${anim}` : ''}">
     <div class="month-nav">
       <button class="icon-btn" data-act="fin-month" data-delta="-1" aria-label="Предыдущий месяц">${icon('left')}</button>
       <b>${L.monthTitle(ym)}</b>
@@ -1520,8 +1525,12 @@ function settingsSummary(page) {
 function renderSettings() {
   setHeader();
   const page = SETTINGS_PAGES[ui.settingsPage] ? ui.settingsPage : null;
+  const anim = ui.settingsAnim;
+  ui.settingsAnim = null;
+  const enter = anim ? ` enter-${anim}` : '';
   if (!page) {
     view.innerHTML = `
+      <div class="slide-clip"><div class="settings-home${enter}">
       <section class="card settings-menu">${Object.entries(SETTINGS_PAGES).map(([id, [ic, title]]) => `
         <button class="menu-row" data-act="settings-page" data-page="${id}">
           <span class="menu-ico">${icon(ic)}</span>
@@ -1529,14 +1538,53 @@ function renderSettings() {
           ${icon('right')}
         </button>`).join('')}
       </section>
-      <p class="version">${APP_NAME} · версия ${APP_VERSION}</p>`;
+      <p class="version">${APP_NAME} · версия ${APP_VERSION}</p>
+      </div></div>`;
     return;
   }
   view.innerHTML = `
+    <div class="slide-clip"><div class="settings-page${enter}">
     <button class="back-link" data-act="settings-page" data-page="">${icon('left')} Настройки</button>
     <h2 class="page-title">${SETTINGS_PAGES[page][1]}</h2>
-    ${settingsPageHtml(page)}`;
+    ${settingsPageHtml(page)}
+    </div></div>`;
 }
+
+// Открыть пункт настроек (page) или вернуться к списку (null).
+// Пункт въезжает справа, список при возврате — слева.
+function openSettingsPage(page) {
+  ui.settingsPage = page;
+  ui.settingsAnim = page ? 'next' : 'prev';
+  render();
+  scrollTo(0, 0);
+}
+
+// Внутри пункта свайп вправо — назад к списку, как «‹ Настройки».
+// Страница едет за пальцем; сдвинули мало — возвращается. В сетке аренды свой свайп (годы).
+swipe(view, '.settings-page', {
+  axes: ['x'],
+  skip: '.rent-cal',
+  move(g) {
+    const dx = Math.max(0, g.dx);
+    g.target.style.transform = `translateX(${dx}px)`;
+    g.target.style.opacity = 1 - Math.min(dx / g.target.clientWidth, 1) * 0.5;
+  },
+  end(g) {
+    const el = g.target;
+    const w = el.clientWidth;
+    const flick = g.vx > 0.4 && g.dx > 0;
+    el.classList.add('settle');
+    if (g.cancelled || !(g.dx > w * 0.3 || flick)) {
+      el.style.transform = '';
+      el.style.opacity = '';
+      setTimeout(() => el.classList.remove('settle'), 200);
+      return;
+    }
+    el.style.transform = `translateX(${w}px)`;
+    el.style.opacity = 0;
+    setTimeout(() => openSettingsPage(null), 150);
+  },
+});
 
 const card = (html, cls = '') => `<section class="card page-card${cls}">${html}</section>`;
 // Длительность услуги в прайсе, минут; 0 — «по умолчанию» (из «Рабочего времени»).
@@ -2330,7 +2378,7 @@ const actions = {
   'backup': () => prepareBackup(),
   'send-backup': () => sendBackup(),
   'goto': el => { ui.tab = el.dataset.to; ui.settingsPage = el.dataset.page || null; render(); scrollTo(0, 0); },
-  'settings-page': el => { ui.settingsPage = el.dataset.page || null; render(); scrollTo(0, 0); },
+  'settings-page': el => openSettingsPage(el.dataset.page || null),
   'rent-year': el => changeRentYear(Number(el.dataset.delta)),
   'rent-month': el => openRentMonth(el.dataset.month),
   'rent-unpaid': async el => {
