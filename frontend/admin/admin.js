@@ -21,6 +21,7 @@ const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&a
 
 let code = '';
 let masters = [];
+let dbSize = null; // размер всей базы, байт
 let contact = '';
 let query = '';
 
@@ -61,7 +62,9 @@ function renderLogin(error = '') {
 
 async function load() {
   try {
-    masters = (await call('GET', '/api/admin/masters')).masters;
+    const list = await call('GET', '/api/admin/masters');
+    masters = list.masters;
+    dbSize = list.size;
     try {
       contact = (await (await fetch(`${API}/api/contact`, { cache: 'no-store' })).json()).whatsapp || '';
     } catch (e) { /* покажем пустое поле */ }
@@ -70,6 +73,20 @@ async function load() {
     code = '';
     renderLogin(e.message);
   }
+}
+
+// 1 234 567 байт → «1,2 МБ», 5 400 → «5 КБ».
+function size(bytes) {
+  const n = Number(bytes) || 0;
+  if (n < 1e6) return `${Math.max(n ? 1 : 0, Math.round(n / 1e3))} КБ`;
+  return `${(n / 1e6).toFixed(1).replace('.', ',')} МБ`;
+}
+
+// Сколько места данные мастера занимают на сервере: фото, копии, прочее (расписание, личные ссылки).
+function storageLine(st) {
+  if (!st) return '';
+  const total = st.photoBytes + st.backupBytes + st.otherBytes;
+  return `на сервере ${size(total)}: фото ${st.photos} шт. — ${size(st.photoBytes)}, копии ${st.backups} — ${size(st.backupBytes)}, прочее ${size(st.otherBytes)}`;
 }
 
 function masterRow(m) {
@@ -81,6 +98,8 @@ function masterRow(m) {
         <b>${esc(m.name || 'Без имени')}</b>
         <small>${esc(m.phone || 'номер ещё не указан')} · с ${esc(formatDate(m.created))}</small>
         <small><a href="${esc(link)}" target="_blank" rel="noopener">ссылка: ${esc(m.slug)}</a>${notes ? ` · ${esc(notes)}` : ''}</small>
+        <small>${m.address ? esc(m.address) : 'адрес не указан'}${L.gisLink(m.gis) ? ` · <a href="${esc(L.gisLink(m.gis))}" target="_blank" rel="noopener">2ГИС</a>` : ''}</small>
+        <small>${esc(storageLine(m.storage))}</small>
       </div>
       ${m.phone ? `<button class="btn small secondary" data-reset="${esc(m.id)}">Сбросить пароль</button>` : ''}
     </div>`;
@@ -90,7 +109,7 @@ function masterRow(m) {
 function rows() {
   const q = query.trim().toLowerCase();
   const qd = q.replace(/\D/g, '');
-  const list = masters.filter(m => !q || m.name.toLowerCase().includes(q) || m.slug.includes(q)
+  const list = masters.filter(m => !q || m.name.toLowerCase().includes(q) || m.slug.includes(q) || (m.address || '').toLowerCase().includes(q)
     || (qd.length >= 3 && L.phoneDigits(m.phone).includes(qd)));
   return list.map(masterRow).join('') || '<p class="hint list-empty">Никого не нашли</p>';
 }
@@ -98,7 +117,8 @@ function rows() {
 function renderList() {
   view.innerHTML = `
     <h2 class="page-title">Мастера · ${masters.length}</h2>
-    <input type="search" id="q" class="search" placeholder="Имя, номер или ссылка" aria-label="Поиск мастера" value="${esc(query)}">
+    ${dbSize ? `<p class="hint">Вся база на сервере: ${esc(size(dbSize))} из 500 МБ бесплатного тарифа (${Math.round(dbSize / 5e6)}%).</p>` : ''}
+    <input type="search" id="q" class="search" placeholder="Имя, номер, ссылка или адрес" aria-label="Поиск мастера" value="${esc(query)}">
     <section class="card list" id="masters">${rows()}</section>
     <section class="card page-card">
       <h3 class="card-title">Ваш WhatsApp для мастеров</h3>

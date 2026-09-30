@@ -8,7 +8,7 @@ import { API_URL, PUBLIC_URL, IS_LOCAL } from './config.js';
 import { phoneMask } from './phone-input.js';
 
 const APP_NAME = 'Nailapp';
-const APP_VERSION = '2.0.0';
+const APP_VERSION = '2.1.0';
 
 phoneMask();
 
@@ -1601,7 +1601,7 @@ const SERVICE_FORMS = ['услуга', 'услуги', 'услуг'];
 // Коротко о том, что внутри пункта, — видно, не открывая его.
 function settingsSummary(page) {
   const s = settings();
-  if (page === 'account') return cloud.account ? `${cloud.account.phone} · пароль и выход` : 'Вход по номеру и паролю';
+  if (page === 'account') return cloud.account ? `${cloud.account.phone} · ${s.address ? 'адрес, ' : ''}пароль и выход` : 'Вход по номеру и паролю';
   if (page === 'cloud') return !cloud.key ? 'Не подключено' : cloud.pushOn ? 'Подключено, уведомления включены' : 'Подключено';
   if (page === 'prices') return data.prices.length ? `${data.prices.length} ${L.plural(data.prices.length, SERVICE_FORMS)}` : 'Услуг пока нет';
   if (page === 'hours') return `${L.shortTime(s.dayStart)}–${L.shortTime(s.lastStart)}`;
@@ -1692,7 +1692,12 @@ function settingsPageHtml(page) {
       <div class="line"><span>Телефон для входа</span><b>${esc(a.phone || '')}</b></div>
       <p class="hint">В приложение входят по этому номеру и паролю. Имя видят клиенты по вашей ссылке — поменять его можно в «Ссылке для клиентов». Забыли пароль — его восстановит администратор.</p>
       <button class="btn secondary block" data-act="change-password">${icon('lock')} Сменить пароль</button>
-      <button class="btn danger block" data-act="logout">Выйти из аккаунта</button>`);
+      <button class="btn danger block" data-act="logout">Выйти из аккаунта</button>`) + card(`
+      <h3 class="card-title">Где вы принимаете</h3>
+      <label>Адрес<input value="${esc(s.address)}" maxlength="150" autocomplete="street-address" enterkeyhint="done" placeholder="Город, улица, дом, этаж или кабинет" data-change="set-address"></label>
+      <label>Ссылка на 2ГИС<input type="url" inputmode="url" value="${esc(s.gis)}" enterkeyhint="done" placeholder="https://go.2gis.com/…" data-change="set-gis"></label>
+      <p class="hint">В 2ГИС найдите свой салон или дом → «Поделиться» → «Копировать ссылку» и вставьте сюда. Адрес и кнопку «Открыть в 2ГИС» увидят клиенты по вашей ссылке и в своей записи.</p>
+      ${s.gis ? `<a class="btn small secondary" href="${esc(s.gis)}" target="_blank" rel="noopener">Проверить ссылку в 2ГИС</a>` : ''}`);
     }
     case 'cloud':
       return card(cloud.key ? cloudPairedHtml() : '<p class="hint">Войдите в аккаунт — записи и фото начнут сохраняться в облако сами.</p>');
@@ -2808,6 +2813,22 @@ async function onChange(el) {
       el.value = L.phoneFieldStart(data.settings.whatsapp);
       if (await save()) toast('Сохранено');
       break;
+    case 'set-address':
+      data.settings = { ...s, address: L.addressText(el.value) };
+      el.value = data.settings.address;
+      if (await save()) toast(data.settings.address ? 'Адрес сохранён' : 'Адрес убран');
+      break;
+    case 'set-gis': {
+      const gis = L.gisLink(el.value);
+      if (el.value.trim() && !gis) {
+        el.value = s.gis;
+        return toast('Это не ссылка 2ГИС. В 2ГИС: «Поделиться» → «Копировать ссылку»');
+      }
+      data.settings = { ...s, gis };
+      if (await save()) toast(gis ? 'Ссылка 2ГИС сохранена' : 'Ссылка убрана');
+      render(); // кнопка «Проверить ссылку»
+      break;
+    }
     case 'photo':
       await addPhotos(el.dataset.id, [...el.files]);
       el.value = '';

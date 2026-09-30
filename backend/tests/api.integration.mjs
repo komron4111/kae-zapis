@@ -67,23 +67,24 @@ r = await call('GET', '/api/account', { key: A.key });
 check('аккаунт: имя, номер, ссылка', r.status === 200 && r.data.account.phone === L.formatPhone(A.phone), JSON.stringify(r.data.account));
 
 // ---------- Данные мастеров не смешиваются ----------
-r = await call('PUT', '/api/schedule', { key: A.key, body: schedule('Айгерим', [['Маникюр', 60]]) });
+r = await call('PUT', '/api/schedule', { key: A.key, body: { ...schedule('Айгерим', [['Маникюр', 60]]), address: 'Алматы, Абая 10', gis: 'https://go.2gis.com/test1' } });
 check('расписание мастера А', r.status === 200);
 r = await call('PUT', '/api/schedule', { key: B.key, body: schedule('Бота', [['Педикюр', 90]]) });
 check('расписание мастера Б', r.status === 200);
 r = await call('GET', `/api/okna?m=${A.slug}`);
 check('ссылка А — время и услуги А', r.status === 200 && r.data.name === 'Айгерим' && r.data.services[0].name === 'Маникюр' && r.data.booking === true);
+check('ссылка А — адрес и 2ГИС', r.data.address === 'Алматы, Абая 10' && r.data.gis === 'https://go.2gis.com/test1', `${r.data.address} | ${r.data.gis}`);
 r = await call('GET', `/api/okna?m=${B.slug}`);
 check('ссылка Б — услуги Б', r.status === 200 && r.data.services[0].name === 'Педикюр');
 const evil = '"><img src=x onerror=alert(1)>';
-const dirty = { ...schedule('Бота', [['Педикюр', 90]]), whatsapp: `7701${evil}`, extra: evil };
+const dirty = { ...schedule('Бота', [['Педикюр', 90]]), whatsapp: `7701${evil}`, extra: evil, gis: 'javascript:alert(1)' };
 dirty.days = [...dirty.days, { date: evil, busy: [] }, { date: d1, times: [evil] }];
 dirty.services = [...dirty.services, { name: 'Педикюр+', price: evil, duration: evil }];
 r = await call('PUT', '/api/schedule', { key: B.key, body: dirty });
 check('расписание с чужим кодом принято', r.status === 200);
 r = await call('GET', `/api/okna?m=${B.slug}`);
 check('клиенты получают его очищенным', r.status === 200 && !JSON.stringify(r.data).includes('<img') && !('extra' in r.data)
-  && r.data.whatsapp === '77011' && r.data.services[1].price === 1 && r.data.services[1].duration === 0, JSON.stringify(r.data).slice(0, 200));
+  && r.data.whatsapp === '77011' && r.data.gis === '' && r.data.services[1].price === 1 && r.data.services[1].duration === 0, JSON.stringify(r.data).slice(0, 200));
 r = await call('PUT', '/api/schedule', { key: B.key, body: { kind: 'okna' } });
 check('не расписание — 400', r.status === 400, r.data.error);
 r = await call('PUT', '/api/schedule', { key: B.key, body: schedule('Бота', [['Педикюр', 90]]) });
@@ -102,6 +103,7 @@ r = await call('POST', `/api/requests/${reqA[0].id}/decline`, { key: B.key });
 check('Б не может отклонить заявку А', r.status === 200 && r.data.found === false);
 r = await call('GET', `/api/bookings/${token}`);
 check('личная ссылка: мастер и его ссылка', r.status === 200 && r.data.status === 'pending' && r.data.master.slug === A.slug && r.data.master.name === 'Айгерим');
+check('личная ссылка: адрес и 2ГИС мастера', r.data.master.address === 'Алматы, Абая 10' && r.data.master.gis === 'https://go.2gis.com/test1');
 r = await call('POST', `/api/requests/${reqA[0].id}/confirm`, { key: A.key, body: { token, booking: { date: d1, time: '10:00', name: 'Клиентка', services: ['Маникюр'], total: 1000, prepaid: 0 } } });
 check('А подтверждает заявку', r.status === 200 && r.data.found === true);
 r = await call('PUT', `/api/bookings/${token}`, { key: B.key, body: { status: 'cancelled', date: d1, time: '10:00', name: 'x', services: [], total: 0, prepaid: 0 } });
@@ -138,6 +140,11 @@ check('неверный код администратора — 403', r.status =
 r = await call('GET', '/api/admin/masters', { admin: CODE });
 const listed = (r.data.masters || []).find(m => m.slug === B.slug);
 check('администратор видит мастеров', r.status === 200 && Boolean(listed) && listed.phone === L.formatPhone(B.phone), `всего ${(r.data.masters || []).length}`);
+const listedA = (r.data.masters || []).find(m => m.slug === A.slug);
+check('администратор видит адрес, 2ГИС и объём данных мастера', Boolean(listedA) && listedA.address === 'Алматы, Абая 10' && listedA.gis === 'https://go.2gis.com/test1'
+  && listedA.storage.photos === 1 && listedA.storage.photoBytes === 3 && listedA.storage.backups === 1 && listedA.storage.backupBytes > 0 && listedA.storage.otherBytes > 0,
+  JSON.stringify(listedA && listedA.storage));
+check('администратор видит размер базы', r.data.size === null || r.data.size > 0, String(r.data.size));
 const tempB = await L.passwordSecret(B.phone, 'временный-7x');
 r = await call('POST', `/api/admin/masters/${listed.id}/password`, { admin: CODE, body: { secret: tempB } });
 check('администратор сбрасывает пароль Б', r.status === 200);

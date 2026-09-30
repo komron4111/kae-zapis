@@ -310,7 +310,7 @@ test('копия сохраняется и читается обратно', () 
     expenses: [{ id: 'e1', date: '2026-09-05', amount: 15000, note: 'Гель-лаки' }],
     prices: [{ id: 'p1', name: 'Маникюр', price: 5000, duration: 60 }],
     rent: [{ from: '2000-01', amount: 70000 }],
-    settings: { dayStart: '10:00', lastStart: '19:00', duration: 120, clientName: 'Арай', whatsapp: '+7 700 111 22 33', theme: 'lavender' },
+    settings: { dayStart: '10:00', lastStart: '19:00', duration: 120, clientName: 'Арай', whatsapp: '+7 700 111 22 33', address: 'Абая 10', gis: 'https://go.2gis.com/abc12', theme: 'lavender' },
     blocks: [{ id: 'v', from: '2026-10-10', to: '2026-10-12', note: 'Отпуск' }],
     clients: [{ id: 'c1', name: 'Жанна', phone: '+7 702 000 00 01', created: '2026-09-28T10:00:00.000Z' }],
   };
@@ -588,10 +588,30 @@ test('расписание для клиентов: настоящее прох�
   const s = L.buildSchedule({
     appointments: [{ id: 'a', date: '2026-10-01', time: '10:00', status: 'booked', services: ['Маникюр'] }],
     blocks: [{ id: 'b', from: '2026-10-02', to: '2026-10-02' }],
-    settings: { ...L.DEFAULT_SETTINGS, clientName: 'Мадина', whatsapp: '+7 701 123 45 67' },
+    settings: { ...L.DEFAULT_SETTINGS, clientName: 'Мадина', whatsapp: '+7 701 123 45 67', address: '  Алматы,  Абая 10, 3 этаж ', gis: 'Салон https://go.2gis.com/abc12' },
     prices: [{ id: 'p', name: 'Маникюр', price: 5000, duration: 60 }],
   }, new Date(2026, 9, 1, 9, 0), 3);
+  eq([s.address, s.gis], ['Алматы, Абая 10, 3 этаж', 'https://go.2gis.com/abc12']);
   eq(L.cleanSchedule(s), s);
+});
+
+test('ссылка 2ГИС: только адреса 2ГИС и только https', () => {
+  eq(L.gisLink('https://go.2gis.com/abc12'), 'https://go.2gis.com/abc12');
+  eq(L.gisLink('Салон «Нега», Абая 10 https://go.2gis.com/abc12'), 'https://go.2gis.com/abc12');
+  eq(L.gisLink('2gis.kz/almaty/firm/70000001'), 'https://2gis.kz/almaty/firm/70000001');
+  eq(L.gisLink('http://2gis.kz/x?a=1'), 'https://2gis.kz/x?a=1');
+  eq(L.gisLink('https://almaty.2gis.kz/firm/1'), 'https://almaty.2gis.kz/firm/1');
+  for (const bad of ['', 'просто текст', 'javascript:alert(1)', 'https://evil.com/?2gis.kz', 'https://2gis.kz.evil.com/', 'https://evil2gis.kz/', 'https://user:pw@2gis.kz/']) {
+    eq(L.gisLink(bad), '');
+  }
+  eq(L.addressText(`  ул.\n Абая   10 ${'д'.repeat(200)}`).length, 150);
+});
+
+test('адрес и 2ГИС сохраняются в копии', () => {
+  const copy = L.readBackup(JSON.stringify({ app: 'kae-zapis', appointments: [], settings: { address: ' Абая  10 ', gis: '2gis.kz/almaty/firm/1' } }));
+  eq([copy.settings.address, copy.settings.gis], ['Абая 10', 'https://2gis.kz/almaty/firm/1']);
+  const evil = L.readBackup(JSON.stringify({ app: 'kae-zapis', appointments: [], settings: { gis: 'javascript:alert(1)' } }));
+  eq(evil.settings.gis, '');
 });
 
 test('расписание для клиентов: чужой код и мусор не проходят', () => {

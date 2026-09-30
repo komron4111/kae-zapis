@@ -422,16 +422,28 @@ async function authAdmin(request, env) {
   }
 }
 
+// Мастера для администратора: кто, где принимает и сколько места его данные занимают на сервере
+// (фото, копии; «прочее» — расписание и записи клиентов по личным ссылкам). size — вся база.
 async function listMasters(env) {
-  const { results } = await env.DB.prepare(`
+  const { results, meta } = await env.DB.prepare(`
     SELECT m.id, m.name, m.phone, m.slug, m.created, m.pass_hash <> '' AS claimed,
       (SELECT COUNT(*) FROM devices d WHERE d.master_id = m.id) AS devices,
-      (SELECT updated FROM schedules s WHERE s.master_id = m.id) AS active
-    FROM masters m ORDER BY m.created DESC`).all();
+      s.updated AS active, json_extract(s.value, '$.address') AS address, json_extract(s.value, '$.gis') AS gis,
+      (SELECT COUNT(*) FROM photos p WHERE p.master_id = m.id) AS photos,
+      (SELECT COALESCE(SUM(LENGTH(p.data)), 0) FROM photos p WHERE p.master_id = m.id) AS photo_bytes,
+      (SELECT COUNT(*) FROM backups b WHERE b.master_id = m.id) AS backups,
+      (SELECT COALESCE(SUM(LENGTH(b.data)), 0) FROM backups b WHERE b.master_id = m.id) AS backup_bytes,
+      COALESCE(LENGTH(s.value), 0)
+        + (SELECT COALESCE(SUM(LENGTH(k.name) + LENGTH(k.services) + 120), 0) FROM bookings k WHERE k.master_id = m.id) AS other_bytes
+    FROM masters m LEFT JOIN schedules s ON s.master_id = m.id
+    ORDER BY m.created DESC`).all();
   return json({
+    size: (meta && meta.size_after) || null,
     masters: results.map(r => ({
       id: r.id, name: r.name, phone: r.phone ? L.formatPhone(r.phone) : '', slug: r.slug, created: r.created,
       claimed: Boolean(r.claimed), devices: r.devices, active: r.active || null,
+      address: L.addressText(r.address), gis: L.gisLink(r.gis),
+      storage: { photos: r.photos, photoBytes: r.photo_bytes, backups: r.backups, backupBytes: r.backup_bytes, otherBytes: r.other_bytes },
     })),
   });
 }
@@ -560,6 +572,8 @@ async function getBooking(env, token) {
   const master = {
     name: (schedule && schedule.name) || (row && row.name) || 'Мастер',
     whatsapp: (schedule && schedule.whatsapp) || '',
+    address: (schedule && schedule.address) || '',
+    gis: (schedule && schedule.gis) || '',
     slug: row ? row.slug : '',
   };
   if (b) {

@@ -37,7 +37,7 @@
   - уведомления;
   - копия и фото.
 - **Для администратора** (заголовок `Authorization: Admin <код в base64url>`):
-  - `GET /api/admin/masters` — все мастера;
+  - `GET /api/admin/masters` — все мастера: адрес и 2ГИС из расписания, объём данных (`storage`: фото, копии, прочее) и размер всей базы (`size`);
   - `POST /api/admin/masters/:id/password` — новый пароль мастеру (его телефон выходит из аккаунта);
   - `PUT /api/admin/contact` — свой WhatsApp.
 

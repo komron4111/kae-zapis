@@ -828,6 +828,9 @@ body.okna main { padding-bottom: 24px; }
 .okna-title { margin: 4px 2px 10px; font-size: 22px; line-height: 1.25; }
 .okna-title small { display: block; margin-top: 2px; color: var(--muted); font-size: 15px; font-weight: 600; }
 .okna-intro { margin: 2px 2px 14px; color: var(--muted); font-size: 15px; }
+.okna-place { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: -4px 2px 14px; }
+.okna-place p { display: flex; align-items: flex-start; gap: 6px; margin: 0; flex: 1 1 200px; font-size: 15px; }
+.okna-place p .ico { flex: none; width: 18px; height: 18px; margin-top: 1px; color: var(--accent); }
 .okna-intro a { color: var(--accent); font-weight: 600; }
 .okna-day { padding: 0; overflow: hidden; }
 .okna-head {

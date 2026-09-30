@@ -29,7 +29,7 @@ export const DEFAULT_RENT = 70000;
 
 // Рабочее время: запись можно начать с dayStart до lastStart включительно.
 // duration — сколько длится услуга, у которой в прайсе не указана длительность.
-export const DEFAULT_SETTINGS = { dayStart: '09:00', lastStart: '20:00', duration: 150, clientName: 'Арай', whatsapp: '', theme: 'plum' };
+export const DEFAULT_SETTINGS = { dayStart: '09:00', lastStart: '20:00', duration: 150, clientName: 'Арай', whatsapp: '', address: '', gis: '', theme: 'plum' };
 // Темы оформления: id → название в «Настройках». Цвета — в style.css.
 export const THEMES = { rose: 'Розовая', plum: 'Пурпурная', lavender: 'Фиолетовая' };
 // Клиентам время предлагается с шагом 30 минут.
@@ -294,6 +294,31 @@ export function formatRanges(ranges) {
   return ranges.map(([a, b]) => (a === b ? shortTime(a) : `${shortTime(a)}–${shortTime(b)}`)).join(', ');
 }
 
+// ---------- Где принимает мастер: адрес и 2ГИС ----------
+
+// Адрес одной строкой, до 150 знаков.
+export function addressText(value) {
+  return String(value == null ? '' : value).trim().replace(/\s+/g, ' ').slice(0, 150);
+}
+
+// Ссылка на место в 2ГИС. Из текста «Поделиться» берём первую ссылку; можно и без https://.
+// Подходят только адреса 2ГИС (2gis.kz, go.2gis.com и т. п.) — чужую ссылку клиентам не покажем.
+// Возвращает https-ссылку или пусто.
+export function gisLink(value) {
+  const text = String(value == null ? '' : value);
+  const found = text.match(/https?:\/\/[^\s<>"'«»]+/i) || text.match(/(?:^|\s)((?:[a-z0-9-]+\.)*2gis\.[a-z]{2,4}\/[^\s<>"'«»]*)/i);
+  if (!found) return '';
+  let url;
+  try {
+    url = new URL(found[1] && !/^https?:/i.test(found[0]) ? `https://${found[1]}` : found[0]);
+  } catch (e) {
+    return '';
+  }
+  if (!/^https?:$/.test(url.protocol) || !/(^|\.)2gis\.[a-z]{2,4}$/i.test(url.hostname) || url.username || url.password) return '';
+  url.protocol = 'https:';
+  return url.href.length <= 600 ? url.href : '';
+}
+
 // Что видят клиенты: занятое время на days дней вперёд (без имён и телефонов),
 // рабочие часы и услуги с ценами и длительностью. Свободное время страница клиентов
 // и сервер считают сами — под выбранные услуги. Прошедшее время сегодня отсекается там же.
@@ -312,6 +337,8 @@ export function buildSchedule(data, now = new Date(), days = HORIZON_DAYS) {
     v: 2,
     name: s.clientName,
     whatsapp: phoneDigits(s.whatsapp),
+    address: addressText(s.address),
+    gis: gisLink(s.gis),
     dayStart: s.dayStart,
     lastStart: s.lastStart,
     duration: s.duration,
@@ -342,6 +369,8 @@ export function cleanSchedule(raw) {
     v: int(raw.v, 1, 9, 1),
     name: text(raw.name, 40),
     whatsapp: phoneDigits(raw.whatsapp).slice(0, 15),
+    address: addressText(raw.address),
+    gis: gisLink(raw.gis),
     dayStart: TIME_RE.test(raw.dayStart) ? raw.dayStart : DEFAULT_SETTINGS.dayStart,
     lastStart: TIME_RE.test(raw.lastStart) ? raw.lastStart : DEFAULT_SETTINGS.lastStart,
     duration: int(raw.duration, 5, 720, DEFAULT_SETTINGS.duration),
@@ -817,6 +846,8 @@ function readSettings(src) {
   if (duration >= 15 && duration <= 600) out.duration = duration;
   if (typeof s.clientName === 'string') out.clientName = s.clientName;
   if (typeof s.whatsapp === 'string') out.whatsapp = s.whatsapp;
+  if (typeof s.address === 'string') out.address = addressText(s.address);
+  if (typeof s.gis === 'string') out.gis = gisLink(s.gis);
   if (typeof s.theme === 'string' && Object.keys(THEMES).includes(s.theme)) out.theme = s.theme;
   return out;
 }
