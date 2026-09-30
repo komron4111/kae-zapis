@@ -8,7 +8,7 @@ import { API_URL, PUBLIC_URL, IS_LOCAL } from './config.js';
 import { phoneMask } from './phone-input.js';
 
 const APP_NAME = 'Nailapp';
-const APP_VERSION = '2.1.1';
+const APP_VERSION = '2.2.0';
 
 phoneMask();
 
@@ -486,6 +486,15 @@ function banners() {
       <div class="banner">
         <div class="grow">Заполните прайс — тогда сумма будет подставляться в запись сама.</div>
         <button class="btn small secondary" data-act="goto" data-to="settings" data-page="prices">Прайс</button>
+      </div>`);
+  }
+  const sub = subscription();
+  const left = L.subscriptionDaysLeft(sub, today());
+  if (left !== null && left >= 0 && left <= 3) {
+    out.push(`
+      <div class="banner warn">
+        <div class="grow">Подписка заканчивается ${left === 0 ? 'сегодня' : left === 1 ? 'завтра' : esc(L.shortDate(sub.until))}. Чтобы приложение не остановилось, продлите её у администратора.</div>
+        <button class="btn small secondary" data-act="renew">Продлить</button>
       </div>`);
   }
   if (cloud.key && cloud.error) {
@@ -1601,7 +1610,10 @@ const SERVICE_FORMS = ['услуга', 'услуги', 'услуг'];
 // Коротко о том, что внутри пункта, — видно, не открывая его.
 function settingsSummary(page) {
   const s = settings();
-  if (page === 'account') return cloud.account ? `${cloud.account.phone} · ${s.address ? 'адрес, ' : ''}пароль и выход` : 'Вход по номеру и паролю';
+  if (page === 'account') {
+    const sub = subscription();
+    return cloud.account ? `${cloud.account.phone}${sub && sub.until && !sub.unlimited ? ` · подписка до ${L.shortDate(sub.until)}` : ''} · пароль и выход` : 'Вход по номеру и паролю';
+  }
   if (page === 'cloud') return !cloud.key ? 'Не подключено' : cloud.pushOn ? 'Подключено, уведомления включены' : 'Подключено';
   if (page === 'prices') return data.prices.length ? `${data.prices.length} ${L.plural(data.prices.length, SERVICE_FORMS)}` : 'Услуг пока нет';
   if (page === 'hours') return `${L.shortTime(s.dayStart)}–${L.shortTime(s.lastStart)}`;
@@ -1690,6 +1702,7 @@ function settingsPageHtml(page) {
       return card(`
       <div class="line"><span>Имя для клиентов</span><b>${esc(s.clientName || a.name || '')}</b></div>
       <div class="line"><span>Телефон для входа</span><b>${esc(a.phone || '')}</b></div>
+      <div class="line"><span>Подписка</span><b>${esc(subscriptionText(subscription()))}</b></div>
       <p class="hint">В приложение входят по этому номеру и паролю. Имя видят клиенты по вашей ссылке — поменять его можно в «Ссылке для клиентов». Забыли пароль — его восстановит администратор.</p>
       <button class="btn secondary block" data-act="change-password">${icon('lock')} Сменить пароль</button>
       <button class="btn danger block" data-act="logout">Выйти из аккаунта</button>`) + card(`
@@ -1822,7 +1835,7 @@ function openRentMonth(month) {
         <p class="lead"><b>${L.formatMoney(L.rentFor(data.rent, month))}</b></p>
         <p class="hint">${paid ? `Оплата отмечена: ${L.shortDate(paid)} ${paid.slice(0, 4)}.` : 'Оплата за этот месяц ещё не отмечена.'}</p>
         <label>Дата оплаты<input type="date" name="date" value="${esc(paid || today())}"></label>
-        <button type="submit" class="btn primary block">${paid ? 'Сохранить дату' : 'Отметить оплату'}</button>
+        <button type="submit" class="btn primary block">${paid ? 'Сохранить дату' : 'Оплатил (-а)'}</button>
         ${paid ? `<button type="button" class="btn danger block" data-act="rent-unpaid" data-month="${month}">Снять отметку</button>` : ''}
       </form>`);
     const form = $('#rent-form');
@@ -1900,6 +1913,7 @@ async function api(method, path, body, type) {
   if (res.ok) return res;
   let message = `ошибка ${res.status}`;
   try { message = (await res.json()).error || message; } catch (e) { /* не JSON */ }
+  if (res.status === 402 && cloud.key) setTimeout(refreshAccount, 0);
   if (res.status === 401 && cloud.key) {
     // Вошли в аккаунт на другом телефоне или администратор сбросил пароль — снова вход.
     // Данные на телефоне остаются: если войдёт тот же мастер, их можно будет сохранить.
@@ -2093,7 +2107,27 @@ async function applyCloudBackup(copy) {
 function authGate() {
   if (!cloud.key) return ui.auth || (cloud.lastPhone ? 'login' : 'welcome'); // сервер вывел из аккаунта — сразу вход
   if (cloud.account && !cloud.account.claimed) return 'claim';
+  if (!subscriptionOk()) return 'expired';
   return null;
+}
+
+// Подписка (2.2.0): даты приходят с сервера, а проверяем по дате телефона — окно
+// «Продлите подписку» появится на следующий день после окончания и без связи.
+const subscription = () => (cloud.account && cloud.account.subscription) || null;
+const subscriptionOk = () => {
+  const sub = subscription();
+  return !sub || L.subscriptionActive(sub, today());
+};
+const fullDate = d => `${L.shortDate(d)} ${d.slice(0, 4)}`;
+
+function subscriptionText(sub) {
+  if (!sub) return 'нет данных — проверим при связи';
+  if (sub.unlimited) return 'бессрочная';
+  if (!sub.until) return 'не оформлена';
+  const left = L.subscriptionDaysLeft(sub, today());
+  const span = sub.from && sub.from <= sub.until ? `с ${L.shortDate(sub.from)} по ${fullDate(sub.until)}` : `до ${fullDate(sub.until)}`;
+  if (left < 0) return `закончилась ${fullDate(sub.until)}`;
+  return left <= 7 ? `${span} · осталось ${left} ${L.plural(left, ['день', 'дня', 'дней'])}` : span;
 }
 
 const newDeviceKey = () => L.bytesToB64u(crypto.getRandomValues(new Uint8Array(32)));
@@ -2109,6 +2143,11 @@ function renderAuth(screen) {
     <label>Пароль<input type="password" name="password" autocomplete="new-password" enterkeyhint="next" placeholder="Не короче 6 символов"></label>
     <label>Пароль ещё раз<input type="password" name="password2" autocomplete="new-password" enterkeyhint="done"></label>`;
   const phoneField = (phone = '') => `<label>Номер телефона<input type="tel" name="phone" autocomplete="username" value="${esc(L.phoneFieldStart(phone))}" enterkeyhint="next"></label>`;
+  const st = settings();
+  const placeFields = `
+    <label>Адрес, где вы принимаете<input name="address" value="${esc(st.address || '')}" maxlength="150" autocomplete="street-address" enterkeyhint="next" placeholder="Город, улица, дом, этаж или кабинет"></label>
+    <label>Ссылка на ваше место в 2ГИС<input name="gis" type="url" inputmode="url" value="${esc(st.gis || '')}" enterkeyhint="next" placeholder="https://go.2gis.com/…"></label>
+    <p class="hint">В 2ГИС найдите свой салон или дом → «Поделиться» → «Копировать ссылку» и вставьте сюда. Адрес и кнопку «Открыть в 2ГИС» увидят клиенты.</p>`;
   let html;
   if (screen === 'register') {
     html = `
@@ -2116,6 +2155,7 @@ function renderAuth(screen) {
       <form class="card page-card" id="auth-form" data-kind="register" novalidate>
         <label>Ваше имя<input name="name" autocomplete="name" autocapitalize="words" enterkeyhint="next" placeholder="Так вас увидят клиенты"></label>
         ${phoneField(ui.authPhone)}
+        ${placeFields}
         ${passwordFields}
         <p class="warn-text" id="auth-error" hidden></p>
         <button type="submit" class="btn primary block">Создать аккаунт</button>
@@ -2141,6 +2181,16 @@ function renderAuth(screen) {
         <div id="contact-box"><p class="hint">Загружаем контакт…</p></div>
       </section>
       <button class="btn ghost block" data-act="auth" data-screen="login">Назад ко входу</button>`;
+  } else if (screen === 'expired') {
+    const sub = subscription();
+    html = `
+      <h2 class="page-title">Продлите подписку</h2>
+      <section class="card page-card">
+        <p>Подписка на Nailapp закончилась${sub && sub.until ? ` ${esc(fullDate(sub.until))}` : ''}. Записи, клиенты и онлайн-запись для клиентов приостановлены — все ваши данные сохранены.</p>
+        <p class="hint">Чтобы продлить, напишите администратору Nailapp. Когда он отметит оплату, приложение снова откроется.</p>
+        <div id="contact-box"><p class="hint">Загружаем контакт…</p></div>
+        <button class="btn secondary block" data-act="check-subscription">Я оплатил(а) — проверить</button>
+      </section>`;
   } else if (screen === 'claim') {
     html = `
       <h2 class="page-title">Ваш аккаунт</h2>
@@ -2150,6 +2200,7 @@ function renderAuth(screen) {
       <form class="card page-card" id="auth-form" data-kind="claim" novalidate>
         <label>Ваше имя<input name="name" autocomplete="name" autocapitalize="words" enterkeyhint="next" value="${esc(settings().clientName || '')}" placeholder="Так вас увидят клиенты"></label>
         ${phoneField()}
+        ${placeFields}
         ${passwordFields}
         <p class="warn-text" id="auth-error" hidden></p>
         <button type="submit" class="btn primary block">Сохранить и продолжить</button>
@@ -2173,18 +2224,21 @@ function renderAuth(screen) {
       submitAuth(form);
     });
   }
-  if (screen === 'forgot') showContact();
+  if (screen === 'forgot' || screen === 'expired') showContact(screen);
 }
 
-// WhatsApp администратора для «Забыли пароль?» (задаётся на странице администратора).
-async function showContact() {
+// WhatsApp администратора для «Забыли пароль?» и «Продлите подписку» (задаётся на странице администратора).
+async function showContact(kind = 'forgot') {
   let whatsapp = '';
   try {
     whatsapp = (await (await api('GET', '/api/contact')).json()).whatsapp || '';
   } catch (e) { /* нет связи — покажем общий текст */ }
   const box = $('#contact-box');
   if (!box) return;
-  const text = `Здравствуйте! Не могу войти в Nailapp — забыт пароль. Мой номер для входа: ${ui.authPhone || cloud.lastPhone || ''}`;
+  const phone = (cloud.account && cloud.account.phone) || ui.authPhone || cloud.lastPhone || '';
+  const text = kind === 'forgot'
+    ? `Здравствуйте! Не могу войти в Nailapp — забыт пароль. Мой номер для входа: ${phone}`
+    : `Здравствуйте! Хочу продлить подписку на Nailapp. Мой номер для входа: ${phone}`;
   box.innerHTML = whatsapp
     ? `<a class="btn primary block" href="https://wa.me/${whatsapp}?text=${encodeURIComponent(text)}" target="_blank" rel="noopener">${icon('chat')} Написать администратору в WhatsApp</a>`
     : '<p class="hint">Напишите администратору Nailapp — тому, кто дал вам ссылку на приложение.</p>';
@@ -2203,8 +2257,12 @@ async function submitAuth(form) {
   const name = value('name').trim().replace(/\s+/g, ' ').slice(0, 40);
   const phone = L.phoneFromField(value('phone'));
   const password = value('password');
+  const address = L.addressText(value('address'));
+  const gis = L.gisLink(value('gis'));
   const error = kind !== 'login' && !name ? 'Укажите имя — его увидят клиенты'
     : L.phoneFieldDigits(phone).length < 10 ? 'Укажите номер телефона полностью'
+    : kind !== 'login' && !address ? 'Укажите адрес, где вы принимаете'
+    : kind !== 'login' && !gis ? 'Вставьте ссылку на своё место в 2ГИС: в 2ГИС «Поделиться» → «Копировать ссылку»'
     : password.length < 6 ? 'Пароль — не короче 6 символов'
     : kind !== 'login' && password !== value('password2') ? 'Пароли не совпадают'
     : '';
@@ -2221,7 +2279,7 @@ async function submitAuth(form) {
       cloud.account = res.account;
       cloud.lastPhone = res.account.phone;
       await dbSet('cloud', cloud).catch(() => {});
-      data.settings = { ...settings(), clientName: name };
+      data.settings = { ...settings(), clientName: name, address, gis };
       await save();
       render();
       toast('Аккаунт готов. Входите по номеру и паролю');
@@ -2238,7 +2296,7 @@ async function submitAuth(form) {
     ui.authNote = '';
     ui.authPhone = '';
     if (kind === 'register') {
-      data.settings = { ...settings(), clientName: name };
+      data.settings = { ...settings(), clientName: name, address, gis };
       await save();
       render();
       toast('Аккаунт создан');
@@ -2344,6 +2402,17 @@ async function logoutAccount() {
   render();
   scrollTo(0, 0);
   toast('Вы вышли из аккаунта');
+}
+
+// «Продлить» из предупреждения: WhatsApp администратора с готовым текстом.
+async function renewSubscription() {
+  let whatsapp = '';
+  try {
+    whatsapp = (await (await api('GET', '/api/contact')).json()).whatsapp || '';
+  } catch (e) { /* нет связи */ }
+  if (!whatsapp) return toast('Напишите администратору Nailapp — тому, кто дал вам ссылку на приложение');
+  const phone = (cloud.account && cloud.account.phone) || '';
+  location.href = `https://wa.me/${whatsapp}?text=${encodeURIComponent(`Здравствуйте! Хочу продлить подписку на Nailapp. Мой номер для входа: ${phone}`)}`;
 }
 
 // Убрать с телефона данные мастера: записи, фото, заявки.
@@ -2757,6 +2826,19 @@ const actions = {
     scrollTo(0, 0);
   },
   'change-password': () => openChangePassword(),
+  'check-subscription': async el => {
+    el.disabled = true;
+    await refreshAccount();
+    el.disabled = false;
+    if (subscriptionOk()) {
+      render();
+      toast('Подписка продлена — приложение снова работает');
+      scheduleSync(0);
+    } else {
+      toast('Оплата пока не отмечена — напишите администратору');
+    }
+  },
+  'renew': () => renewSubscription(),
   'logout': () => logoutAccount(),
   'toggle-mode': () => {
     const mode = colorMode() === 'dark' ? 'light' : 'dark';
@@ -2895,6 +2977,7 @@ addEventListener('online', () => scheduleSync(500));
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible' || !data) return;
   scheduleSync(800);
+  refreshAccount();
   // Приложение могли не закрывать несколько дней: «сегодня» должно сдвинуться.
   const t = today();
   if (t === ui.seenToday) return;

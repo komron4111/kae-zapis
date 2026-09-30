@@ -610,6 +610,15 @@ body.auth { padding-bottom: env(safe-area-inset-bottom); }
 body.admin .line b { white-space: normal; text-align: right; overflow-wrap: anywhere; }
 body.admin .menu-row > b { flex: none; font-variant-numeric: tabular-nums; }
 body.admin .page-card > .btn.small { margin-top: 10px; }
+body.admin .sub-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+body.admin .sub-row:last-child { border-bottom: 0; }
+body.admin .sub-check { width: 24px; height: 24px; flex: none; margin: 0; accent-color: var(--accent); }
+body.admin .sub-info { min-width: 0; padding: 0; border: 0; background: none; color: inherit; text-align: left; }
+body.admin .sub-info b { display: block; font-size: 16px; }
+body.admin .sub-info small { display: block; color: var(--muted); font-size: 13px; }
+body.admin .sub-row.off .sub-info small { color: var(--warn); }
+body.admin .until-form { display: flex; align-items: flex-end; gap: 8px; margin-top: 10px; }
+body.admin .until-form label { flex: 1; margin: 0; }
 .temp-password { margin: 10px 0; font-size: 28px; font-weight: 800; letter-spacing: .08em; text-align: center; -webkit-user-select: all; user-select: all; }
 
 /* ---------- Карточка клиента: Instagram, день рождения, откуда ---------- */

@@ -1,5 +1,6 @@
 // Страница администратора Nailapp. Разделы, в которые проваливаешься, как «Настройки» в приложении:
-// «Мастера» (поиск, карточка мастера, сброс пароля), «Сервер» (место в базе), «WhatsApp для мастеров»
+// «Мастера» (поиск, карточка мастера с подпиской, сброс пароля), «Подписки» (календарь по месяцам:
+// галочка «оплата получена» продлевает доступ на месяц), «Сервер» (место в базе), «WhatsApp для мастеров»
 // (куда пишут через «Забыли пароль?»), «Вход по Face ID». Назад — кнопкой «‹» или жестом браузера:
 // каждый раздел — запись в истории (history.pushState).
 //
@@ -24,6 +25,7 @@ const view = $('#view');
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 const ICONS = {
+  calendar: '<rect x="3" y="4.5" width="18" height="16.5" rx="3"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4"/>',
   users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20.5c.8-3.6 3.3-5.5 6.5-5.5s5.7 1.9 6.5 5.5"/><path d="M15.5 4.8a3.5 3.5 0 0 1 0 6.4M17.5 15.2c2 .6 3.4 2.4 4 5.3"/>',
   cloud: '<path d="M7 18.5a4.5 4.5 0 0 1-.6-9 6 6 0 0 1 11.6 1.6 3.8 3.8 0 0 1-.5 7.4z"/>',
   chat: '<path d="M21 11.5a8.5 8.5 0 0 1-12.4 7.6L3 21l1.9-5.4A8.5 8.5 0 1 1 21 11.5z"/>',
@@ -40,8 +42,10 @@ let dbSize = null; // размер всей базы, байт
 let contact = '';
 let passkeys = [];
 let query = '';
+let today = ''; // сегодня по Алматы — с сервера
+let subMonth = ''; // месяц в «Подписках», YYYY-MM
 
-// Где мы: '' — меню разделов; 'masters', 'master' (карточка masterId), 'server', 'contact', 'face'.
+// Где мы: '' — меню разделов; 'masters', 'master' (карточка masterId), 'subs', 'server', 'contact', 'face'.
 let page = '';
 let masterId = '';
 let resetNote = null; // временный пароль после сброса — показывается в карточке мастера один раз
@@ -177,6 +181,8 @@ async function load(first = false) {
     const list = await call('GET', '/api/admin/masters');
     masters = list.masters;
     dbSize = list.size;
+    today = list.today || L.ymd(new Date());
+    if (!subMonth) subMonth = L.monthOf(today);
     try {
       contact = (await (await fetch(`${API}/api/contact`, { cache: 'no-store' })).json()).whatsapp || '';
     } catch (e) { /* покажем пустое поле */ }
@@ -200,6 +206,7 @@ async function load(first = false) {
 
 const SECTIONS = {
   masters: ['users', 'Мастера'],
+  subs: ['calendar', 'Подписки'],
   server: ['cloud', 'Сервер'],
   contact: ['chat', 'WhatsApp для мастеров'],
   face: ['lock', 'Вход по Face ID'],
@@ -207,6 +214,12 @@ const SECTIONS = {
 
 function summary(id) {
   if (id === 'masters') return `${masters.length} · поиск, адреса, место, сброс пароля`;
+  if (id === 'subs') {
+    const ym = L.monthOf(today);
+    const paid = masters.filter(m => paidIn(m, ym).length).length;
+    const off = masters.filter(m => !sub(m).unlimited && !L.subscriptionActive(sub(m), today)).length;
+    return `оплатили в этом месяце: ${paid}${off ? ` · закончилась: ${off}` : ''}`;
+  }
   if (id === 'server') return dbSize ? `база ${size(dbSize)} из 500 МБ · место по мастерам` : 'место по мастерам';
   if (id === 'contact') return contact ? L.formatPhone(contact) : 'не указан — мастерам некуда писать';
   if (id === 'face') return passkeys.length ? `включён: ${passkeys.length} ${L.plural(passkeys.length, ['устройство', 'устройства', 'устройств'])}` : 'выключен';
@@ -261,7 +274,7 @@ function render(anim) {
     <div class="slide-clip"><div class="settings-page${enter}">
       <button class="back-link" data-back>${icon('left')} ${backTitle}</button>
       <h2 class="page-title">${title}</h2>
-      ${m ? masterHtml(m) : page === 'masters' ? mastersHtml() : page === 'server' ? serverHtml() : page === 'contact' ? contactHtml() : faceHtml()}
+      ${m ? masterHtml(m) : page === 'masters' ? mastersHtml() : page === 'subs' ? subsHtml() : page === 'server' ? serverHtml() : page === 'contact' ? contactHtml() : faceHtml()}
     </div></div>`;
   if (page === 'masters') {
     const search = $('#q');
@@ -271,6 +284,8 @@ function render(anim) {
     });
   }
   if (page === 'contact') $('#contact-form').addEventListener('submit', saveContact);
+  const untilForm = $('#until-form');
+  if (untilForm) untilForm.addEventListener('submit', saveUntil);
   if (page === 'face') prepareRegister();
 }
 
@@ -297,7 +312,7 @@ function rows() {
     || (qd.length >= 3 && L.phoneDigits(m.phone).includes(qd)));
   return list.map(m => `
     <button class="menu-row" data-master="${esc(m.id)}">
-      <span class="grow"><b>${esc(m.name || 'Без имени')}</b><small>${esc([m.phone || 'номер не указан', m.address, `${size(total(m.storage))} на сервере`].filter(Boolean).join(' · '))}</small></span>
+      <span class="grow"><b>${esc(m.name || 'Без имени')}</b><small>${esc([m.phone || 'номер не указан', shortAccess(m), m.address, `${size(total(m.storage))} на сервере`].filter(Boolean).join(' · '))}</small></span>
       ${icon('right')}
     </button>`).join('') || '<p class="hint list-empty">Никого не нашли</p>';
 }
@@ -337,6 +352,7 @@ function masterHtml(m) {
       <div class="link-box">${esc(link)}</div>
       <a class="btn small secondary" href="${esc(link)}" target="_blank" rel="noopener">Открыть</a>
     </section>
+    ${subscriptionCard(m)}
     <section class="card page-card">
       <h3 class="card-title">Данные на сервере — ${size(total(st))}</h3>
       <div class="line"><span>Фото, ${st.photos} шт.</span><b>${size(st.photoBytes)}</b></div>
@@ -344,6 +360,138 @@ function masterHtml(m) {
       <div class="line"><span>Прочее (расписание, записи клиентов)</span><b>${size(st.otherBytes)}</b></div>
     </section>
     ${m.phone ? `<button class="btn secondary block" data-reset="${esc(m.id)}">Сбросить пароль</button>` : ''}`;
+}
+
+// ---------- Подписки ----------
+
+const sub = m => m.subscription || { until: null, unlimited: false, periods: [] };
+const fullDate = d => `${L.shortDate(d)} ${d.slice(0, 4)}`;
+const almatyDate = iso => L.masterClock(-300, Date.parse(iso)).date; // когда отмечено — по Алматы
+const DAY_FORMS = ['день', 'дня', 'дней'];
+
+function accessText(m) {
+  const s = sub(m);
+  if (s.unlimited) return 'бессрочно';
+  if (!s.until) return 'подписки нет';
+  const left = L.subscriptionDaysLeft(s, today);
+  if (left < 0) return `закончилась ${fullDate(s.until)} — доступ приостановлен`;
+  return `доступ до ${fullDate(s.until)}${left <= 7 ? ` · осталось ${left} ${L.plural(left, DAY_FORMS)}` : ''}`;
+}
+
+function shortAccess(m) {
+  const s = sub(m);
+  if (s.unlimited) return 'бессрочно';
+  if (!s.until) return '';
+  return L.subscriptionActive(s, today) ? `до ${L.shortDate(s.until)}` : 'подписка закончилась';
+}
+
+// Оплаты, отмеченные в месяце ym, и дни доступа, которые на него приходятся.
+const paidIn = (m, ym) => sub(m).periods.filter(p => p.kind === 'paid' && almatyDate(p.marked).startsWith(ym));
+function coverage(m, ym) {
+  const first = `${ym}-01`, last = L.addDays(L.addMonthsToDate(first, 1), -1);
+  const ps = sub(m).periods.filter(p => p.from <= last && p.to >= first);
+  if (!ps.length) return null;
+  return { from: ps.map(p => p.from).sort()[0], to: ps.map(p => p.to).sort().pop() };
+}
+
+// Календарь по месяцам: все мастера, зарегистрированные к концу месяца, в порядке регистрации.
+// Галочка — оплата получена в этом месяце; ставить и снимать — только в текущем.
+function subsHtml() {
+  const current = subMonth === L.monthOf(today);
+  const last = L.addDays(L.addMonthsToDate(`${subMonth}-01`, 1), -1);
+  const list = masters.filter(m => almatyDate(m.created) <= last).sort((a, b) => a.created.localeCompare(b.created));
+  const paidCount = list.filter(m => paidIn(m, subMonth).length).length;
+  const rows = list.map(m => {
+    const s = sub(m);
+    const paid = paidIn(m, subMonth);
+    const cov = coverage(m, subMonth);
+    const status = s.unlimited ? 'бессрочно' : current ? accessText(m) : cov ? `доступ с ${L.shortDate(cov.from)} по ${fullDate(cov.to)}` : 'без доступа';
+    const note = paid.length ? `оплата ${paid.map(p => L.shortDate(almatyDate(p.marked))).join(', ')}` : '';
+    const off = !s.unlimited && current && !L.subscriptionActive(s, today);
+    return `
+      <div class="sub-row${off ? ' off' : ''}">
+        <input type="checkbox" class="sub-check" data-pay="${esc(m.id)}" aria-label="Оплата от ${esc(m.name)} получена" ${paid.length ? 'checked' : ''} ${current && !s.unlimited ? '' : 'disabled'}>
+        <button class="sub-info grow" data-master="${esc(m.id)}"><b>${esc(m.name || 'Без имени')}</b><small>${esc([status, note].filter(Boolean).join(' · '))}</small></button>
+      </div>`;
+  }).join('');
+  return `
+    <div class="month-nav">
+      <button class="icon-btn" data-month="-1" aria-label="Предыдущий месяц">${icon('left')}</button>
+      <b>${L.monthTitle(subMonth)}</b>
+      <button class="icon-btn" data-month="1" aria-label="Следующий месяц">${icon('right')}</button>
+    </div>
+    <p class="hint">Оплатили${current ? ' в этом месяце' : ''}: ${paidCount} из ${list.length}.</p>
+    <section class="card list">${rows || '<p class="hint list-empty">В этом месяце мастеров ещё не было</p>'}</section>
+    <p class="hint">Галочка — «оплата получена»: доступ мастера продлевается на месяц — от конца текущего периода, а если он уже закончился, с сегодняшнего дня. Отметили по ошибке — снимите галочку. Отмечать можно в текущем месяце. Нажмите на мастера — там все его периоды, бессрочный доступ и дата окончания.</p>`;
+}
+
+// Подписка в карточке мастера: сейчас, все периоды, продлить, отменить, дата, бессрочно.
+function subscriptionCard(m) {
+  const s = sub(m);
+  const next = L.nextPeriod(s.until, today);
+  const kinds = { trial: 'первый месяц', manual: 'изменено вручную' };
+  const periods = [...s.periods].reverse().map(p => `
+    <div class="line"><span>${esc(L.shortDate(p.from))} – ${esc(fullDate(p.to))}</span><b>${esc(p.kind === 'paid' ? `оплата ${L.shortDate(almatyDate(p.marked))}` : kinds[p.kind] || p.kind)}</b></div>`).join('');
+  const hasPaid = s.periods.some(p => p.kind === 'paid');
+  return `
+    <section class="card page-card">
+      <h3 class="card-title">Подписка</h3>
+      <div class="line"><span>Сейчас</span><b>${esc(accessText(m))}</b></div>
+      ${periods}
+      ${s.unlimited ? '' : `<button class="btn primary block" data-sub="extend">Оплата получена — продлить до ${esc(fullDate(next.end))}</button>`}
+      ${hasPaid && !s.unlimited ? '<button class="btn ghost block" data-sub="undo">Отменить последнюю оплату</button>' : ''}
+      ${s.unlimited ? '' : `
+      <form id="until-form" class="until-form" novalidate>
+        <label>Доступ до<input type="date" name="until" value="${esc(s.until || '')}"></label>
+        <button type="submit" class="btn small secondary">Сохранить</button>
+      </form>`}
+      <button class="btn ghost block" data-sub="unlimited">${s.unlimited ? 'Отключить бессрочный доступ' : 'Сделать доступ бессрочным'}</button>
+    </section>`;
+}
+
+async function changeSubscription(id, body) {
+  try {
+    await call('POST', `/api/admin/masters/${encodeURIComponent(id)}/subscription`, body);
+  } catch (e) {
+    return alert(e.message);
+  }
+  await load();
+}
+
+// Галочка в календаре: поставить — оплата получена (+ месяц), снять — отменить последнюю оплату.
+async function togglePayment(id, want) {
+  const m = masters.find(x => x.id === id);
+  if (!m) return;
+  if (want) {
+    const next = L.nextPeriod(sub(m).until, today);
+    if (!confirm(`Оплата от ${m.name} получена? Доступ продлится до ${fullDate(next.end)}.`)) return;
+    return changeSubscription(id, { action: 'extend' });
+  }
+  if (!confirm(`Снять отметку об оплате от ${m.name}? Последний оплаченный месяц отменится.`)) return;
+  return changeSubscription(id, { action: 'undo' });
+}
+
+function subscriptionAction(action) {
+  const m = masters.find(x => x.id === masterId);
+  if (!m) return;
+  const s = sub(m);
+  if (action === 'extend') return togglePayment(m.id, true);
+  if (action === 'undo') return togglePayment(m.id, false);
+  if (action === 'unlimited') {
+    const on = !s.unlimited;
+    if (!confirm(on ? `Сделать доступ ${m.name} бессрочным? Подписка больше не будет заканчиваться.` : `Отключить бессрочный доступ ${m.name}? Доступ будет до ${s.until ? fullDate(s.until) : 'сегодня'}.`)) return;
+    return changeSubscription(m.id, { action: 'unlimited', value: on });
+  }
+}
+
+async function saveUntil(e) {
+  e.preventDefault();
+  const m = masters.find(x => x.id === masterId);
+  const value = e.target.elements.until.value;
+  if (!m || !value) return;
+  const note = value < today ? ' Доступ сразу приостановится.' : '';
+  if (!confirm(`Доступ ${m.name} — до ${fullDate(value)}?${note}`)) return;
+  return changeSubscription(m.id, { action: 'until', value });
 }
 
 // ---------- Сервер ----------
@@ -492,8 +640,14 @@ async function resetPassword(id) {
 }
 
 view.addEventListener('click', e => {
-  const target = e.target.closest('[data-go], [data-master], [data-back], [data-reset], [data-unkey], #add-face, #leave');
+  const target = e.target.closest('[data-go], [data-master], [data-back], [data-reset], [data-unkey], [data-month], [data-sub], #add-face, #leave');
   if (!target) return;
+  if (target.dataset.month) {
+    subMonth = L.addMonths(subMonth, Number(target.dataset.month));
+    render();
+    return;
+  }
+  if (target.dataset.sub) return subscriptionAction(target.dataset.sub);
   if (target.dataset.go) go(target.dataset.go);
   else if (target.dataset.master) go('master', target.dataset.master);
   else if ('back' in target.dataset) history.back();
@@ -501,6 +655,14 @@ view.addEventListener('click', e => {
   else if (target.dataset.unkey) removeFace(target.dataset.unkey);
   else if (target.id === 'add-face') addFace();
   else if (target.id === 'leave') renderLogin();
+});
+
+view.addEventListener('change', e => {
+  const box = e.target.closest('[data-pay]');
+  if (!box) return;
+  const want = box.checked;
+  box.checked = !want; // галочка встанет, когда сервер подтвердит
+  togglePayment(box.dataset.pay, want);
 });
 
 renderLogin();

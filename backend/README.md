@@ -41,7 +41,13 @@
   - `GET /api/admin/masters` — все мастера: адрес и 2ГИС из расписания, объём данных (`storage`: фото, копии, прочее) и размер всей базы (`size`);
   - `POST /api/admin/masters/:id/password` — новый пароль мастеру (его телефон выходит из аккаунта);
   - `PUT /api/admin/contact` — свой WhatsApp;
+  - `POST /api/admin/masters/:id/subscription` — подписка мастера: `{action: 'extend'}` (оплата получена, +месяц), `'undo'` (отменить последнюю оплату), `'unlimited'` с `value` true/false, `'until'` с `value` YYYY-MM-DD;
   - вход по Face ID (WebAuthn): `GET /api/admin/passkeys`, `POST /api/admin/passkey/options` и `POST /api/admin/passkeys` — включить на устройстве, `DELETE /api/admin/passkeys/:id` — убрать. Без кода: `POST /api/admin/passkey/login-options` и `POST /api/admin/passkey/login` → сеанс на 12 часов (`Authorization: Session <сеанс>` вместо кода).
+
+## Подписки
+
+- `masters.paid_until` — последний день доступа (по времени Алматы), `masters.unlimited` — бессрочно; периоды — таблица `subscriptions` (`trial` — первый месяц после регистрации, `paid` — оплата, отмеченная администратором, `manual` — дата вручную). Миграция 0008.
+- Подписка закончилась: запросы телефона мастера, кроме аккаунта (`/api/account…`), получают 402 «Подписка закончилась — продлите её у администратора»; `GET /api/okna` отвечает `paused: true` без свободного времени, заявки — 503. Личные ссылки клиентов работают.
 
 ## Аккаунты и пароли
 

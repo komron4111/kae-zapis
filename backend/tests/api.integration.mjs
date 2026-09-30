@@ -158,6 +158,43 @@ check('администратор задаёт свой WhatsApp', r.status === 
 r = await call('GET', '/api/contact');
 check('«Забыли пароль?» видит WhatsApp администратора', r.data.whatsapp === '77000000009');
 
+// ---------- Подписки ----------
+const todayKz = L.masterClock(-300).date; // подписка — по времени Алматы
+const trialEnd = L.subscriptionEnd(todayKz);
+r = await call('GET', '/api/account', { key: A.key });
+const firstSub = r.data.account && r.data.account.subscription;
+check('первый месяц после регистрации', Boolean(firstSub) && firstSub.kind === 'trial' && firstSub.from === todayKz && firstSub.until === trialEnd && firstSub.active === true, JSON.stringify(firstSub));
+const aId = (await call('GET', '/api/admin/masters', { admin: CODE })).data.masters.find(m => m.slug === A.slug).id;
+const subCall = (id, body) => call('POST', `/api/admin/masters/${id}/subscription`, { admin: CODE, body });
+r = await subCall(aId, { action: 'extend' });
+check('оплата получена — ещё месяц от конца первого', r.status === 200 && r.data.subscription.until === L.subscriptionEnd(L.addDays(trialEnd, 1)), JSON.stringify(r.data.subscription && r.data.subscription.until));
+r = await subCall(aId, { action: 'undo' });
+check('отменить оплату — снова до конца первого месяца', r.status === 200 && r.data.subscription.until === trialEnd);
+r = await subCall(aId, { action: 'until', value: L.addDays(todayKz, -1) });
+check('администратор сократил доступ до вчера', r.status === 200 && r.data.subscription.active === false);
+r = await call('GET', '/api/requests', { key: A.key });
+check('подписка закончилась — данные мастера закрыты (402)', r.status === 402, r.data.error);
+r = await call('GET', '/api/account', { key: A.key });
+check('аккаунт открывается и говорит, что подписка закончилась', r.status === 200 && r.data.account.subscription.active === false);
+r = await call('GET', `/api/okna?m=${A.slug}`);
+check('ссылка для клиентов на паузе', r.status === 200 && r.data.paused === true && r.data.booking === false && r.data.days.length === 0 && r.data.name === 'Айгерим', JSON.stringify(r.data).slice(0, 160));
+r = await call('POST', `/api/requests?m=${A.slug}`, { body: { date: d1, time: '11:00', name: 'Клиентка', phone: '+7 701 555 44 33', services: ['Маникюр'] } });
+check('заявки не принимаются — 503', r.status === 503, r.data.error);
+r = await call('GET', `/api/bookings/${token}`);
+check('личная ссылка клиента работает и на паузе', r.status === 200 && r.data.status === 'confirmed');
+r = await subCall(aId, { action: 'extend' });
+check('оплата после окончания — месяц с сегодняшнего дня', r.status === 200 && r.data.subscription.until === trialEnd && r.data.subscription.active === true, r.data.subscription && r.data.subscription.until);
+r = await call('GET', '/api/requests', { key: A.key });
+check('доступ вернулся', r.status === 200);
+r = await subCall(aId, { action: 'unlimited', value: true });
+check('бессрочный доступ', r.status === 200 && r.data.subscription.unlimited === true && r.data.subscription.active === true);
+r = await subCall(aId, { action: 'unlimited', value: false });
+r = await subCall(aId, { action: 'until', value: '2026-02-30' });
+check('неверная дата — 400', r.status === 400, r.data.error);
+r = await call('GET', '/api/admin/masters', { admin: CODE });
+const withSub = r.data.masters.find(m => m.id === aId);
+check('администратор видит периоды подписки и сегодняшний день', r.data.today === todayKz && withSub.subscription.periods.some(p => p.kind === 'paid' && p.from === todayKz));
+
 // ---------- Вход администратора по Face ID (программный «телефон») ----------
 const ORIGIN = 'http://localhost:8765';
 const adminHeader = { Authorization: `Admin ${L.bytesToB64u(new TextEncoder().encode(CODE))}` };

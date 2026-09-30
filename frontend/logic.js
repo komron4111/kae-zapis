@@ -294,6 +294,42 @@ export function formatRanges(ranges) {
   return ranges.map(([a, b]) => (a === b ? shortTime(a) : `${shortTime(a)}–${shortTime(b)}`)).join(', ');
 }
 
+// ---------- Подписка мастера ----------
+// Доступ открыт по последний день периода включительно; на следующий день приложение
+// просит продлить подписку. Период — месяц: с даты по день перед тем же числом следующего месяца.
+
+// Тот же день через n месяцев; если такого дня нет (31 января → февраль) — последний день месяца.
+export function addMonthsToDate(dateStr, n) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const total = y * 12 + (m - 1) + n;
+  const ny = Math.floor(total / 12), nm = total - ny * 12;
+  const last = new Date(ny, nm + 1, 0).getDate();
+  return `${ny}-${pad2(nm + 1)}-${pad2(Math.min(d, last))}`;
+}
+
+// Последний день месячного периода, который начинается с start.
+export function subscriptionEnd(start) {
+  return addDays(addMonthsToDate(start, 1), -1);
+}
+
+// Следующий оплаченный месяц: сразу после текущего периода, а если доступ уже закончился
+// (или его не было) — с сегодняшнего дня.
+export function nextPeriod(until, today) {
+  const start = until && until >= today ? addDays(until, 1) : today;
+  return { start, end: subscriptionEnd(start) };
+}
+
+// sub — { until: 'YYYY-MM-DD' | null, unlimited }.
+export function subscriptionActive(sub, today) {
+  return Boolean(sub && (sub.unlimited || (sub.until && today <= sub.until)));
+}
+
+// Сколько дней осталось после сегодняшнего (0 — сегодня последний день). null — бессрочно или без даты.
+export function subscriptionDaysLeft(sub, today) {
+  if (!sub || sub.unlimited || !sub.until) return null;
+  return Math.round((parseYmd(sub.until) - parseYmd(today)) / 864e5);
+}
+
 // ---------- Где принимает мастер: адрес и 2ГИС ----------
 
 // Адрес одной строкой, до 150 знаков.

@@ -86,7 +86,7 @@ async function load() {
     if (res.ok) {
       const raw = await res.json();
       const clean = L.cleanSchedule(raw);
-      return clean && { ...clean, booking: raw.booking === true, legacy: raw.legacy === true, slug: String(raw.slug || '').replace(/[^\w-]/g, '') };
+      return clean && { ...clean, booking: raw.booking === true, legacy: raw.legacy === true, paused: raw.paused === true, slug: String(raw.slug || '').replace(/[^\w-]/g, '') };
     }
     if (res.status === 404) return { missing: true };
   } catch (e) { /* покажем ошибку */ }
@@ -103,6 +103,17 @@ function render() {
   document.title = `Запись — ${name}`;
   // Шапка — как в приложении (логотип и Nailapp, в okna/index.html), имя мастера — в заголовке.
   const title = `<h2 class="okna-title">Запись к мастеру ${esc(name)}</h2>`;
+  // Подписка мастера на Nailapp закончилась: онлайн-запись на паузе, записаться — через WhatsApp.
+  if (s.paused) {
+    view.innerHTML = `
+      ${title}
+      ${placeHtml(s.address, s.gis)}
+      <section class="card page-card">
+        <p>Онлайн-запись к этому мастеру временно недоступна.</p>
+        ${s.whatsapp ? `<a class="btn primary block" href="${esc(whatsappLink('Здравствуйте! Хочу записаться к вам.'))}" target="_blank" rel="noopener">Написать мастеру в WhatsApp</a>` : '<p class="hint">Свяжитесь с мастером, чтобы записаться.</p>'}
+      </section>`;
+    return;
+  }
 
   const clock = L.masterClock(s.tzOffset || 0);
   // Время свободно, если в него помещается хотя бы самая короткая услуга;

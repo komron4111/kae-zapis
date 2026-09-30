@@ -643,6 +643,33 @@ test('расписание для клиентов: чужой код и мус�
   eq(L.cleanSchedule('okna'), null);
 });
 
+test('подписка: месяц с даты, конец месяца, февраль', () => {
+  eq(L.addMonthsToDate('2026-01-31', 1), '2026-02-28');
+  eq(L.addMonthsToDate('2024-01-31', 1), '2024-02-29');
+  eq(L.addMonthsToDate('2026-12-15', 1), '2027-01-15');
+  eq(L.addMonthsToDate('2026-03-31', -1), '2026-02-28');
+  eq(L.subscriptionEnd('2026-09-30'), '2026-10-29');
+  eq(L.subscriptionEnd('2026-10-20'), '2026-11-19');
+  eq(L.subscriptionEnd('2026-01-31'), '2026-02-27');
+});
+
+test('подписка: продление от конца периода или с сегодняшнего дня', () => {
+  eq(L.nextPeriod('2026-10-29', '2026-10-10'), { start: '2026-10-30', end: '2026-11-29' }); // ещё идёт — продолжаем
+  eq(L.nextPeriod('2026-10-10', '2026-10-10'), { start: '2026-10-11', end: '2026-11-10' }); // последний день
+  eq(L.nextPeriod('2026-10-01', '2026-10-10'), { start: '2026-10-10', end: '2026-11-09' }); // закончилась — с сегодня
+  eq(L.nextPeriod(null, '2026-10-10'), { start: '2026-10-10', end: '2026-11-09' });
+});
+
+test('подписка: доступ по последний день включительно', () => {
+  eq(L.subscriptionActive({ until: '2026-10-29' }, '2026-10-29'), true);
+  eq(L.subscriptionActive({ until: '2026-10-29' }, '2026-10-30'), false);
+  eq(L.subscriptionActive({ until: null, unlimited: true }, '2030-01-01'), true);
+  eq(L.subscriptionActive(null, '2026-10-01'), false);
+  eq(L.subscriptionDaysLeft({ until: '2026-10-29' }, '2026-10-26'), 3);
+  eq(L.subscriptionDaysLeft({ until: '2026-10-29' }, '2026-10-30'), -1);
+  eq(L.subscriptionDaysLeft({ until: '2026-10-29', unlimited: true }, '2026-10-26'), null);
+});
+
 test('контрольная сумма CRC32', () => {
   eq(Z.crc32(new TextEncoder().encode('The quick brown fox jumps over the lazy dog')), 0x414FA339);
   eq(Z.crc32(new Uint8Array()), 0);

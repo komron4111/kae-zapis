@@ -94,6 +94,7 @@ async function route(request, env, ctx) {
     if ((m = path.match(/^\/api\/admin\/passkeys\/([\w-]+)$/)) && method === 'DELETE') return deletePasskey(env, m[1]);
     if ((m = path.match(/^\/api\/admin\/masters\/([\w-]+)\/password$/)) && method === 'POST') return resetPassword(request, env, m[1]);
     if (path === '/api/admin/contact' && method === 'PUT') return putContact(request, env);
+    if ((m = path.match(/^\/api\/admin\/masters\/([\w-]+)\/subscription$/)) && method === 'POST') return changeSubscription(request, env, m[1]);
     throw new HttpError(404, 'Не найдено');
   }
 
@@ -103,6 +104,8 @@ async function route(request, env, ctx) {
   if (path === '/api/account/claim' && method === 'POST') return claimAccount(request, env, me);
   if (path === '/api/account/password' && method === 'PUT') return changePassword(request, env, me);
   if (path === '/api/account/session' && method === 'DELETE') return logout(env, me);
+  // Подписка закончилась: данные мастера не принимаем и не отдаём, пока администратор её не продлит.
+  if (!me.active) throw new HttpError(402, 'Подписка закончилась — продлите её у администратора');
   if (path === '/api/push' && method === 'PUT') return savePush(request, env, me);
   if (path === '/api/schedule' && method === 'PUT') return saveSchedule(request, env, me);
   if (path === '/api/requests' && method === 'GET') return listRequests(env, me);
@@ -234,8 +237,8 @@ async function vapidKeys(env) {
 async function masterBySlug(env, slug) {
   const s = String(slug || '').trim().toLowerCase();
   const row = s
-    ? await env.DB.prepare('SELECT id, name, slug FROM masters WHERE slug = ?').bind(s).first()
-    : await env.DB.prepare('SELECT id, name, slug FROM masters WHERE id = ?').bind(LEGACY).first();
+    ? await env.DB.prepare('SELECT id, name, slug, paid_until, unlimited FROM masters WHERE slug = ?').bind(s).first()
+    : await env.DB.prepare('SELECT id, name, slug, paid_until, unlimited FROM masters WHERE id = ?').bind(LEGACY).first();
   if (!row) throw new HttpError(404, 'Мастер не найден — проверьте ссылку');
   return row;
 }
@@ -250,7 +253,28 @@ async function freeSlug(env, name) {
   return `${base}-${Date.now().toString(36)}`;
 }
 
-const accountJson = m => ({ name: m.name, phone: m.phone ? L.formatPhone(m.phone) : '', slug: m.slug, claimed: Boolean(m.pass_hash) });
+// ---------- Подписка ----------
+// Доступ открыт по paid_until включительно, по времени Алматы (весь Казахстан — UTC+5).
+const almatyToday = () => L.masterClock(-300).date;
+
+async function periodsOf(env, masterId) {
+  const { results } = await env.DB.prepare('SELECT start_date, end_date, kind, created FROM subscriptions WHERE master_id = ? ORDER BY start_date, id')
+    .bind(masterId).all();
+  return results.map(r => ({ from: r.start_date, to: r.end_date, kind: r.kind, marked: r.created }));
+}
+
+// Что видит мастер: текущий период (или последний), до какого дня доступ, открыт ли он сейчас.
+function subscriptionJson(m, periods) {
+  const today = almatyToday();
+  const sub = { until: m.paid_until || null, unlimited: Boolean(m.unlimited) };
+  const current = periods.find(p => p.from <= today && today <= p.to) || periods[periods.length - 1] || null;
+  return { ...sub, from: current ? current.from : null, kind: current ? current.kind : null, active: L.subscriptionActive(sub, today) };
+}
+
+const accountJson = (m, periods = []) => ({
+  name: m.name, phone: m.phone ? L.formatPhone(m.phone) : '', slug: m.slug, claimed: Boolean(m.pass_hash),
+  subscription: subscriptionJson(m, periods),
+});
 const hashSecret = (salt, secret) => sha256hex(`${salt}:${secret}`);
 
 function readName(body) {
@@ -304,17 +328,20 @@ async function register(request, env) {
     throw new HttpError(409, 'Этот номер уже зарегистрирован — войдите по нему');
   }
   const id = crypto.randomUUID(), salt = newToken(), now = new Date().toISOString();
-  const master = { name, phone, slug: await freeSlug(env, name), pass_hash: await hashSecret(salt, secret) };
+  const first = L.nextPeriod(null, almatyToday()); // первый месяц — с дня регистрации
+  const master = { name, phone, slug: await freeSlug(env, name), pass_hash: await hashSecret(salt, secret), paid_until: first.end, unlimited: 0 };
   try {
-    await env.DB.prepare('INSERT INTO masters (id, phone, name, slug, pass_hash, pass_salt, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      .bind(id, phone, name, master.slug, master.pass_hash, salt, now, now).run();
+    await env.DB.prepare('INSERT INTO masters (id, phone, name, slug, pass_hash, pass_salt, created, updated, paid_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .bind(id, phone, name, master.slug, master.pass_hash, salt, now, now, first.end).run();
   } catch (e) {
     // Два запроса с одним номером одновременно: второй упирается в UNIQUE.
     if (/UNIQUE/i.test(String(e && e.message))) throw new HttpError(409, 'Этот номер уже зарегистрирован — войдите по нему');
     throw e;
   }
+  await env.DB.prepare("INSERT INTO subscriptions (master_id, start_date, end_date, kind, created) VALUES (?, ?, ?, 'trial', ?)")
+    .bind(id, first.start, first.end, now).run();
   await startSession(env, id, key, body.device);
-  return json({ ok: true, account: accountJson(master), pushKey: (await vapidKeys(env)).publicKey }, 201);
+  return json({ ok: true, account: accountJson(master, [{ from: first.start, to: first.end, kind: 'trial', marked: now }]), pushKey: (await vapidKeys(env)).publicKey }, 201);
 }
 
 async function login(request, env) {
@@ -327,25 +354,25 @@ async function login(request, env) {
   if (await tooMany(env, 'login', who, 10, HOUR) || await tooMany(env, 'login-phone', byPhone, 20, HOUR)) {
     throw new HttpError(429, 'Слишком много попыток входа. Попробуйте через час или напишите администратору');
   }
-  const master = await env.DB.prepare('SELECT id, name, phone, slug, pass_hash, pass_salt FROM masters WHERE phone = ?').bind(phone).first();
+  const master = await env.DB.prepare('SELECT id, name, phone, slug, pass_hash, pass_salt, paid_until, unlimited FROM masters WHERE phone = ?').bind(phone).first();
   if (!master || !master.pass_hash || await hashSecret(master.pass_salt, secret) !== master.pass_hash) {
     await remember(env, 'login', who);
     await remember(env, 'login-phone', byPhone);
     throw new HttpError(403, 'Неверный номер или пароль');
   }
   await startSession(env, master.id, key, body.device);
-  return json({ ok: true, account: accountJson(master), pushKey: (await vapidKeys(env)).publicKey });
+  return json({ ok: true, account: accountJson(master, await periodsOf(env, master.id)), pushKey: (await vapidKeys(env)).publicKey });
 }
 
 async function getAccount(env, me) {
-  const master = await env.DB.prepare('SELECT name, phone, slug, pass_hash FROM masters WHERE id = ?').bind(me.masterId).first();
+  const master = await env.DB.prepare('SELECT name, phone, slug, pass_hash, paid_until, unlimited FROM masters WHERE id = ?').bind(me.masterId).first();
   if (!master) throw new HttpError(401, 'Аккаунт не найден — войдите заново');
-  return json({ account: accountJson(master) });
+  return json({ account: accountJson(master, await periodsOf(env, me.masterId)) });
 }
 
 // Прежний мастер (до 2.0.0) задаёт номер, имя и пароль — дальше входит, как все.
 async function claimAccount(request, env, me) {
-  const master = await env.DB.prepare('SELECT name, phone, slug, pass_hash FROM masters WHERE id = ?').bind(me.masterId).first();
+  const master = await env.DB.prepare('SELECT name, phone, slug, pass_hash, paid_until, unlimited FROM masters WHERE id = ?').bind(me.masterId).first();
   if (!master) throw new HttpError(401, 'Аккаунт не найден — войдите заново');
   if (master.pass_hash) throw new HttpError(409, 'Аккаунт уже оформлен');
   const body = await readJson(request, 2048);
@@ -358,7 +385,7 @@ async function claimAccount(request, env, me) {
   const salt = newToken(), hash = await hashSecret(salt, secret);
   await env.DB.prepare('UPDATE masters SET phone = ?, name = ?, pass_hash = ?, pass_salt = ?, updated = ? WHERE id = ?')
     .bind(phone, name, hash, salt, new Date().toISOString(), me.masterId).run();
-  return json({ ok: true, account: accountJson({ ...master, name, phone, pass_hash: hash }) });
+  return json({ ok: true, account: accountJson({ ...master, name, phone, pass_hash: hash }, await periodsOf(env, me.masterId)) });
 }
 
 async function changePassword(request, env, me) {
@@ -407,9 +434,10 @@ async function pair(request, env) {
 async function authDevice(request, env) {
   const m = (request.headers.get('Authorization') || '').match(/^Bearer ([\w-]{40,100})$/);
   if (!m) throw new HttpError(401, 'Войдите в аккаунт');
-  const row = await env.DB.prepare('SELECT id, master_id FROM devices WHERE key_hash = ?').bind(await sha256hex(m[1])).first();
+  const row = await env.DB.prepare(`SELECT d.id, d.master_id, m.paid_until, m.unlimited FROM devices d
+    LEFT JOIN masters m ON m.id = d.master_id WHERE d.key_hash = ?`).bind(await sha256hex(m[1])).first();
   if (!row) throw new HttpError(401, 'Вы вошли в аккаунт на другом телефоне или пароль сменили — войдите снова');
-  return { deviceId: row.id, masterId: row.master_id };
+  return { deviceId: row.id, masterId: row.master_id, active: L.subscriptionActive({ until: row.paid_until, unlimited: row.unlimited }, almatyToday()) };
 }
 
 // ---------- Администратор ----------
@@ -550,7 +578,7 @@ async function deletePasskey(env, id) {
 // (фото, копии; «прочее» — расписание и записи клиентов по личным ссылкам). size — вся база.
 async function listMasters(env) {
   const { results, meta } = await env.DB.prepare(`
-    SELECT m.id, m.name, m.phone, m.slug, m.created, m.pass_hash <> '' AS claimed,
+    SELECT m.id, m.name, m.phone, m.slug, m.created, m.pass_hash <> '' AS claimed, m.paid_until, m.unlimited,
       (SELECT COUNT(*) FROM devices d WHERE d.master_id = m.id) AS devices,
       s.updated AS active, json_extract(s.value, '$.address') AS address, json_extract(s.value, '$.gis') AS gis,
       (SELECT COUNT(*) FROM photos p WHERE p.master_id = m.id) AS photos,
@@ -561,13 +589,18 @@ async function listMasters(env) {
         + (SELECT COALESCE(SUM(LENGTH(k.name) + LENGTH(k.services) + 120), 0) FROM bookings k WHERE k.master_id = m.id) AS other_bytes
     FROM masters m LEFT JOIN schedules s ON s.master_id = m.id
     ORDER BY m.created DESC`).all();
+  const { results: all } = await env.DB.prepare('SELECT id, master_id, start_date, end_date, kind, created FROM subscriptions ORDER BY start_date, id').all();
+  const periods = {};
+  for (const p of all) (periods[p.master_id] = periods[p.master_id] || []).push({ id: p.id, from: p.start_date, to: p.end_date, kind: p.kind, marked: p.created });
   return json({
+    today: almatyToday(),
     size: (meta && meta.size_after) || null,
     masters: results.map(r => ({
       id: r.id, name: r.name, phone: r.phone ? L.formatPhone(r.phone) : '', slug: r.slug, created: r.created,
       claimed: Boolean(r.claimed), devices: r.devices, active: r.active || null,
       address: L.addressText(r.address), gis: L.gisLink(r.gis),
       storage: { photos: r.photos, photoBytes: r.photo_bytes, backups: r.backups, backupBytes: r.backup_bytes, otherBytes: r.other_bytes },
+      subscription: { ...subscriptionJson(r, periods[r.id] || []), periods: periods[r.id] || [] },
     })),
   });
 }
@@ -586,6 +619,53 @@ async function resetPassword(request, env, id) {
     env.DB.prepare('DELETE FROM devices WHERE master_id = ?').bind(id),
   ]);
   return json({ ok: true });
+}
+
+// Подписка мастера — решает администратор:
+//   extend — оплата получена: ещё месяц (от конца текущего периода или с сегодняшнего дня);
+//   undo — отменить последнюю отмеченную оплату (отметили по ошибке);
+//   unlimited — бессрочный доступ вкл./выкл. (value);
+//   until — доступ до даты (value, YYYY-MM-DD): продлить или сократить вручную.
+async function changeSubscription(request, env, id) {
+  const master = await env.DB.prepare('SELECT id, name, phone, slug, pass_hash, paid_until, unlimited FROM masters WHERE id = ?').bind(id).first();
+  if (!master) throw new HttpError(404, 'Мастер не найден');
+  const body = await readJson(request, 1024);
+  const today = almatyToday(), now = new Date().toISOString();
+  if (body.action === 'extend') {
+    const next = L.nextPeriod(master.paid_until, today);
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO subscriptions (master_id, start_date, end_date, kind, created) VALUES (?, ?, ?, 'paid', ?)").bind(id, next.start, next.end, now),
+      env.DB.prepare('UPDATE masters SET paid_until = ? WHERE id = ?').bind(next.end, id),
+    ]);
+  } else if (body.action === 'undo') {
+    const last = await env.DB.prepare("SELECT id FROM subscriptions WHERE master_id = ? AND kind = 'paid' ORDER BY id DESC LIMIT 1").bind(id).first();
+    if (!last) throw new HttpError(409, 'Отмеченных оплат нет');
+    await env.DB.batch([
+      env.DB.prepare('DELETE FROM subscriptions WHERE id = ?').bind(last.id),
+      env.DB.prepare('UPDATE masters SET paid_until = (SELECT MAX(end_date) FROM subscriptions WHERE master_id = ?) WHERE id = ?').bind(id, id),
+    ]);
+  } else if (body.action === 'unlimited') {
+    await env.DB.prepare('UPDATE masters SET unlimited = ? WHERE id = ?').bind(body.value ? 1 : 0, id).run();
+  } else if (body.action === 'until') {
+    const until = String(body.value || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(until) || L.addDays(until, 0) !== until) throw new HttpError(400, 'Неверная дата');
+    const steps = [env.DB.prepare('UPDATE masters SET paid_until = ? WHERE id = ?').bind(until, id)];
+    if (!master.paid_until || until > master.paid_until) {
+      // Продлили вручную — период от конца прежнего (или с сегодняшнего дня) до новой даты.
+      const from = master.paid_until && master.paid_until >= today ? L.addDays(master.paid_until, 1) : today;
+      if (from <= until) steps.push(env.DB.prepare("INSERT INTO subscriptions (master_id, start_date, end_date, kind, created) VALUES (?, ?, ?, 'manual', ?)").bind(id, from, until, now));
+    } else {
+      // Сократили — периоды после новой даты обрезаем, чтобы календарь совпадал с доступом.
+      steps.push(env.DB.prepare('DELETE FROM subscriptions WHERE master_id = ? AND start_date > ?').bind(id, until));
+      steps.push(env.DB.prepare('UPDATE subscriptions SET end_date = ? WHERE master_id = ? AND end_date > ?').bind(until, id, until));
+    }
+    await env.DB.batch(steps);
+  } else {
+    throw new HttpError(400, 'Неизвестное действие');
+  }
+  const fresh = await env.DB.prepare('SELECT paid_until, unlimited FROM masters WHERE id = ?').bind(id).first();
+  const periods = await periodsOf(env, id);
+  return json({ ok: true, subscription: { ...subscriptionJson(fresh, periods), periods } });
 }
 
 // Куда писать, если забыли пароль: WhatsApp администратора.
@@ -621,10 +701,18 @@ async function holds(env, masterId) {
   return results.map(r => ({ date: r.date, time: r.time, services: JSON.parse(r.services || '[]') }));
 }
 
+const masterActive = master => L.subscriptionActive({ until: master.paid_until, unlimited: master.unlimited }, almatyToday());
+
 async function getOkna(env, slug) {
   const master = await masterBySlug(env, slug);
   const schedule = await loadSchedule(env, master.id);
   const legacy = master.id === LEGACY; // прежняя ссылка Арай (до аккаунтов)
+  // Подписка мастера закончилась: время не показываем (оно не обновляется), только связь с мастером.
+  if (!masterActive(master)) {
+    const s = schedule || {};
+    return json({ app: 'kae-zapis', kind: 'okna', v: 2, name: s.name || master.name, whatsapp: s.whatsapp || '', address: s.address || '', gis: s.gis || '',
+      slug: master.slug, legacy, paused: true, booking: false, days: [], updated: s.updated || new Date(0).toISOString() });
+  }
   if (!schedule) return json({ app: 'kae-zapis', kind: 'okna', name: master.name, slug: master.slug, legacy, days: [], booking: false });
   // booking: заявки принимаем, только когда у мастера есть телефон, на который они придут.
   return json({ ...L.applyHolds(schedule, await holds(env, master.id)), slug: master.slug, legacy, booking: await hasDevice(env, master.id) });
@@ -638,6 +726,7 @@ async function createRequest(request, env, ctx, slug) {
   const body = await readJson(request, 8 * 1024);
   if (body.website) return json({ ok: true }, 201); // скрытое поле заполняют только боты
   const master = await masterBySlug(env, slug);
+  if (!masterActive(master)) throw new HttpError(503, 'Онлайн-запись к мастеру временно недоступна — напишите мастеру в WhatsApp');
   const schedule = await loadSchedule(env, master.id);
   if (!schedule || !(await hasDevice(env, master.id))) throw new HttpError(503, 'Запись через сайт пока не работает — напишите мастеру в WhatsApp');
 
