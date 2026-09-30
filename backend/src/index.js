@@ -11,6 +11,7 @@
 // frontend/logic.js, wrangler включает его в сервер при выкладке.
 import * as L from '../../frontend/logic.js';
 import { generateVapidKeys, sendPush } from './push.js';
+import * as W from './webauthn.js';
 
 const SITE = 'https://nailapp.pages.dev/'; // адрес сайта для подписи уведомлений (VAPID)
 // Пока у прежнего мастера нет расписания в базе, свободное время берём из прежнего места.
@@ -83,8 +84,14 @@ async function route(request, env, ctx) {
 
   // Администратор: мастера, сброс пароля, контакт для «Забыли пароль?».
   if (path.startsWith('/api/admin/')) {
+    if (path === '/api/admin/passkey/login-options' && method === 'POST') return passkeyLoginOptions(request, env);
+    if (path === '/api/admin/passkey/login' && method === 'POST') return passkeyLogin(request, env);
     await authAdmin(request, env);
     if (path === '/api/admin/masters' && method === 'GET') return listMasters(env);
+    if (path === '/api/admin/passkeys' && method === 'GET') return listPasskeys(env);
+    if (path === '/api/admin/passkey/options' && method === 'POST') return passkeyRegisterOptions(request, env);
+    if (path === '/api/admin/passkeys' && method === 'POST') return passkeyRegister(request, env);
+    if ((m = path.match(/^\/api\/admin\/passkeys\/([\w-]+)$/)) && method === 'DELETE') return deletePasskey(env, m[1]);
     if ((m = path.match(/^\/api\/admin\/masters\/([\w-]+)\/password$/)) && method === 'POST') return resetPassword(request, env, m[1]);
     if (path === '/api/admin/contact' && method === 'PUT') return putContact(request, env);
     throw new HttpError(404, 'Не найдено');
@@ -164,6 +171,8 @@ async function cleanup(env, today) {
     env.DB.prepare('DELETE FROM bookings WHERE date < ?').bind(L.addDays(today, -60)),
     env.DB.prepare('DELETE FROM attempts WHERE at < ?').bind(Date.now() - 864e5),
     env.DB.prepare('DELETE FROM errors WHERE at < ?').bind(new Date(Date.now() - 14 * 864e5).toISOString()),
+    env.DB.prepare('DELETE FROM challenges WHERE at < ?').bind(Date.now() - CHALLENGE_TTL),
+    env.DB.prepare('DELETE FROM admin_sessions WHERE expires < ?').bind(Date.now()),
   ]);
 }
 
@@ -407,6 +416,13 @@ async function authDevice(request, env) {
 
 // Код приходит в заголовке «Admin <base64url кода>»: так он может быть и по-русски.
 async function authAdmin(request, env) {
+  // После входа по Face ID страница присылает сеанс (12 часов) вместо кода.
+  const session = (request.headers.get('Authorization') || '').match(/^Session ([\w-]{40,100})$/);
+  if (session) {
+    const row = await env.DB.prepare('SELECT expires FROM admin_sessions WHERE hash = ?').bind(await sha256hex(session[1])).first();
+    if (row && row.expires > Date.now()) return;
+    throw new HttpError(401, 'Вход по Face ID устарел — войдите снова');
+  }
   const code = String(env.ADMIN_CODE || env.ACCESS_CODE || '');
   if (code.length < 8) throw new HttpError(503, 'Код администратора не задан на сервере');
   const who = await visitor(request);
@@ -420,6 +436,114 @@ async function authAdmin(request, env) {
     await remember(env, 'admin', who);
     throw new HttpError(403, 'Неверный код администратора');
   }
+}
+
+// ---------- Вход администратора по Face ID (WebAuthn) ----------
+// Администратор один раз входит по коду и включает Face ID на своём телефоне; дальше страница
+// администратора открывается по Face ID или код-паролю телефона. Сеанс — 12 часов, только в памяти страницы.
+
+// Где открыта страница администратора (заголовок Origin). Ключ Face ID привязан к этому адресу.
+const ADMIN_ORIGINS = ['https://nailapp.pages.dev', 'https://komron4111.github.io'];
+const CHALLENGE_TTL = 5 * 60e3;
+const ADMIN_SESSION = 12 * HOUR;
+
+function adminOrigin(request) {
+  const origin = request.headers.get('Origin') || '';
+  if (ADMIN_ORIGINS.includes(origin) || /^http:\/\/localhost(:\d+)?$/.test(origin)) return origin;
+  throw new HttpError(403, 'Вход по Face ID работает только на странице администратора Nailapp');
+}
+
+// Одноразовый вызов: 32 случайных байта. Всего в базе не больше 1000 — поток запросов её не раздует.
+async function newChallenge(env, kind) {
+  const value = L.bytesToB64u(crypto.getRandomValues(new Uint8Array(32)));
+  const { meta } = await env.DB.prepare('INSERT INTO challenges (value, kind, at) SELECT ?, ?, ? WHERE (SELECT COUNT(*) FROM challenges) < 1000')
+    .bind(value, kind, Date.now()).run();
+  if (!meta.changes) throw new HttpError(429, 'Слишком много попыток. Попробуйте через несколько минут');
+  return value;
+}
+
+// Вызов из ответа телефона должен быть нашим, свежим и ещё не использованным.
+async function useChallenge(env, clientDataJSON, kind) {
+  let value = '';
+  try {
+    value = String(JSON.parse(new TextDecoder().decode(W.unb64u(clientDataJSON))).challenge || '');
+  } catch (e) { /* ниже — «вход устарел» */ }
+  const row = value && await env.DB.prepare('DELETE FROM challenges WHERE value = ? AND kind = ? RETURNING at').bind(value, kind).first();
+  if (!row || row.at < Date.now() - CHALLENGE_TTL) throw new HttpError(403, 'Вход устарел — нажмите ещё раз');
+  return value;
+}
+
+const adminKeys = (env, rpId) => env.DB.prepare("SELECT id FROM passkeys WHERE owner = 'admin' AND rp_id = ?").bind(rpId).all();
+
+// Для кнопки «Войти по Face ID»: есть ли ключи для этого адреса и вызов для подписи.
+async function passkeyLoginOptions(request, env) {
+  const rpId = new URL(adminOrigin(request)).hostname;
+  const { results } = await adminKeys(env, rpId);
+  if (!results.length) return json({ available: false });
+  return json({ available: true, challenge: await newChallenge(env, 'login'), rpId, allow: results.map(r => r.id), timeout: 120000 });
+}
+
+async function passkeyLogin(request, env) {
+  const origin = adminOrigin(request);
+  const who = await visitor(request);
+  if (await tooMany(env, 'admin', who, 5, HOUR)) throw new HttpError(429, 'Слишком много попыток. Попробуйте через час');
+  const body = await readJson(request, 8192);
+  const challenge = await useChallenge(env, body.clientDataJSON, 'login');
+  const key = await env.DB.prepare("SELECT id, rp_id, public_key FROM passkeys WHERE id = ? AND owner = 'admin'").bind(String(body.id || '')).first();
+  try {
+    if (!key || key.rp_id !== new URL(origin).hostname) throw new Error('нет такого ключа');
+    await W.verifyAssertion(body, { challenge, origin, rpId: key.rp_id, jwk: JSON.parse(key.public_key) });
+  } catch (e) {
+    await remember(env, 'admin', who);
+    throw new HttpError(403, 'Не получилось войти по Face ID — войдите по коду администратора');
+  }
+  const token = L.bytesToB64u(crypto.getRandomValues(new Uint8Array(32)));
+  const expires = Date.now() + ADMIN_SESSION;
+  await env.DB.batch([
+    env.DB.prepare('INSERT INTO admin_sessions (hash, expires) VALUES (?, ?)').bind(await sha256hex(token), expires),
+    env.DB.prepare('UPDATE passkeys SET used = ? WHERE id = ?').bind(new Date().toISOString(), key.id),
+  ]);
+  return json({ token, expires });
+}
+
+async function listPasskeys(env) {
+  const { results } = await env.DB.prepare("SELECT id, rp_id, name, created, used FROM passkeys WHERE owner = 'admin' ORDER BY created").all();
+  return json({ passkeys: results.map(r => ({ id: r.id, site: r.rp_id, name: r.name, created: r.created, used: r.used })) });
+}
+
+// Для кнопки «Включить вход по Face ID»: вызов и данные нового ключа.
+async function passkeyRegisterOptions(request, env) {
+  const rpId = new URL(adminOrigin(request)).hostname;
+  const { results } = await adminKeys(env, rpId);
+  return json({
+    challenge: await newChallenge(env, 'register'),
+    rp: { id: rpId, name: 'Nailapp' },
+    user: { id: L.bytesToB64u(new TextEncoder().encode('nailapp-admin')), name: 'Администратор Nailapp', displayName: 'Администратор Nailapp' },
+    exclude: results.map(r => r.id),
+    timeout: 120000,
+  });
+}
+
+async function passkeyRegister(request, env) {
+  const origin = adminOrigin(request);
+  const body = await readJson(request, 16384);
+  const challenge = await useChallenge(env, body.clientDataJSON, 'register');
+  let key;
+  try {
+    key = await W.verifyRegistration(body, { challenge, origin });
+  } catch (e) {
+    throw new HttpError(400, `Не получилось включить вход по Face ID: ${e.message}`);
+  }
+  const { n } = await env.DB.prepare("SELECT COUNT(*) AS n FROM passkeys WHERE owner = 'admin'").first();
+  if (n >= 10) throw new HttpError(409, 'Уже 10 устройств с входом по Face ID — уберите лишние');
+  await env.DB.prepare('INSERT OR REPLACE INTO passkeys (id, owner, rp_id, public_key, name, created) VALUES (?, ?, ?, ?, ?, ?)')
+    .bind(key.id, 'admin', key.rpId, JSON.stringify(key.jwk), String(body.name || '').slice(0, 60), new Date().toISOString()).run();
+  return json({ ok: true, id: key.id });
+}
+
+async function deletePasskey(env, id) {
+  await env.DB.prepare("DELETE FROM passkeys WHERE id = ? AND owner = 'admin'").bind(id).run();
+  return json({ ok: true });
 }
 
 // Мастера для администратора: кто, где принимает и сколько места его данные занимают на сервере

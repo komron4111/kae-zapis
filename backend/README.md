@@ -13,9 +13,10 @@
 |---|---|
 | `src/index.js` | Все адреса сервера (`/api/…`) |
 | `src/push.js` | Уведомления Web Push: подпись VAPID и шифрование, без сторонних библиотек |
+| `src/webauthn.js` | Вход по Face ID (WebAuthn): разбор CBOR, ключи P-256 и RSA, проверка регистрации и подписи, без сторонних библиотек |
 | `migrations/` | Устройство базы D1: по файлу на каждое изменение |
 | `wrangler.toml` | Настройки Cloudflare: имя сервера и база |
-| `tests/` | Тесты уведомлений и проверка сервера целиком: аккаунты, данные мастеров не смешиваются (`api.integration.mjs`) |
+| `tests/` | Тесты уведомлений и входа по Face ID (`soft-authenticator.mjs` — программный «телефон»), проверка сервера целиком: аккаунты, данные мастеров не смешиваются (`api.integration.mjs`) |
 
 Правила свободного времени и проверки заявки сервер берёт из `../frontend/logic.js`. Это тот же файл, что у сайта, поэтому правила не расходятся.
 
@@ -39,7 +40,8 @@
 - **Для администратора** (заголовок `Authorization: Admin <код в base64url>`):
   - `GET /api/admin/masters` — все мастера: адрес и 2ГИС из расписания, объём данных (`storage`: фото, копии, прочее) и размер всей базы (`size`);
   - `POST /api/admin/masters/:id/password` — новый пароль мастеру (его телефон выходит из аккаунта);
-  - `PUT /api/admin/contact` — свой WhatsApp.
+  - `PUT /api/admin/contact` — свой WhatsApp;
+  - вход по Face ID (WebAuthn): `GET /api/admin/passkeys`, `POST /api/admin/passkey/options` и `POST /api/admin/passkeys` — включить на устройстве, `DELETE /api/admin/passkeys/:id` — убрать. Без кода: `POST /api/admin/passkey/login-options` и `POST /api/admin/passkey/login` → сеанс на 12 часов (`Authorization: Session <сеанс>` вместо кода).
 
 ## Аккаунты и пароли
 

@@ -1,7 +1,8 @@
 // Страница администратора Nailapp: все мастера, сброс забытого пароля и свой WhatsApp
 // для кнопки «Забыли пароль?». Вход — код администратора (секрет ADMIN_CODE на сервере,
-// а если он не задан — ACCESS_CODE). Код нигде не сохраняется: только в памяти открытой
-// страницы, чтобы его не прочитал никакой другой код сайта.
+// а если он не задан — ACCESS_CODE) или Face ID / код-пароль телефона (WebAuthn), если
+// администратор включил его на этом устройстве. Ни код, ни вход по Face ID нигде не
+// сохраняются: только в памяти открытой страницы, чтобы их не прочитал другой код сайта.
 //
 // Временный пароль придумывает эта страница и «растягивает» его так же, как телефон
 // мастера (L.passwordSecret): на сервер уходит только результат.
@@ -20,13 +21,22 @@ const view = $('#view');
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 let code = '';
+let session = ''; // вход по Face ID: сеанс на 12 часов
 let masters = [];
 let dbSize = null; // размер всей базы, байт
 let contact = '';
+let passkeys = [];
 let query = '';
 
-async function call(method, path, body) {
-  const headers = { Authorization: `Admin ${L.bytesToB64u(new TextEncoder().encode(code))}` };
+// Face ID: вызов сервера готовим заранее — iPhone показывает Face ID, только если его
+// попросили сразу по нажатию, без ожидания сети.
+const canFace = Boolean(window.PublicKeyCredential && navigator.credentials);
+let loginOptions = null;
+let registerOptions = null;
+const FRESH = 4 * 60e3; // вызов живёт на сервере 5 минут
+
+async function request(method, path, body, auth) {
+  const headers = auth ? { Authorization: auth } : {};
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   let res;
   try {
@@ -39,14 +49,36 @@ async function call(method, path, body) {
   return data;
 }
 
+const call = (method, path, body) => request(method, path, body,
+  session ? `Session ${session}` : `Admin ${L.bytesToB64u(new TextEncoder().encode(code))}`);
+
 function formatDate(iso) {
   const d = new Date(iso);
   return isNaN(d) ? '' : `${d.getDate()} ${L.MONTHS_GEN[d.getMonth()]} ${d.getFullYear()}`;
 }
 
+const bytes = b64u => L.b64uToBytes(b64u);
+const b64 = buffer => L.bytesToB64u(new Uint8Array(buffer));
+
+function deviceName() {
+  const ua = navigator.userAgent;
+  const kind = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1) ? 'iPad'
+    : /Macintosh/.test(ua) ? 'Mac' : /Android/.test(ua) ? 'Android' : /Windows/.test(ua) ? 'Windows' : 'Компьютер';
+  return `${kind}, ${formatDate(new Date().toISOString())}`;
+}
+
+// ---------- Вход ----------
+
 function renderLogin(error = '') {
+  code = '';
+  session = '';
   view.innerHTML = `
     <h2 class="page-title">Администратор</h2>
+    <section class="card page-card" id="face-card" hidden>
+      <button type="button" class="btn primary block" id="face-login">Войти по Face ID</button>
+      <p class="hint">Или по коду администратора — ниже.</p>
+      <p class="warn-text" id="face-error" hidden></p>
+    </section>
     <form class="card page-card" id="code-form" novalidate>
       <p class="hint">Здесь видны все мастера Nailapp: можно сбросить забытый пароль и указать свой WhatsApp для кнопки «Забыли пароль?».</p>
       <label>Код администратора<input type="password" name="code" autocomplete="current-password"></label>
@@ -58,6 +90,66 @@ function renderLogin(error = '') {
     code = e.target.elements.code.value.trim();
     load();
   });
+  $('#face-login').addEventListener('click', faceLogin);
+  prepareFaceLogin();
+}
+
+// Есть ли для этого адреса вход по Face ID — тогда показываем кнопку и готовим вызов.
+async function prepareFaceLogin() {
+  loginOptions = null;
+  if (!canFace) return;
+  try {
+    const options = await request('POST', '/api/admin/passkey/login-options', {});
+    if (!options.available) return;
+    loginOptions = { ...options, at: Date.now() };
+    const card = $('#face-card');
+    if (card) card.hidden = false;
+  } catch (e) { /* нет связи — остаётся вход по коду */ }
+}
+
+function faceError(text) {
+  const box = $('#face-error');
+  if (!box) return alert(text);
+  box.textContent = text;
+  box.hidden = !text;
+}
+
+async function faceLogin() {
+  const options = loginOptions;
+  if (!options || Date.now() - options.at > FRESH) {
+    faceError('Страница долго была открыта — нажмите «Войти по Face ID» ещё раз');
+    prepareFaceLogin();
+    return;
+  }
+  faceError('');
+  let credential;
+  try {
+    credential = await navigator.credentials.get({
+      publicKey: {
+        challenge: bytes(options.challenge),
+        rpId: options.rpId,
+        allowCredentials: options.allow.map(id => ({ type: 'public-key', id: bytes(id) })),
+        userVerification: 'required',
+        timeout: options.timeout,
+      },
+    });
+  } catch (e) {
+    prepareFaceLogin();
+    return faceError(e.name === 'NotAllowedError' ? 'Вход по Face ID отменён или не прошёл — нажмите ещё раз или войдите по коду' : `Face ID не сработал: ${e.message}`);
+  }
+  try {
+    const res = await request('POST', '/api/admin/passkey/login', {
+      id: b64(credential.rawId),
+      clientDataJSON: b64(credential.response.clientDataJSON),
+      authenticatorData: b64(credential.response.authenticatorData),
+      signature: b64(credential.response.signature),
+    });
+    session = res.token;
+    load();
+  } catch (e) {
+    prepareFaceLogin();
+    faceError(e.message);
+  }
 }
 
 async function load() {
@@ -68,16 +160,22 @@ async function load() {
     try {
       contact = (await (await fetch(`${API}/api/contact`, { cache: 'no-store' })).json()).whatsapp || '';
     } catch (e) { /* покажем пустое поле */ }
+    try {
+      passkeys = (await call('GET', '/api/admin/passkeys')).passkeys;
+    } catch (e) {
+      passkeys = [];
+    }
     renderList();
   } catch (e) {
-    code = '';
     renderLogin(e.message);
   }
 }
 
+// ---------- Мастера ----------
+
 // 1 234 567 байт → «1,2 МБ», 5 400 → «5 КБ».
-function size(bytes) {
-  const n = Number(bytes) || 0;
+function size(n) {
+  n = Number(n) || 0;
   if (n < 1e6) return `${Math.max(n ? 1 : 0, Math.round(n / 1e3))} КБ`;
   return `${(n / 1e6).toFixed(1).replace('.', ',')} МБ`;
 }
@@ -105,13 +203,32 @@ function masterRow(m) {
     </div>`;
 }
 
-// Поиск по имени, ссылке или цифрам номера (от 3 цифр).
+// Поиск по имени, ссылке, адресу или цифрам номера (от 3 цифр).
 function rows() {
   const q = query.trim().toLowerCase();
   const qd = q.replace(/\D/g, '');
   const list = masters.filter(m => !q || m.name.toLowerCase().includes(q) || m.slug.includes(q) || (m.address || '').toLowerCase().includes(q)
     || (qd.length >= 3 && L.phoneDigits(m.phone).includes(qd)));
   return list.map(masterRow).join('') || '<p class="hint list-empty">Никого не нашли</p>';
+}
+
+// Карточка «Вход по Face ID»: устройства, на которых он включён, и кнопка для этого устройства.
+function faceCard() {
+  const keys = passkeys.map(k => `
+    <div class="admin-master">
+      <div class="grow">
+        <b>${esc(k.name || 'Устройство')}</b>
+        <small>${esc(k.site)} · ${k.used ? `последний вход ${esc(formatDate(k.used))}` : 'ещё не входили'}</small>
+      </div>
+      <button class="btn small ghost" data-unkey="${esc(k.id)}">Убрать</button>
+    </div>`).join('');
+  return `
+    <section class="card page-card">
+      <h3 class="card-title">Вход по Face ID</h3>
+      <p class="hint">Чтобы не вводить код каждый раз, включите на этом устройстве вход по Face ID (или Touch ID, или код-паролю телефона). Ключ хранится в «Связке ключей» Apple и появится на других ваших устройствах Apple; сервер знает только его открытую часть.</p>
+      ${keys ? `<div class="list">${keys}</div>` : ''}
+      ${canFace ? '<button class="btn secondary block" id="add-face">Включить вход по Face ID на этом устройстве</button>' : '<p class="hint">Этот браузер не умеет входить по Face ID.</p>'}
+    </section>`;
 }
 
 function renderList() {
@@ -128,6 +245,7 @@ function renderList() {
         <button type="submit" class="btn secondary block">Сохранить</button>
       </form>
     </section>
+    ${faceCard()}
     <button class="btn ghost block" id="leave">Выйти</button>`;
   const search = $('#q');
   search.addEventListener('input', () => {
@@ -144,11 +262,75 @@ function renderList() {
       alert(err.message);
     }
   });
-  $('#leave').addEventListener('click', () => {
-    code = '';
-    renderLogin();
-  });
+  const add = $('#add-face');
+  if (add) add.addEventListener('click', addFace);
+  $('#leave').addEventListener('click', () => renderLogin());
+  prepareRegister();
 }
+
+// ---------- Включить и убрать вход по Face ID ----------
+
+async function prepareRegister() {
+  registerOptions = null;
+  if (!canFace) return;
+  try {
+    registerOptions = { ...(await call('POST', '/api/admin/passkey/options', {})), at: Date.now() };
+  } catch (e) { /* нет связи — кнопка скажет */ }
+}
+
+async function addFace() {
+  const options = registerOptions;
+  if (!options || Date.now() - options.at > FRESH) {
+    alert('Страница долго была открыта — нажмите кнопку ещё раз');
+    prepareRegister();
+    return;
+  }
+  let credential;
+  try {
+    credential = await navigator.credentials.create({
+      publicKey: {
+        challenge: bytes(options.challenge),
+        rp: options.rp,
+        user: { id: bytes(options.user.id), name: options.user.name, displayName: options.user.displayName },
+        pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+        authenticatorSelection: { authenticatorAttachment: 'platform', residentKey: 'preferred', userVerification: 'required' },
+        attestation: 'none',
+        excludeCredentials: options.exclude.map(id => ({ type: 'public-key', id: bytes(id) })),
+        timeout: options.timeout,
+      },
+    });
+  } catch (e) {
+    prepareRegister();
+    if (e.name === 'InvalidStateError') return alert('На этом устройстве вход по Face ID уже включён');
+    return alert(e.name === 'NotAllowedError' ? 'Не включено: Face ID отменён или не прошёл' : `Не получилось: ${e.message}`);
+  }
+  try {
+    await call('POST', '/api/admin/passkeys', {
+      id: b64(credential.rawId),
+      clientDataJSON: b64(credential.response.clientDataJSON),
+      attestationObject: b64(credential.response.attestationObject),
+      name: deviceName(),
+    });
+  } catch (e) {
+    prepareRegister();
+    return alert(e.message);
+  }
+  alert('Готово: в следующий раз войдите по Face ID');
+  load();
+}
+
+async function removeFace(id) {
+  const k = passkeys.find(x => x.id === id);
+  if (!k || !confirm(`Убрать вход по Face ID для «${k.name || 'устройства'}»? На этом устройстве снова понадобится код администратора. В «Связке ключей» ключ можно удалить и вручную: Настройки → Пароли.`)) return;
+  try {
+    await call('DELETE', `/api/admin/passkeys/${encodeURIComponent(id)}`);
+  } catch (e) {
+    return alert(e.message);
+  }
+  load();
+}
+
+// ---------- Сброс пароля мастеру ----------
 
 // Временный пароль: 8 знаков без похожих (0/o, 1/l/i).
 function tempPassword() {
@@ -180,8 +362,10 @@ async function resetPassword(id) {
 }
 
 view.addEventListener('click', e => {
-  const button = e.target.closest('[data-reset]');
-  if (button) resetPassword(button.dataset.reset);
+  const reset = e.target.closest('[data-reset]');
+  if (reset) resetPassword(reset.dataset.reset);
+  const unkey = e.target.closest('[data-unkey]');
+  if (unkey) removeFace(unkey.dataset.unkey);
 });
 
 renderLogin();

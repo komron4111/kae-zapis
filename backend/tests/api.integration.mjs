@@ -9,6 +9,7 @@
 
 import fs from 'node:fs';
 import * as L from '../../frontend/logic.js';
+import * as T from './soft-authenticator.mjs';
 
 const API = process.env.API || 'http://127.0.0.1:8787';
 const CODE = (fs.readFileSync(new URL('../.dev.vars', import.meta.url), 'utf8').match(/ACCESS_CODE=(.+)/) || [])[1].trim();
@@ -156,6 +157,49 @@ r = await call('PUT', '/api/admin/contact', { admin: CODE, body: { whatsapp: '+7
 check('администратор задаёт свой WhatsApp', r.status === 200);
 r = await call('GET', '/api/contact');
 check('«Забыли пароль?» видит WhatsApp администратора', r.data.whatsapp === '77000000009');
+
+// ---------- Вход администратора по Face ID (программный «телефон») ----------
+const ORIGIN = 'http://localhost:8765';
+const adminHeader = { Authorization: `Admin ${L.bytesToB64u(new TextEncoder().encode(CODE))}` };
+const post = async (path, body, headers = {}, origin = ORIGIN) => {
+  const res = await fetch(API + path, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin, ...headers }, body: JSON.stringify(body) });
+  return { status: res.status, data: await res.json().catch(() => ({})) };
+};
+r = await call('GET', '/api/admin/passkeys', { admin: CODE });
+for (const k of (r.data.passkeys || []).filter(k => k.site === 'localhost')) {
+  await fetch(`${API}/api/admin/passkeys/${k.id}`, { method: 'DELETE', headers: adminHeader }); // ключи прошлых запусков
+}
+r = await post('/api/admin/passkey/login-options', {});
+check('без ключей вход по Face ID не предлагается', r.status === 200 && r.data.available === false, JSON.stringify(r.data));
+r = await post('/api/admin/passkey/options', {});
+check('включить Face ID без кода нельзя — 403', r.status === 403, r.data.error);
+r = await post('/api/admin/passkey/options', {}, adminHeader);
+const reg = r.data;
+check('данные для нового ключа', r.status === 200 && reg.rp.id === 'localhost' && Boolean(reg.challenge));
+const phoneKey = await T.create({ challenge: L.b64uToBytes(reg.challenge), rp: reg.rp }, ORIGIN);
+r = await post('/api/admin/passkeys', { ...T.registrationJson(phoneKey), name: 'Тестовый телефон' }, adminHeader);
+check('Face ID включён', r.status === 200, JSON.stringify(r.data));
+r = await post('/api/admin/passkeys', { ...T.registrationJson(phoneKey), name: 'повтор' }, adminHeader);
+check('тот же вызов второй раз — отказ', r.status === 403, r.data.error);
+r = await post('/api/admin/passkey/login-options', {});
+const opts = r.data;
+check('вход по Face ID предлагается', opts.available === true && opts.rpId === 'localhost' && opts.allow.includes(phoneKey.id));
+const signed = await T.get({ challenge: L.b64uToBytes(opts.challenge), rpId: opts.rpId, allowCredentials: opts.allow.map(id => ({ type: 'public-key', id: L.b64uToBytes(id) })) }, ORIGIN);
+r = await post('/api/admin/passkey/login', T.assertionJson(signed));
+const faceToken = r.data.token;
+check('вход по Face ID', r.status === 200 && Boolean(faceToken), JSON.stringify(r.data));
+r = await fetch(`${API}/api/admin/masters`, { headers: { Authorization: `Session ${faceToken}` } });
+check('после Face ID администратор видит мастеров без кода', r.status === 200);
+r = await post('/api/admin/passkey/login', T.assertionJson(signed));
+check('та же подпись второй раз — отказ', r.status === 403, r.data.error);
+r = await post('/api/admin/passkey/login-options', {}, {}, 'https://evil.example');
+check('с чужого сайта — 403', r.status === 403, r.data.error);
+r = await fetch(`${API}/api/admin/masters`, { headers: { Authorization: `Session ${'x'.repeat(43)}` } });
+check('чужой сеанс — 401', r.status === 401);
+r = await fetch(`${API}/api/admin/passkeys/${phoneKey.id}`, { method: 'DELETE', headers: { Authorization: `Session ${faceToken}` } });
+check('убрать Face ID', r.status === 200);
+r = await post('/api/admin/passkey/login-options', {});
+check('после «Убрать» вход по Face ID не предлагается', r.data.available === false);
 
 // ---------- Журнал ошибок ----------
 r = await fetch(`${API}/api/errors`, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify({ source: 'okna', place: '/okna/ okna.js:1', message: `проверка журнала ${RUN}` }) });
