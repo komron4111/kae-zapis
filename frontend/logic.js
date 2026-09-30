@@ -212,11 +212,54 @@ export function formatDuration(min) {
   return [h ? `${h} ч` : '', m ? `${m} мин` : ''].filter(Boolean).join(' ');
 }
 
-// ---------- Закрытые дни и свободное время ----------
+// ---------- Закрытые дни и закрытое время ----------
 
-// Блок записи: { id, from, to, note } — даты включительно.
+// Блок записи: { id, from, to, note } — даты включительно, закрыт весь день.
+// С start и end ('HH:MM') в каждый из этих дней закрыто только время [start, end):
+// для клиентов оно занято, как запись.
+export function isTimeBlock(b) {
+  return Boolean(b && b.start && b.end);
+}
+
+// Время start–end подходит для закрытия: 'HH:MM' в пределах суток, начало раньше конца.
+export function isTimeWindow(start, end) {
+  const ok = t => TIME_RE.test(t || '') && Number(t.slice(0, 2)) < 24 && Number(t.slice(3)) < 60;
+  return ok(start) && ok(end) && start < end;
+}
+
+// Закрытый целиком день.
 export function blockFor(blocks, date) {
-  return (blocks || []).find(b => b.from <= date && date <= b.to) || null;
+  return (blocks || []).find(b => !isTimeBlock(b) && b.from <= date && date <= b.to) || null;
+}
+
+// Закрытое время дня — по порядку начала.
+export function timeBlocksOn(blocks, date) {
+  return (blocks || []).filter(b => isTimeBlock(b) && b.from <= date && date <= b.to).sort((x, y) => x.start.localeCompare(y.start));
+}
+
+// Закрытое время дня в минутах: [начало, конец).
+export function closedIntervals(blocks, date) {
+  return timeBlocksOn(blocks, date).map(b => [toMinutes(b.start), toMinutes(b.end)]);
+}
+
+// Закрытое время, с которым пересечётся запись в time длиной need.
+export function closedConflicts(blocks, date, time, need) {
+  const start = toMinutes(time);
+  return timeBlocksOn(blocks, date).filter(b => start < toMinutes(b.end) && toMinutes(b.start) < start + need);
+}
+
+// Записи (кроме отменённых), которые попадут в закрытое: в закрытые дни — все,
+// в закрытое время — те, что с ним пересекаются по длительности своих услуг.
+export function blockConflicts(appointments, block, { prices = [], settings = DEFAULT_SETTINGS } = {}) {
+  const timed = isTimeBlock(block);
+  const from = timed ? toMinutes(block.start) : 0, to = timed ? toMinutes(block.end) : 0;
+  return appointments.filter(a => {
+    if (a.status === 'cancelled' || a.date < block.from || a.date > block.to) return false;
+    if (!timed) return true;
+    if (!a.time) return false;
+    const start = toMinutes(a.time);
+    return start < to && from < start + servicesDuration(servicesOf(a), prices, settings);
+  });
 }
 
 // ---------- Длительность услуг ----------
@@ -263,10 +306,10 @@ export function freeStarts(busy, settings, need, after = -1) {
   return out;
 }
 
-// Свободное время дня по записям (и заявкам) — для приложения мастера.
+// Свободное время дня по записям (и заявкам) и закрытому времени из blocks — для приложения мастера.
 // need — сколько длится новая запись (по умолчанию duration из настроек).
-export function freeTimes(items, date, settings, after = -1, excludeId, { prices = [], need = settings.duration } = {}) {
-  return freeStarts(busyIntervals(items, date, prices, settings, excludeId), settings, need, after);
+export function freeTimes(items, date, settings, after = -1, excludeId, { prices = [], need = settings.duration, blocks = [] } = {}) {
+  return freeStarts([...busyIntervals(items, date, prices, settings, excludeId), ...closedIntervals(blocks, date)], settings, need, after);
 }
 
 // Записи, с которыми пересечётся новая запись в time длиной need.
@@ -355,9 +398,10 @@ export function gisLink(value) {
   return url.href.length <= 600 ? url.href : '';
 }
 
-// Что видят клиенты: занятое время на days дней вперёд (без имён и телефонов),
-// рабочие часы и услуги с ценами и длительностью. Свободное время страница клиентов
-// и сервер считают сами — под выбранные услуги. Прошедшее время сегодня отсекается там же.
+// Что видят клиенты: занятое время на days дней вперёд (без имён и телефонов) — записи
+// и закрытое мастером время, одинаково; рабочие часы и услуги с ценами и длительностью.
+// Свободное время страница клиентов и сервер считают сами — под выбранные услуги.
+// Прошедшее время сегодня отсекается там же.
 export function buildSchedule(data, now = new Date(), days = HORIZON_DAYS) {
   const s = { ...DEFAULT_SETTINGS, ...data.settings };
   const prices = data.prices || [];
@@ -365,7 +409,12 @@ export function buildSchedule(data, now = new Date(), days = HORIZON_DAYS) {
   const list = [];
   for (let i = 0; i < days; i++) {
     const date = addDays(first, i);
-    list.push(blockFor(data.blocks, date) ? { date, off: true } : { date, busy: busyIntervals(data.appointments, date, prices, s) });
+    if (blockFor(data.blocks, date)) {
+      list.push({ date, off: true });
+      continue;
+    }
+    const busy = [...busyIntervals(data.appointments, date, prices, s), ...closedIntervals(data.blocks, date)];
+    list.push({ date, busy: busy.sort((x, y) => x[0] - y[0]) });
   }
   return {
     app: BACKUP_APP,
@@ -843,11 +892,14 @@ export function readBackup(text) {
   const rent = list(obj.rent).filter(r => r && /^\d{4}-\d{2}$/.test(r.from)).map(r => ({
     from: r.from, amount: toMoney(r.amount),
   }));
-  const blocks = list(obj.blocks).filter(b => b && DATE_RE.test(b.from) && DATE_RE.test(b.to)).map((b, i) => ({
+  // Закрытое время (start и end) с неверным временем не берём: целый день оно закрыть не должно.
+  const blocks = list(obj.blocks).filter(b => b && DATE_RE.test(b.from) && DATE_RE.test(b.to)
+    && (!(b.start || b.end) || isTimeWindow(b.start, b.end))).map((b, i) => ({
     id: str(b.id) || 'b' + i,
     from: b.from < b.to ? b.from : b.to,
     to: b.from < b.to ? b.to : b.from,
     note: str(b.note),
+    ...(b.start ? { start: b.start, end: b.end } : {}),
   }));
   const clients = list(obj.clients).filter(c => c && (str(c.name).trim() || phoneDigits(c.phone))).map((c, i) => ({
     id: str(c.id) || 'c' + i, name: str(c.name).trim(), phone: str(c.phone), created: c.created || null, ...clientProfile(c),

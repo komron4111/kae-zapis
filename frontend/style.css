@@ -714,11 +714,19 @@ a.profile-row { color: var(--accent); font-weight: 600; }
 .day.off:not(.sel) { background: repeating-linear-gradient(135deg, var(--line) 0 4px, transparent 4px 8px); }
 .day.off span { text-decoration: line-through; }
 .day.off:not(.sel) span { color: var(--muted); }
+/* Закрыта часть дня: штриховка только снизу клетки. */
+.day.part:not(.sel) { background: repeating-linear-gradient(135deg, var(--line) 0 4px, transparent 4px 8px) bottom / 100% 40% no-repeat; }
 
 .free-line { margin: -4px 2px 10px; color: var(--muted); font-size: 14px; }
 .banner.off { background: var(--line); }
 .banner small { display: block; color: var(--muted); font-size: 13px; }
-.day-actions { margin-top: 10px; text-align: center; }
+.day-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 10px; }
+/* Закрытое время в списке дня — среди записей. */
+.appt.closed { border-color: transparent; border-left-color: var(--muted); background: var(--line); box-shadow: none; }
+.appt.closed .appt-sum { color: var(--muted); }
+.appt.closed .ico { width: 18px; height: 18px; }
+.seg.two { grid-template-columns: 1fr 1fr; }
+.sheet-body > .seg:first-child { margin-top: 14px; }
 .btn.ghost { background: none; color: var(--muted); font-weight: 600; }
 
 .time-hint { margin-top: 8px; color: var(--muted); font-size: 14px; }

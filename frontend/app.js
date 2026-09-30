@@ -8,7 +8,7 @@ import { API_URL, PUBLIC_URL, IS_LOCAL } from './config.js';
 import { phoneMask } from './phone-input.js';
 
 const APP_NAME = 'Nailapp';
-const APP_VERSION = '2.2.1';
+const APP_VERSION = '2.3.0';
 
 phoneMask();
 
@@ -340,15 +340,21 @@ function renderRecords() {
     if (L.monthOf(d) !== ui.month) cls.push('out');
     if (d === t) cls.push('today');
     if (d === ui.day) cls.push('sel');
-    if (L.blockFor(data.blocks, d)) cls.push('off');
+    const off = L.blockFor(data.blocks, d), part = !off && L.timeBlocksOn(data.blocks, d).length > 0;
+    if (off) cls.push('off');
+    if (part) cls.push('part');
     const n = counts[d] || 0;
-    const label = L.dayTitle(d) + (n ? `, ${n} ${L.plural(n, RECORD_FORMS)}` : '');
+    const label = L.dayTitle(d) + (n ? `, ${n} ${L.plural(n, RECORD_FORMS)}` : '') + (off ? ', запись закрыта' : part ? ', есть закрытое время' : '');
     return `<button class="${cls.join(' ')}" data-act="day" data-day="${d}" aria-label="${label}"><span>${Number(d.slice(8))}</span><i>${n || ''}</i></button>`;
   }).join('');
   const dayRequests = requests.filter(r => r.date === ui.day);
   const list = data.appointments.filter(a => a.date === ui.day);
-  const items = [...list.map(a => ({ time: a.time, html: apptCard(a) })), ...dayRequests.map(r => ({ time: r.time, html: requestCard(r, false) }))]
-    .sort((a, b) => a.time.localeCompare(b.time));
+  // Закрытое время — в списке дня среди записей, по времени начала.
+  const items = [
+    ...list.map(a => ({ time: a.time, html: apptCard(a) })),
+    ...dayRequests.map(r => ({ time: r.time, html: requestCard(r, false) })),
+    ...L.timeBlocksOn(data.blocks, ui.day).map(b => ({ time: b.start, html: closedCard(b) })),
+  ].sort((a, b) => a.time.localeCompare(b.time));
   const active = list.filter(a => a.status !== 'cancelled').length;
   const block = L.blockFor(data.blocks, ui.day);
   let dayInfo = '';
@@ -361,7 +367,7 @@ function renderRecords() {
   } else if (ui.day >= t) {
     // Время свободно, если в него помещается хотя бы самая короткая услуга прайса.
     const times = L.freeTimes(busyList(), ui.day, settings(), ui.day === t ? nowMinutes() : -1, undefined,
-      { prices: data.prices, need: L.shortestService(data.prices, settings()) });
+      { prices: data.prices, need: L.shortestService(data.prices, settings()), blocks: data.blocks });
     dayInfo = `<p class="free-line">${times.length ? `Свободно: ${L.formatRanges(L.toRanges(times))}` : 'Свободного времени нет'}</p>`;
   }
   view.innerHTML = `
@@ -381,12 +387,17 @@ function renderRecords() {
     </section>
     <div class="day-head"><h2>${L.dayTitle(ui.day)}</h2>${active ? `<span>${active} ${L.plural(active, RECORD_FORMS)}</span>` : ''}</div>
     ${dayInfo}
-    ${items.length ? items.map(x => x.html).join('') : `
+    ${items.map(x => x.html).join('')}
+    ${list.length || dayRequests.length ? '' : `
       <div class="empty">
         <p>На этот день записей нет</p>
         <button class="btn secondary small" data-act="new-appt">${icon('plus')} Добавить запись</button>
       </div>`}
-    ${!block && ui.day >= t ? `<div class="day-actions"><button class="btn small secondary" data-act="new-block" data-day="${ui.day}">${icon('lock')} Закрыть день для записи</button></div>` : ''}`;
+    ${!block && ui.day >= t ? `
+      <div class="day-actions">
+        <button class="btn small secondary" data-act="new-block" data-day="${ui.day}" data-mode="day">${icon('lock')} Закрыть день</button>
+        <button class="btn small secondary" data-act="new-block" data-day="${ui.day}" data-mode="time">${icon('clock')} Закрыть время</button>
+      </div>` : ''}`;
 }
 
 function changeMonth(delta) {
@@ -428,6 +439,21 @@ monthSwipe('.cal', '.cal-grid', changeMonth);
 
 function blockRange(b) {
   return b.from === b.to ? L.shortDate(b.from) : `${L.shortDate(b.from)} – ${L.shortDate(b.to)}`;
+}
+
+// «14:00–16:00 (Врач)» — закрытое время в предупреждениях.
+function closedText(list) {
+  return list.map(b => `${L.shortTime(b.start)}–${L.shortTime(b.end)}${b.note ? ` (${b.note})` : ''}`).join(', ');
+}
+
+function closedCard(b) {
+  const details = [b.note, b.from === b.to ? '' : blockRange(b)].filter(Boolean).join(' · ');
+  return `
+    <button class="appt closed" data-act="edit-block" data-id="${esc(b.id)}">
+      <span class="appt-time">${esc(b.start)}</span>
+      <span class="appt-main"><b>Закрыто до ${esc(L.shortTime(b.end))}</b>${details ? `<small>${esc(details)}</small>` : ''}</span>
+      <span class="appt-sum">${icon('lock')}</span>
+    </button>`;
 }
 
 function apptCard(a) {
@@ -622,7 +648,7 @@ function refreshAppt(form) {
   if (!date || date < today() || block) {
     hint.innerHTML = '';
   } else {
-    const times = L.freeTimes(busy, date, s, date === today() ? nowMinutes() : -1, selfId(form), { prices: data.prices, need });
+    const times = L.freeTimes(busy, date, s, date === today() ? nowMinutes() : -1, selfId(form), { prices: data.prices, need, blocks: data.blocks });
     const ranges = L.toRanges(times);
     hint.innerHTML = times.length
       ? `<span>Свободно${chosen.length ? ` для этих услуг (${L.formatDuration(need)})` : ''}: ${L.formatRanges(ranges)}</span>
@@ -638,6 +664,8 @@ function refreshAppt(form) {
       const who = near.map(x => `${x.name || x.phone} в ${L.shortTime(x.time)}`).join(', ');
       warnings.push(`Пересекается с записью: ${who}.${chosen.length ? ` Эта запись займёт ${L.formatDuration(need)}.` : ''}`);
     }
+    const closed = L.closedConflicts(data.blocks, date, time, need);
+    if (closed.length) warnings.push(`Пересекается с закрытым временем: ${closedText(closed)}.`);
     const m = L.toMinutes(time);
     if (m < L.toMinutes(s.dayStart) || m > L.toMinutes(s.lastStart)) {
       warnings.push(`Вне рабочего времени (${L.shortTime(s.dayStart)}–${L.shortTime(s.lastStart)}).`);
@@ -823,9 +851,10 @@ function drawRequest(id) {
   const d = L.phoneDigits(r.phone);
   const what = L.servicesLabel(r.services).toLowerCase();
   const text = `Здравствуйте, ${r.name}! Получила вашу заявку на ${L.shortDate(r.date)} в ${L.shortTime(r.time)} (${what}). Чтобы подтвердить запись, внесите, пожалуйста, предоплату.`;
-  const near = L.conflicts(data.appointments, r.date, r.time, L.servicesDuration(r.services, data.prices, settings()), undefined,
-    { prices: data.prices, settings: settings() });
+  const need = L.servicesDuration(r.services, data.prices, settings());
+  const near = L.conflicts(data.appointments, r.date, r.time, need, undefined, { prices: data.prices, settings: settings() });
   const block = L.blockFor(data.blocks, r.date);
+  const closed = L.closedConflicts(data.blocks, r.date, r.time, need);
   sheetHtml('Заявка на запись', `
     <div class="sheet-body">
       <div class="card request-info">
@@ -836,7 +865,7 @@ function drawRequest(id) {
         ${r.comment ? `<p class="hint">«${esc(r.comment)}»</p>` : ''}
         <p class="hint">Заявка пришла ${formatDateTime(r.created)}</p>
       </div>
-      ${near.length || block ? `<p class="warn-text">${block ? 'Этот день закрыт для записи. ' : ''}${near.length ? `Пересекается с записью: ${esc(near.map(x => `${x.name || x.phone} в ${L.shortTime(x.time)}`).join(', '))}.` : ''}</p>` : ''}
+      ${near.length || block || closed.length ? `<p class="warn-text">${block ? 'Этот день закрыт для записи. ' : ''}${closed.length ? `Пересекается с закрытым временем: ${esc(closedText(closed))}. ` : ''}${near.length ? `Пересекается с записью: ${esc(near.map(x => `${x.name || x.phone} в ${L.shortTime(x.time)}`).join(', '))}.` : ''}</p>` : ''}
       <a class="btn secondary block" href="https://wa.me/${d}?text=${encodeURIComponent(text)}" target="_blank" rel="noopener">${icon('chat')} Написать в WhatsApp</a>
       <p class="hint form-note">Попросите предоплату. Когда она придёт, нажмите «Подтвердить запись».</p>
       <button class="btn primary block" data-act="confirm-request" data-id="${esc(r.id)}">Подтвердить запись</button>
@@ -1454,53 +1483,109 @@ async function cleanupPhotos() {
   }
 }
 
-// ---------- Закрытые дни ----------
+// ---------- Закрытые дни и закрытое время ----------
+// Закрыть можно дни целиком или часть дня: время с … до … в один день или в каждый из нескольких.
 
-function openBlock(id, day) {
-  pushSheet(() => drawBlock(id, day));
+// mode — что закрываем в новом блоке: 'day' (весь день) или 'time' (часть дня).
+function openBlock(id, day, mode) {
+  pushSheet(() => drawBlock(id, day, mode));
 }
 
-function drawBlock(id, day) {
+function drawBlock(id, day, mode = 'day') {
   const src = id ? data.blocks.find(b => b.id === id) : null;
   const b = src || { from: day, to: day, note: '' };
-  sheetHtml(src ? 'Закрытые дни' : 'Закрыть запись', `
+  const timed = src ? L.isTimeBlock(src) : mode === 'time';
+  sheetHtml(src ? (timed ? 'Закрытое время' : 'Закрытые дни') : 'Закрыть запись', `
     <form id="block-form" class="sheet-body" novalidate autocomplete="off">
-      <p class="hint">В эти дни клиенты не увидят свободного времени по ссылке.</p>
+      <div class="seg two">
+        <button type="button" data-act="block-mode" data-mode="day"${timed ? '' : ' class="on"'}>Весь день</button>
+        <button type="button" data-act="block-mode" data-mode="time"${timed ? ' class="on"' : ''}>Часть дня</button>
+      </div>
+      <input type="hidden" name="mode" value="${timed ? 'time' : 'day'}">
+      <p id="block-hint" class="hint form-note"></p>
       <div class="row2">
         <label>С<input type="date" name="from" value="${esc(b.from)}"></label>
         <label>По<input type="date" name="to" value="${esc(b.to)}"></label>
       </div>
-      <label>Причина (видна только вам)<input name="note" value="${esc(b.note)}" enterkeyhint="done" placeholder="Отпуск, болезнь…"></label>
+      <div id="block-time" class="row2">
+        <label>Время с<input type="time" name="start" value="${esc(b.start || '')}"></label>
+        <label>до<input type="time" name="end" value="${esc(b.end || '')}"></label>
+      </div>
+      <div id="block-free" class="time-hint"></div>
+      <label>Причина (видна только вам)<input name="note" value="${esc(b.note)}" enterkeyhint="done"></label>
       <p id="block-warn" class="warn-text" hidden></p>
       <button type="submit" class="btn primary block">${src ? 'Сохранить' : 'Закрыть запись'}</button>
       ${src ? `<button type="button" class="btn danger block" data-act="delete-block" data-id="${esc(src.id)}">Открыть запись снова</button>` : ''}
     </form>`);
   const form = $('#block-form');
-  const range = () => {
-    const from = field(form, 'from').value, to = field(form, 'to').value || from;
-    return from <= to ? [from, to] : [to, from];
-  };
-  const check = () => {
-    const [from, to] = range();
-    const n = data.appointments.filter(a => a.status !== 'cancelled' && a.date >= from && a.date <= to).length;
-    const warn = $('#block-warn');
-    warn.hidden = !n;
-    if (n) warn.textContent = `На эти дни уже есть ${n} ${L.plural(n, RECORD_FORMS)} — перенесите или отмените их.`;
-  };
-  form.addEventListener('input', check);
-  check();
-  form.addEventListener('submit', async e => {
+  form.dataset.id = src ? src.id : '';
+  form.addEventListener('input', () => refreshBlock(form));
+  form.addEventListener('submit', e => {
     e.preventDefault();
-    const [from, to] = range();
-    if (!from) return toast('Укажите дату');
-    const rec = { from, to, note: field(form, 'note').value.trim() };
-    if (src) Object.assign(src, rec);
-    else data.blocks.push({ id: uid(), ...rec });
-    if (!(await save())) return;
-    closeSheet();
-    render();
-    toast(from === to ? 'День закрыт для записи' : 'Дни закрыты для записи');
+    saveBlock(form);
   });
+  refreshBlock(form);
+}
+
+// Что закрывается по форме: { from, to, note }, у части дня ещё start и end.
+function blockFromForm(form) {
+  const v = name => field(form, name).value;
+  const from = v('from'), to = v('to') || from;
+  const rec = { from: from <= to ? from : to, to: from <= to ? to : from, note: v('note').trim() };
+  if (v('mode') === 'time') Object.assign(rec, { start: v('start'), end: v('end') });
+  return rec;
+}
+
+// Подсказка по выбранному, свободное время, которое останется клиентам, и записи, которые попадут в закрытое.
+function refreshBlock(form) {
+  const rec = blockFromForm(form);
+  const timed = field(form, 'mode').value === 'time';
+  const ready = Boolean(rec.from) && (!timed || L.isTimeWindow(rec.start, rec.end));
+  $('#block-time').hidden = !timed;
+  $('#block-hint').textContent = timed ? 'В эти часы клиенты не смогут записаться по ссылке.' : 'В эти дни клиенты не увидят свободного времени по ссылке.';
+  field(form, 'note').placeholder = timed ? 'Учёба, врач…' : 'Отпуск, болезнь…';
+
+  const free = $('#block-free');
+  free.textContent = '';
+  if (timed && ready && rec.from === rec.to && rec.from >= today() && !L.blockFor(data.blocks, rec.from)) {
+    const s = settings();
+    const blocks = [...data.blocks.filter(b => b.id !== form.dataset.id), rec];
+    const times = L.freeTimes(busyList(), rec.from, s, rec.from === today() ? nowMinutes() : -1, undefined,
+      { prices: data.prices, need: L.shortestService(data.prices, s), blocks });
+    free.textContent = times.length ? `Останется свободно: ${L.formatRanges(L.toRanges(times))}` : 'Свободного времени в этот день не останется';
+  }
+
+  const n = ready ? L.blockConflicts(data.appointments, rec, { prices: data.prices, settings: settings() }).length : 0;
+  const warn = $('#block-warn');
+  warn.hidden = !n;
+  if (n) warn.textContent = `На ${timed ? 'это время' : 'эти дни'} уже есть ${n} ${L.plural(n, RECORD_FORMS)} — перенесите или отмените их.`;
+}
+
+async function saveBlock(form) {
+  const rec = blockFromForm(form);
+  const timed = 'start' in rec;
+  const error = !rec.from ? 'Укажите дату'
+    : timed && (!rec.start || !rec.end) ? 'Укажите время'
+    : timed && !L.isTimeWindow(rec.start, rec.end) ? 'Время «до» должно быть позже, чем «с»'
+    : '';
+  if (error) return toast(error);
+  const src = data.blocks.find(b => b.id === form.dataset.id);
+  if (src) {
+    delete src.start; // часть дня могли поменять на весь день
+    delete src.end;
+    Object.assign(src, rec);
+  } else {
+    data.blocks.push({ id: uid(), ...rec });
+  }
+  if (!(await save())) return;
+  // Показываем закрытое: если его дни — не открытый сейчас день, переходим к первому.
+  if (ui.day < rec.from || ui.day > rec.to) {
+    ui.day = rec.from;
+    ui.month = L.monthOf(rec.from);
+  }
+  closeSheet();
+  render();
+  toast(timed ? 'Время закрыто для записи' : rec.from === rec.to ? 'День закрыт для записи' : 'Дни закрыты для записи');
 }
 
 // ---------- Финансы ----------
@@ -2735,10 +2820,18 @@ const actions = {
   'close-viewer': () => hideViewer(),
   'share-photo': () => sharePhoto(),
   'delete-photo': () => deletePhoto(),
-  'new-block': el => openBlock(null, el.dataset.day),
+  'new-block': el => openBlock(null, el.dataset.day, el.dataset.mode),
   'edit-block': el => openBlock(el.dataset.id),
+  // Весь день или часть дня (время с … до …).
+  'block-mode': el => {
+    const form = el.closest('form');
+    form.querySelectorAll('.seg button').forEach(b => b.classList.toggle('on', b === el));
+    field(form, 'mode').value = el.dataset.mode;
+    refreshBlock(form);
+  },
   'delete-block': async el => {
-    if (!confirm('Открыть запись в эти дни снова?')) return;
+    const timed = L.isTimeBlock(data.blocks.find(b => b.id === el.dataset.id));
+    if (!confirm(timed ? 'Открыть это время для записи снова?' : 'Открыть запись в эти дни снова?')) return;
     data.blocks = data.blocks.filter(b => b.id !== el.dataset.id);
     if (!(await save())) return;
     closeSheet();

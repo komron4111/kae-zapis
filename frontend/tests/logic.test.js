@@ -476,6 +476,82 @@ test('расписание v2: проверка заявки с учётом д�
   eq(L.validateRequest({ ...good, time: '12:00' }, SCHEDULE2, clock).error, 'Это время уже занято — выберите другое');
 });
 
+// ---------- Закрытое время (2.3.0) ----------
+
+const CLOSED = [
+  { id: 'd', from: '2026-10-10', to: '2026-10-12', note: 'Отпуск' },
+  { id: 'e', from: '2026-10-01', to: '2026-10-03', note: 'Учёба', start: '18:00', end: '20:00' },
+  { id: 'm', from: '2026-10-01', to: '2026-10-01', note: 'Врач', start: '14:00', end: '16:00' },
+];
+
+test('закрытое время не закрывает день, а занимает часы в каждый из своих дней', () => {
+  eq([L.isTimeBlock(CLOSED[0]), L.isTimeBlock(CLOSED[1])], [false, true]);
+  eq([L.blockFor(CLOSED, '2026-10-01'), L.blockFor(CLOSED, '2026-10-11').id], [null, 'd']);
+  eq(L.timeBlocksOn(CLOSED, '2026-10-01').map(b => b.id), ['m', 'e']);
+  eq([L.closedIntervals(CLOSED, '2026-10-01'), L.closedIntervals(CLOSED, '2026-10-03'), L.closedIntervals(CLOSED, '2026-10-04')],
+    [[[840, 960], [1080, 1200]], [[1080, 1200]], []]);
+});
+
+test('время для закрытия: начало раньше конца, в пределах суток', () => {
+  eq([['14:00', '16:00'], ['16:00', '14:00'], ['14:00', '14:00'], ['14:00', ''], ['23:00', '24:00'], ['9:00', '10:00']].map(([a, b]) => L.isTimeWindow(a, b)),
+    [true, false, false, false, false, false]);
+});
+
+test('свободное время: запись заканчивается до закрытых часов, после них снова свободно', () => {
+  const free = (date, need) => L.formatRanges(L.toRanges(L.freeTimes([], date, S, -1, undefined, { need, blocks: CLOSED })));
+  eq(free('2026-10-01', 20), '9:00–13:30, 16:00–17:30, 20:00'); // закрыто 14–16 и 18–20, в 20:00 уже открыто
+  eq(free('2026-10-01', 150), '9:00–11:30, 20:00');
+  eq(free('2026-10-02', 20), '9:00–17:30, 20:00');
+  eq(free('2026-10-04', 20), '9:00–20:00');
+});
+
+test('запись или заявка в закрытое время: с чем пересекается', () => {
+  eq(L.closedConflicts(CLOSED, '2026-10-01', '13:30', 60).map(b => b.id), ['m']);
+  eq(L.closedConflicts(CLOSED, '2026-10-01', '13:00', 60), []); // заканчивается ровно к 14:00
+  eq(L.closedConflicts(CLOSED, '2026-10-01', '16:00', 150).map(b => b.id), ['e']);
+  eq(L.closedConflicts(CLOSED, '2026-10-02', '14:00', 60), []);
+});
+
+test('записи, которые попадут в закрываемые дни или время', () => {
+  const list = [
+    at('12:00', ['Наращивание']), // до 14:30 — заходит на закрытое с 14:00
+    at('16:00', ['Снятие маникюра']),
+    at('15:00', ['Педикюр'], { status: 'cancelled' }),
+    at('15:00', ['Педикюр'], { date: '2026-10-02' }),
+  ];
+  const time = { from: '2026-10-01', to: '2026-10-01', start: '14:00', end: '16:00' };
+  const found = block => L.blockConflicts(list, block, { prices: PRICES, settings: S }).map(a => `${a.date} ${a.time}`);
+  eq(found(time), ['2026-10-01 12:00']);
+  eq(found({ ...time, to: '2026-10-02' }), ['2026-10-01 12:00', '2026-10-02 15:00']);
+  eq(found({ from: '2026-10-01', to: '2026-10-01' }), ['2026-10-01 12:00', '2026-10-01 16:00']); // весь день
+});
+
+test('расписание для клиентов: закрытое время занято, как запись, причина не видна', () => {
+  const s = L.buildSchedule({
+    appointments: [at('12:00', ['Снятие маникюра'], { name: 'Айгуль' })],
+    blocks: CLOSED,
+    settings: { ...L.DEFAULT_SETTINGS },
+    prices: PRICES,
+  }, new Date(2026, 9, 1, 8, 0), 4);
+  eq(s.days.map(d => d.busy), [[[720, 740], [840, 960], [1080, 1200]], [[1080, 1200]], [[1080, 1200]], []]);
+  eq([JSON.stringify(s).includes('Врач'), JSON.stringify(s).includes('Учёба')], [false, false]);
+  eq(L.cleanSchedule(s), s);
+  const clock = { date: '2026-09-30', minutes: 600 };
+  const req = { date: '2026-10-01', name: 'Дана', phone: '8 701 111 22 33', services: ['Педикюр'] };
+  eq(L.validateRequest({ ...req, time: '14:30' }, s, clock).error, 'Это время уже занято — выберите другое');
+  eq(L.validateRequest({ ...req, time: '13:30' }, s, clock).error, 'На это время выбранные услуги не поместятся — выберите время раньше или меньше услуг');
+  eq(L.validateRequest({ ...req, time: '16:00' }, s, clock).ok, true);
+});
+
+test('копия: закрытое время сохраняется, с неверным временем — не берётся', () => {
+  const copy = L.readBackup(JSON.stringify({ app: 'kae-zapis', appointments: [], blocks: [
+    ...CLOSED,
+    { id: 'x', from: '2026-10-05', to: '2026-10-05', start: '16:00', end: '14:00' },
+    { id: 'y', from: '2026-10-05', to: '2026-10-05', start: '16:00' },
+  ] }));
+  eq(copy.blocks, CLOSED);
+});
+
 test('прайс мастера: новые услуги добавляются, цены и названия прежних остаются', () => {
   let n = 0;
   const merged = L.mergePrices([
