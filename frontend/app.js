@@ -4,11 +4,11 @@
 
 import * as L from './logic.js';
 import { makeZip, readZip } from './zip.js';
-import { API_URL } from './config.js';
+import { API_URL, PUBLIC_URL, IS_LOCAL } from './config.js';
 import { phoneMask } from './phone-input.js';
 
 const APP_NAME = 'Nailapp';
-const APP_VERSION = '1.10.0';
+const APP_VERSION = '2.0.0';
 
 phoneMask();
 
@@ -165,7 +165,9 @@ function ensurePriceList() {
 function freshCloud() {
   // closing — заявки, подтверждённые без связи: закроем их в облаке при следующем сохранении.
   // bookings — что уже выложено по личным ссылкам клиентов: { token: JSON записи }.
-  return { key: '', pushKey: '', pushOn: false, schedulePrint: '', backupPrint: '', savedAt: null, uploaded: [], closing: [], bookings: {}, error: '' };
+  // account — аккаунт мастера с сервера { name, phone, slug, claimed }; lastPhone — чей аккаунт
+  // был на этом телефоне последним (если войдёт другой мастер, чужие данные с телефона уберём).
+  return { key: '', pushKey: '', pushOn: false, schedulePrint: '', backupPrint: '', savedAt: null, uploaded: [], closing: [], bookings: {}, error: '', account: null, lastPhone: '' };
 }
 
 const settings = () => ({ ...L.DEFAULT_SETTINGS, ...data.settings });
@@ -196,7 +198,7 @@ function busyList() {
 
 // monthAnim, finAnim — куда уехал месяц в календаре и в финансах ('next' или 'prev'), для анимации;
 // settingsPage — открытый пункт настроек (null — список пунктов).
-const ui = { tab: 'records', month: L.monthOf(today()), day: today(), finMonth: L.monthOf(today()), seenToday: today(), clientQuery: '', monthAnim: null, finAnim: null, settingsPage: null, settingsAnim: null, rentYear: Number(today().slice(0, 4)), rentAnim: null };
+const ui = { tab: 'records', month: L.monthOf(today()), day: today(), finMonth: L.monthOf(today()), seenToday: today(), clientQuery: '', monthAnim: null, finAnim: null, settingsPage: null, settingsAnim: null, auth: null, authNote: '', authPhone: '', rentYear: Number(today().slice(0, 4)), rentAnim: null };
 const view = $('#view'), fab = $('#fab'), sheet = $('#sheet'), viewer = $('#viewer');
 
 const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
@@ -233,6 +235,12 @@ function applyTheme() {
 
 function render() {
   applyTheme();
+  const gate = authGate();
+  document.body.classList.toggle('auth', Boolean(gate));
+  if (gate) {
+    renderAuth(gate);
+    return;
+  }
   const tabs = [['records', 'calendar', 'Записи'], ['clients', 'users', 'Клиенты'], ['finance', 'chart', 'Финансы'], ['settings', 'sliders', 'Настройки']];
   $('#tabbar').innerHTML = tabs.map(([id, ic, label]) =>
     `<button data-tab="${id}"${ui.tab === id ? ' class="active" aria-current="page"' : ''}>${icon(ic)}<span>${label}</span>${id === 'records' && requests.length ? `<i class="tab-badge">${requests.length}</i>` : ''}</button>`).join('');
@@ -480,13 +488,7 @@ function banners() {
         <button class="btn small secondary" data-act="goto" data-to="settings" data-page="prices">Прайс</button>
       </div>`);
   }
-  if (!cloud.key) {
-    out.push(`
-      <div class="banner">
-        <div class="grow">Подключите облако: записи и фото будут сохраняться сами, а клиенты смогут оставлять заявки.</div>
-        <button class="btn small secondary" data-act="goto" data-to="settings" data-page="cloud">Подключить</button>
-      </div>`);
-  } else if (cloud.error) {
+  if (cloud.key && cloud.error) {
     out.push(`
       <div class="banner warn">
         <div class="grow">Облако: ${esc(cloud.error)}. Попробуем снова при следующем изменении.</div>
@@ -652,8 +654,9 @@ function refreshAppt(form) {
   }
 }
 
+// Личная ссылка клиента на запись — по секрету записи, мастер виден по ней самой.
 function bookingLink(token) {
-  return `${clientLink()}?z=${token}`;
+  return `${oknaBase()}?z=${token}`;
 }
 
 // «Отправить подтверждение»: у записи появляется личная ссылка клиента,
@@ -1584,6 +1587,7 @@ function drawExpense(id) {
 
 // Главный экран — список пунктов; каждый пункт открывается отдельно (ui.settingsPage).
 const SETTINGS_PAGES = {
+  account: ['user', 'Аккаунт'],
   cloud: ['cloud', 'Облако и заявки'],
   prices: ['tag', 'Прайс'],
   hours: ['clock', 'Рабочее время'],
@@ -1597,6 +1601,7 @@ const SERVICE_FORMS = ['услуга', 'услуги', 'услуг'];
 // Коротко о том, что внутри пункта, — видно, не открывая его.
 function settingsSummary(page) {
   const s = settings();
+  if (page === 'account') return cloud.account ? `${cloud.account.phone} · пароль и выход` : 'Вход по номеру и паролю';
   if (page === 'cloud') return !cloud.key ? 'Не подключено' : cloud.pushOn ? 'Подключено, уведомления включены' : 'Подключено';
   if (page === 'prices') return data.prices.length ? `${data.prices.length} ${L.plural(data.prices.length, SERVICE_FORMS)}` : 'Услуг пока нет';
   if (page === 'hours') return `${L.shortTime(s.dayStart)}–${L.shortTime(s.lastStart)}`;
@@ -1680,11 +1685,17 @@ const DURATIONS = [20, 30, 40, 45, 60, 75, 90, 105, 120, 150, 180, 210, 240, 270
 function settingsPageHtml(page) {
   const s = settings();
   switch (page) {
+    case 'account': {
+      const a = cloud.account || {};
+      return card(`
+      <div class="line"><span>Имя для клиентов</span><b>${esc(s.clientName || a.name || '')}</b></div>
+      <div class="line"><span>Телефон для входа</span><b>${esc(a.phone || '')}</b></div>
+      <p class="hint">В приложение входят по этому номеру и паролю. Имя видят клиенты по вашей ссылке — поменять его можно в «Ссылке для клиентов». Забыли пароль — его восстановит администратор.</p>
+      <button class="btn secondary block" data-act="change-password">${icon('lock')} Сменить пароль</button>
+      <button class="btn danger block" data-act="logout">Выйти из аккаунта</button>`);
+    }
     case 'cloud':
-      return card(cloud.key ? cloudPairedHtml() : `
-      <p class="hint">Подключите телефон к облаку: записи и фото будут сохраняться сами после каждого изменения, клиенты смогут оставлять заявки по ссылке, а вам будут приходить уведомления. Если телефон потеряется — подключите новый тем же кодом, и всё вернётся.</p>
-      <label>Код доступа<input type="password" id="access-code" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Код, который вы задали"></label>
-      <button class="btn primary block" data-act="pair">${icon('cloud')} Подключить</button>`);
+      return card(cloud.key ? cloudPairedHtml() : '<p class="hint">Войдите в аккаунт — записи и фото начнут сохраняться в облако сами.</p>');
     case 'prices':
       return card(`
       <p class="hint">Цена подставляется в запись при выборе услуги, в записи её можно поменять. Клиенты видят эти цены по ссылке. По длительности услуги считается, когда освободится время после записи.</p>
@@ -1836,7 +1847,6 @@ function cloudPairedHtml() {
     <div class="btn-row">
       <button class="btn small secondary" data-act="sync-now">Сохранить сейчас</button>
       <button class="btn small secondary" data-act="cloud-restore">Восстановить из облака</button>
-      <button class="btn small ghost" data-act="unpair">Отключить</button>
     </div>`;
 }
 
@@ -1855,8 +1865,12 @@ function durationHint(duration) {
   return `Время каждой услуги указано в «Прайсе». После записи время освобождается по её услугам: например, после снятия маникюра (20 мин) следующую запись можно поставить через полчаса. Если у услуги время не указано, считается ${L.formatDuration(duration)}.`;
 }
 
+// Ссылка для клиентов — своя у каждого мастера: okna/?m=<slug>, на основном адресе сайта.
+const oknaBase = () => new URL('okna/', IS_LOCAL ? location.href.split('#')[0].split('?')[0] : PUBLIC_URL).href;
+
 function clientLink() {
-  return new URL('okna/', location.href.split('#')[0].split('?')[0]).href;
+  const slug = cloud.account && cloud.account.slug;
+  return slug ? `${oknaBase()}?m=${encodeURIComponent(slug)}` : oknaBase();
 }
 
 // ---------- Облако ----------
@@ -1882,9 +1896,12 @@ async function api(method, path, body, type) {
   let message = `ошибка ${res.status}`;
   try { message = (await res.json()).error || message; } catch (e) { /* не JSON */ }
   if (res.status === 401 && cloud.key) {
-    // Этот телефон отключили (например, подключили другой) — забываем ключ.
-    cloud = freshCloud();
+    // Вошли в аккаунт на другом телефоне или администратор сбросил пароль — снова вход.
+    // Данные на телефоне остаются: если войдёт тот же мастер, их можно будет сохранить.
+    cloud = { ...freshCloud(), lastPhone: (cloud.account && cloud.account.phone) || cloud.lastPhone };
     await dbSet('cloud', cloud).catch(() => {});
+    ui.auth = 'login';
+    ui.authNote = message;
     render();
   }
   const error = new Error(message);
@@ -2064,39 +2081,276 @@ async function applyCloudBackup(copy) {
   scheduleSync(500);
 }
 
-async function pairDevice() {
-  const code = $('#access-code').value.trim();
-  if (code.length < 8) return toast('Код доступа — не короче 8 символов');
-  const key = L.bytesToB64u(crypto.getRandomValues(new Uint8Array(32)));
-  let res, body = {};
-  try {
-    res = await fetch(`${API}/api/pair`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code, key, name: 'Телефон мастера' }) });
-    body = await res.json().catch(() => ({}));
-  } catch (e) {
-    return toast('Нет связи с облаком. Проверьте интернет');
-  }
-  if (!res.ok) return toast(body.error || 'Не удалось подключить');
-  cloud = { ...freshCloud(), key, pushKey: body.pushKey };
-  await dbSet('cloud', cloud).catch(() => {});
+// ---------- Аккаунт: регистрация, вход, оформление, пароль, выход ----------
+// Без аккаунта приложением не пользуются. Прежний мастер (телефон подключён по коду,
+// как до 2.0.0) оформляет аккаунт: номер, имя и пароль — данные и ссылка остаются.
 
-  // Новый телефон: если в облаке есть копия — предлагаем восстановить её.
+function authGate() {
+  if (!cloud.key) return ui.auth || (cloud.lastPhone ? 'login' : 'welcome'); // сервер вывел из аккаунта — сразу вход
+  if (cloud.account && !cloud.account.claimed) return 'claim';
+  return null;
+}
+
+const newDeviceKey = () => L.bytesToB64u(crypto.getRandomValues(new Uint8Array(32)));
+const deviceName = () => (/iphone/i.test(navigator.userAgent) ? 'iPhone' : /ipad/i.test(navigator.userAgent) ? 'iPad' : /android/i.test(navigator.userAgent) ? 'Android' : 'Браузер');
+const hasLocalData = () => Boolean(data.appointments.length || (data.clients || []).length || data.expenses.length);
+
+function renderAuth(screen) {
+  setHeader();
+  fab.hidden = true;
+  $('#tabbar').innerHTML = '';
+  const note = ui.authNote ? `<p class="status warn">${esc(ui.authNote)}</p>` : '';
+  const passwordFields = `
+    <label>Пароль<input type="password" name="password" autocomplete="new-password" enterkeyhint="next" placeholder="Не короче 6 символов"></label>
+    <label>Пароль ещё раз<input type="password" name="password2" autocomplete="new-password" enterkeyhint="done"></label>`;
+  const phoneField = (phone = '') => `<label>Номер телефона<input type="tel" name="phone" autocomplete="username" value="${esc(L.phoneFieldStart(phone))}" enterkeyhint="next"></label>`;
+  let html;
+  if (screen === 'register') {
+    html = `
+      <h2 class="page-title">Новый аккаунт</h2>
+      <form class="card page-card" id="auth-form" data-kind="register" novalidate>
+        <label>Ваше имя<input name="name" autocomplete="name" autocapitalize="words" enterkeyhint="next" placeholder="Так вас увидят клиенты"></label>
+        ${phoneField(ui.authPhone)}
+        ${passwordFields}
+        <p class="warn-text" id="auth-error" hidden></p>
+        <button type="submit" class="btn primary block">Создать аккаунт</button>
+      </form>
+      <button class="btn ghost block" data-act="auth" data-screen="login">Уже есть аккаунт? Войти</button>`;
+  } else if (screen === 'login') {
+    html = `
+      <h2 class="page-title">Вход</h2>
+      ${note}
+      <form class="card page-card" id="auth-form" data-kind="login" novalidate>
+        ${phoneField(ui.authPhone || cloud.lastPhone)}
+        <label>Пароль<input type="password" name="password" autocomplete="current-password" enterkeyhint="done"></label>
+        <p class="warn-text" id="auth-error" hidden></p>
+        <button type="submit" class="btn primary block">Войти</button>
+      </form>
+      <button class="btn ghost block" data-act="auth" data-screen="forgot">Забыли пароль?</button>
+      <button class="btn ghost block" data-act="auth" data-screen="register">Нет аккаунта? Создать</button>`;
+  } else if (screen === 'forgot') {
+    html = `
+      <h2 class="page-title">Забыли пароль?</h2>
+      <section class="card page-card">
+        <p>Пароль восстанавливает администратор Nailapp: он пришлёт временный пароль. Войдите с ним и смените пароль в «Настройки» → «Аккаунт».</p>
+        <div id="contact-box"><p class="hint">Загружаем контакт…</p></div>
+      </section>
+      <button class="btn ghost block" data-act="auth" data-screen="login">Назад ко входу</button>`;
+  } else if (screen === 'claim') {
+    html = `
+      <h2 class="page-title">Ваш аккаунт</h2>
+      <section class="card page-card">
+        <p>В Nailapp теперь вход по номеру телефона и паролю. Укажите свой номер и придумайте пароль — все ваши записи, клиенты и ссылка для клиентов останутся.</p>
+      </section>
+      <form class="card page-card" id="auth-form" data-kind="claim" novalidate>
+        <label>Ваше имя<input name="name" autocomplete="name" autocapitalize="words" enterkeyhint="next" value="${esc(settings().clientName || '')}" placeholder="Так вас увидят клиенты"></label>
+        ${phoneField()}
+        ${passwordFields}
+        <p class="warn-text" id="auth-error" hidden></p>
+        <button type="submit" class="btn primary block">Сохранить и продолжить</button>
+      </form>`;
+  } else {
+    html = `
+      <section class="auth-hero">
+        <img src="icons/icon-192.png" alt="" width="112" height="112">
+        <h2>Nailapp</h2>
+        <p>Записи, клиенты и финансы мастера. Клиенты сами записываются по вашей ссылке.</p>
+      </section>
+      ${note}
+      <button class="btn primary block" data-act="auth" data-screen="register">Создать аккаунт</button>
+      <button class="btn secondary block" data-act="auth" data-screen="login">Войти</button>`;
+  }
+  view.innerHTML = `<div class="auth-page">${html}</div>`;
+  const form = $('#auth-form');
+  if (form) {
+    form.addEventListener('submit', e => {
+      e.preventDefault();
+      submitAuth(form);
+    });
+  }
+  if (screen === 'forgot') showContact();
+}
+
+// WhatsApp администратора для «Забыли пароль?» (задаётся на странице администратора).
+async function showContact() {
+  let whatsapp = '';
+  try {
+    whatsapp = (await (await api('GET', '/api/contact')).json()).whatsapp || '';
+  } catch (e) { /* нет связи — покажем общий текст */ }
+  const box = $('#contact-box');
+  if (!box) return;
+  const text = `Здравствуйте! Не могу войти в Nailapp — забыт пароль. Мой номер для входа: ${ui.authPhone || cloud.lastPhone || ''}`;
+  box.innerHTML = whatsapp
+    ? `<a class="btn primary block" href="https://wa.me/${whatsapp}?text=${encodeURIComponent(text)}" target="_blank" rel="noopener">${icon('chat')} Написать администратору в WhatsApp</a>`
+    : '<p class="hint">Напишите администратору Nailapp — тому, кто дал вам ссылку на приложение.</p>';
+}
+
+function authError(message) {
+  const box = $('#auth-error');
+  if (!box) return toast(message);
+  box.textContent = message;
+  box.hidden = false;
+}
+
+async function submitAuth(form) {
+  const kind = form.dataset.kind;
+  const value = name => (field(form, name) ? field(form, name).value : '');
+  const name = value('name').trim().replace(/\s+/g, ' ').slice(0, 40);
+  const phone = L.phoneFromField(value('phone'));
+  const password = value('password');
+  const error = kind !== 'login' && !name ? 'Укажите имя — его увидят клиенты'
+    : L.phoneFieldDigits(phone).length < 10 ? 'Укажите номер телефона полностью'
+    : password.length < 6 ? 'Пароль — не короче 6 символов'
+    : kind !== 'login' && password !== value('password2') ? 'Пароли не совпадают'
+    : '';
+  if (error) return authError(error);
+  const button = form.querySelector('button[type=submit]');
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = kind === 'login' ? 'Входим…' : 'Сохраняем…';
+  try {
+    // Пароль «растягиваем» здесь, на сервер уходит только результат.
+    const secret = await L.passwordSecret(phone, password);
+    if (kind === 'claim') {
+      const res = await (await api('POST', '/api/account/claim', { name, phone, secret })).json();
+      cloud.account = res.account;
+      cloud.lastPhone = res.account.phone;
+      await dbSet('cloud', cloud).catch(() => {});
+      data.settings = { ...settings(), clientName: name };
+      await save();
+      render();
+      toast('Аккаунт готов. Входите по номеру и паролю');
+      scheduleSync(0);
+      return;
+    }
+    const key = newDeviceKey();
+    const res = await (await api('POST', kind === 'login' ? '/api/login' : '/api/register', { name, phone, secret, key, device: deviceName() })).json();
+    // На телефоне данные другого мастера (он вышел не через «Выйти») — убираем их.
+    if (cloud.lastPhone && cloud.lastPhone !== res.account.phone) await clearLocalData();
+    cloud = { ...freshCloud(), key, pushKey: res.pushKey, account: res.account, lastPhone: res.account.phone };
+    await dbSet('cloud', cloud).catch(() => {});
+    ui.auth = null;
+    ui.authNote = '';
+    ui.authPhone = '';
+    if (kind === 'register') {
+      data.settings = { ...settings(), clientName: name };
+      await save();
+      render();
+      toast('Аккаунт создан');
+      scheduleSync(0);
+      return;
+    }
+    await restoreAfterLogin();
+  } catch (e) {
+    authError(e.message === 'нет связи с облаком' ? 'Нет связи. Проверьте интернет и попробуйте ещё раз' : e.message);
+  } finally {
+    button.disabled = false;
+    button.textContent = label;
+  }
+}
+
+// Вошли: если в облаке есть копия — берём её (данные телефона, если они есть, — с вопросом).
+async function restoreAfterLogin() {
   let remote = null;
   try {
     remote = await fetchCloudBackup();
-  } catch (e) { /* покажем ниже как ошибку сохранения */ }
-  if (remote && (remote.copy.appointments.length || remote.copy.clients.length)) {
+  } catch (e) { /* нет копии или связи — останутся данные телефона */ }
+  if (remote) {
     const n = remote.copy.appointments.length;
-    const question = data.appointments.length
-      ? `В облаке есть копия от ${formatDateTime(remote.created)}: ${n} ${L.plural(n, RECORD_FORMS)}. Заменить данные этого телефона копией из облака? «Отмена» — оставить данные телефона и сохранить их в облако.`
-      : `В облаке есть копия от ${formatDateTime(remote.created)}: ${n} ${L.plural(n, RECORD_FORMS)}. Восстановить её на этом телефоне?`;
-    if (confirm(question)) {
+    const ask = `В облаке есть копия от ${formatDateTime(remote.created)}: ${n} ${L.plural(n, RECORD_FORMS)}. Заменить данные этого телефона копией из облака? «Отмена» — оставить данные телефона и сохранить их в облако.`;
+    if (!hasLocalData() || confirm(ask)) {
       await applyCloudBackup(remote.copy);
       return;
     }
   }
   render();
-  toast('Телефон подключён к облаку');
-  syncNow();
+  toast('Вы вошли');
+  scheduleSync(0);
+}
+
+// Аккаунт с сервера: прежний мастер увидит «оформить аккаунт», у остальных обновятся имя и ссылка.
+async function refreshAccount() {
+  if (!cloud.key) return;
+  try {
+    const { account } = await (await api('GET', '/api/account')).json();
+    const changed = JSON.stringify(account) !== JSON.stringify(cloud.account);
+    cloud.account = account;
+    if (account.claimed) cloud.lastPhone = account.phone;
+    await dbSet('cloud', cloud).catch(() => {});
+    if (changed) render();
+  } catch (e) { /* нет связи — проверим позже */ }
+}
+
+function openChangePassword() {
+  pushSheet(() => {
+    sheetHtml('Смена пароля', `
+      <form id="password-form" class="sheet-body" novalidate>
+        <input type="text" name="username" autocomplete="username" value="${esc((cloud.account && cloud.account.phone) || '')}" hidden>
+        <label>Текущий пароль<input type="password" name="old" autocomplete="current-password" enterkeyhint="next"></label>
+        <label>Новый пароль<input type="password" name="password" autocomplete="new-password" enterkeyhint="next" placeholder="Не короче 6 символов"></label>
+        <label>Новый пароль ещё раз<input type="password" name="password2" autocomplete="new-password" enterkeyhint="done"></label>
+        <p class="warn-text" id="auth-error" hidden></p>
+        <button type="submit" class="btn primary block">Сменить пароль</button>
+      </form>`);
+    const form = $('#password-form');
+    form.addEventListener('submit', async e => {
+      e.preventDefault();
+      const old = field(form, 'old').value, password = field(form, 'password').value;
+      const error = !old ? 'Впишите текущий пароль'
+        : password.length < 6 ? 'Новый пароль — не короче 6 символов'
+        : password !== field(form, 'password2').value ? 'Новые пароли не совпадают'
+        : '';
+      if (error) return authError(error);
+      const button = form.querySelector('button[type=submit]');
+      button.disabled = true;
+      button.textContent = 'Сохраняем…';
+      try {
+        const phone = cloud.account.phone;
+        await api('PUT', '/api/account/password', { old: await L.passwordSecret(phone, old), secret: await L.passwordSecret(phone, password) });
+        closeSheet();
+        toast('Пароль изменён');
+      } catch (err) {
+        authError(err.message);
+        button.disabled = false;
+        button.textContent = 'Сменить пароль';
+      }
+    });
+  });
+}
+
+// Выход: сначала всё сохраняем в облако, потом убираем данные с телефона —
+// на нём может войти другой мастер.
+async function logoutAccount() {
+  if (!confirm('Выйти из аккаунта? Данные сохранятся в облаке и вернутся, когда вы войдёте снова. С этого телефона они будут удалены.')) return;
+  toast('Сохраняем в облако…');
+  await syncNow();
+  if (cloud.error && !confirm(`Не удалось сохранить в облако (${cloud.error}). Если выйти сейчас, последние изменения пропадут. Всё равно выйти?`)) return;
+  try {
+    await api('DELETE', '/api/account/session');
+  } catch (e) { /* уже вышли или нет связи — ключ всё равно забываем */ }
+  await clearLocalData();
+  cloud = freshCloud();
+  await dbSet('cloud', cloud).catch(() => {});
+  ui.tab = 'records';
+  ui.settingsPage = null;
+  ui.auth = 'welcome';
+  ui.authNote = '';
+  ui.authPhone = '';
+  render();
+  scrollTo(0, 0);
+  toast('Вы вышли из аккаунта');
+}
+
+// Убрать с телефона данные мастера: записи, фото, заявки.
+async function clearLocalData() {
+  for (const key of await dbKeys().catch(() => [])) {
+    if (typeof key === 'string' && key.startsWith('photo:')) await dbDel(key).catch(() => {});
+  }
+  for (const id of [...photoUrls.keys()]) forgetPhoto(id);
+  data = freshData();
+  requests = [];
+  await dbSet('data', data).catch(() => {});
+  updateBadge();
 }
 
 async function restoreFromCloud() {
@@ -2150,15 +2404,6 @@ async function subscribePush() {
     }
   }
   await api('PUT', '/api/push', sub.toJSON());
-}
-
-async function unpair() {
-  if (!confirm('Отключить этот телефон от облака? Данные на телефоне останутся, но перестанут сохраняться в облако, а заявки — приходить.')) return;
-  cloud = freshCloud();
-  requests = [];
-  updateBadge();
-  await dbSet('cloud', cloud).catch(() => {});
-  render();
 }
 
 // ---------- Архив на телефон: ZIP с data.json и фото ----------
@@ -2466,8 +2711,6 @@ const actions = {
       toast('Не удалось скопировать — выделите ссылку пальцем');
     }
   },
-  'pair': () => pairDevice(),
-  'unpair': () => unpair(),
   'enable-push': () => enablePush(),
   'sync-now': () => {
     cloud.backupPrint = '';
@@ -2499,6 +2742,17 @@ const actions = {
     render();
   },
   'hide-install': () => { pref('installHidden', '1'); render(); },
+  'auth': el => {
+    // Набранный номер переходит на следующий экран («Забыли пароль?», «Создать»).
+    const typed = $('#auth-form input[name=phone]');
+    if (typed && L.phoneFromField(typed.value)) ui.authPhone = L.phoneFromField(typed.value);
+    ui.auth = el.dataset.screen;
+    ui.authNote = '';
+    render();
+    scrollTo(0, 0);
+  },
+  'change-password': () => openChangePassword(),
+  'logout': () => logoutAccount(),
   'toggle-mode': () => {
     const mode = colorMode() === 'dark' ? 'light' : 'dark';
     document.documentElement.dataset.mode = mode;
@@ -2683,6 +2937,7 @@ async function start() {
   if (cloud.key && cloud.pushOn && 'Notification' in window && Notification.permission === 'granted') {
     subscribePush().catch(() => {});
   }
+  refreshAccount();
   scheduleSync(1000);
 }
 

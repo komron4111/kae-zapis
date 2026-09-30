@@ -1,7 +1,7 @@
 // Офлайн-кэш и уведомления о заявках.
 // После любой правки файлов увеличьте VERSION — телефоны скачают
 // новую версию при следующем запуске приложения.
-const VERSION = 'v12';
+const VERSION = 'v13';
 const CACHE = `zapisi-arai-${VERSION}`;
 const FILES = [
   './',
@@ -12,6 +12,8 @@ const FILES = [
   './zip.js',
   './config.js',
   './phone-input.js',
+  './theme-init.js',
+  './errors.js',
   './manifest.webmanifest',
   './icons/favicon-64.png',
   './icons/logo-neon.png',
@@ -37,12 +39,14 @@ self.addEventListener('activate', event => {
   );
 });
 
-// Страница для клиентов (okna/) и её файлы всегда берутся из сети: иначе её новый код
-// может встретиться со старым logic.js из кэша приложения (пока кэш не обновился).
+// Страница для клиентов (okna/), страница администратора (admin/) и их файлы всегда
+// берутся из сети: иначе их новый код может встретиться со старым logic.js из кэша приложения.
+const OWN_PAGES = /\/(okna|admin)\//;
+
 async function forClientPage(event) {
-  if (new URL(event.request.url).pathname.includes('/okna/')) return true;
+  if (OWN_PAGES.test(new URL(event.request.url).pathname)) return true;
   const client = event.clientId ? await self.clients.get(event.clientId) : null;
-  return Boolean(client && new URL(client.url).pathname.includes('/okna/'));
+  return Boolean(client && OWN_PAGES.test(new URL(client.url).pathname));
 }
 
 self.addEventListener('fetch', event => {

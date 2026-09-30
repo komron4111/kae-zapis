@@ -322,6 +322,39 @@ export function buildSchedule(data, now = new Date(), days = HORIZON_DAYS) {
   };
 }
 
+// Расписание приходит на сервер с телефона мастера как есть, а мастеров много. Всё, что
+// увидят клиенты, пропускаем по образцу: даты, время и числа — строго своего вида,
+// строки — обрезаны, лишние поля — отброшены. null — это не расписание.
+export function cleanSchedule(raw) {
+  if (!raw || typeof raw !== 'object' || raw.kind !== 'okna' || !Array.isArray(raw.days)) return null;
+  const int = (v, min, max, def) => (Number.isFinite(v) && Math.round(v) >= min && Math.round(v) <= max ? Math.round(v) : def);
+  const text = (v, max) => String(v == null ? '' : v).trim().replace(/\s+/g, ' ').slice(0, max);
+  const interval = x => Array.isArray(x) && Number.isFinite(x[0]) && Number.isFinite(x[1]) && x[0] >= 0 && x[1] >= x[0] && x[1] <= 2880;
+  const days = raw.days.slice(0, 62).filter(d => d && typeof d === 'object' && DATE_RE.test(d.date)).map(d => {
+    if (d.off) return { date: d.date, off: true };
+    if (Array.isArray(d.busy)) return { date: d.date, busy: d.busy.filter(interval).slice(0, 100).map(x => [Math.round(x[0]), Math.round(x[1])]) };
+    return { date: d.date, times: (Array.isArray(d.times) ? d.times : []).filter(t => TIME_RE.test(t)).slice(0, 100) };
+  });
+  const updated = new Date(typeof raw.updated === 'string' ? raw.updated : 0);
+  return {
+    app: BACKUP_APP,
+    kind: 'okna',
+    v: int(raw.v, 1, 9, 1),
+    name: text(raw.name, 40),
+    whatsapp: phoneDigits(raw.whatsapp).slice(0, 15),
+    dayStart: TIME_RE.test(raw.dayStart) ? raw.dayStart : DEFAULT_SETTINGS.dayStart,
+    lastStart: TIME_RE.test(raw.lastStart) ? raw.lastStart : DEFAULT_SETTINGS.lastStart,
+    duration: int(raw.duration, 5, 720, DEFAULT_SETTINGS.duration),
+    tzOffset: int(raw.tzOffset, -900, 900, 0),
+    services: (Array.isArray(raw.services) ? raw.services : []).slice(0, 60)
+      .filter(p => p && typeof p === 'object')
+      .map(p => ({ name: String(p.name == null ? '' : p.name).trim().slice(0, 80), price: toMoney(p.price), duration: int(p.duration, 0, 720, 0) }))
+      .filter(p => p.name),
+    updated: isNaN(updated) ? new Date(0).toISOString() : updated.toISOString(),
+    days,
+  };
+}
+
 // Рабочие часы из расписания.
 export function scheduleSettings(schedule) {
   return {
@@ -459,6 +492,34 @@ export function b64uToBytes(str) {
   const s = String(str).replace(/-/g, '+').replace(/_/g, '/');
   const binary = atob(s + '==='.slice((s.length + 3) % 4));
   return Uint8Array.from(binary, c => c.charCodeAt(0));
+}
+
+// ---------- Аккаунт мастера ----------
+
+// Ссылка мастера для клиентов по имени: «Арай» → «aray», «Айгүл Нұр» → «aygul-nur».
+const TRANSLIT = {
+  а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh', з: 'z', и: 'i', й: 'y', к: 'k', л: 'l', м: 'm',
+  н: 'n', о: 'o', п: 'p', р: 'r', с: 's', т: 't', у: 'u', ф: 'f', х: 'h', ц: 'ts', ч: 'ch', ш: 'sh', щ: 'sch',
+  ъ: '', ы: 'y', ь: '', э: 'e', ю: 'yu', я: 'ya', ә: 'a', ғ: 'g', қ: 'q', ң: 'n', ө: 'o', ұ: 'u', ү: 'u', һ: 'h', і: 'i',
+};
+
+export function slugify(name) {
+  const slug = [...String(name || '').toLowerCase()].map(ch => (ch in TRANSLIT ? TRANSLIT[ch] : ch)).join('')
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24).replace(/-+$/, '');
+  return slug || 'master';
+}
+
+// Пароль на сервер не уходит: телефон «растягивает» его (PBKDF2-SHA-256, PASSWORD_ROUNDS шагов,
+// соль — номер телефона), сервер хранит только хэш результата. Подбирать пароль по украденной
+// базе долго, а серверу не нужно тратить на это время.
+export const PASSWORD_ROUNDS = 200000;
+
+export async function passwordSecret(phone, password) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey('raw', enc.encode(String(password)), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', hash: 'SHA-256', salt: enc.encode('nailapp:' + phoneDigits(phone)), iterations: PASSWORD_ROUNDS }, key, 256);
+  return bytesToB64u(new Uint8Array(bits));
 }
 
 // ---------- Телефоны ----------

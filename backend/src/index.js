@@ -1,19 +1,25 @@
-// Сервер Nailapp на Cloudflare Workers: заявки клиентов, уведомления мастеру,
+// Сервер Nailapp на Cloudflare Workers: аккаунты мастеров, заявки клиентов, уведомления,
 // свободное время для страницы клиентов, облачная копия записей и фото. Данные — в D1.
-// Телефон мастера один раз подключается по коду доступа (секрет ACCESS_CODE)
-// и дальше входит своим ключом устройства.
+//
+// С 2.0.0 у каждого мастера свой аккаунт: телефон и пароль. Пароль на сервер не приходит —
+// телефон «растягивает» его (L.passwordSecret), а сервер хранит только хэш результата.
+// Телефон мастера дальше входит своим ключом устройства. Всё, что было до аккаунтов, —
+// мастер 'legacy' (Арай): номер и пароль она задаёт в приложении («оформить аккаунт»).
+// Забытый пароль сбрасывает администратор: код — секрет ADMIN_CODE, а если его нет — ACCESS_CODE.
 
 // Правила свободного времени и проверки заявки — общие с сайтом: один файл
 // frontend/logic.js, wrangler включает его в сервер при выкладке.
 import * as L from '../../frontend/logic.js';
 import { generateVapidKeys, sendPush } from './push.js';
 
-const SITE = 'https://komron4111.github.io/kae-zapis/';
-// Пока телефон мастера не подключён, свободное время берём из прежнего места.
+const SITE = 'https://nailapp.pages.dev/'; // адрес сайта для подписи уведомлений (VAPID)
+// Пока у прежнего мастера нет расписания в базе, свободное время берём из прежнего места.
 const GITHUB_OKNA = 'https://raw.githubusercontent.com/komron4111/kae-zapis-okna/main/okna.json';
+const LEGACY = 'legacy';
 const BACKUPS_KEPT = 30;
 const MAX_BACKUP = 1900 * 1024; // в D1 строка не больше 2 МБ
 const MAX_PHOTO = 1900 * 1024;
+const HOUR = 3600e3;
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -48,6 +54,8 @@ export default {
         response = json({ error: e.message }, e.status);
       } else {
         console.error(e && e.stack ? e.stack : e);
+        const place = `${request.method} ${new URL(request.url).pathname.replace(/^(\/api\/(?:bookings|photos|requests|admin\/masters))\/[^/]+/, '$1/:id')}`;
+        ctx.waitUntil(logError(env, 'server', place, (e && e.message) || String(e)).catch(() => {}));
         response = json({ error: 'Ошибка сервера, попробуйте позже' }, 500);
       }
     }
@@ -57,30 +65,49 @@ export default {
 };
 
 async function route(request, env, ctx) {
-  const path = new URL(request.url).pathname.replace(/\/+$/, '');
+  const url = new URL(request.url);
+  const path = url.pathname.replace(/\/+$/, '');
   const method = request.method;
+  const slug = url.searchParams.get('m');
 
   let m;
-  // Для всех: страница клиентов, личная ссылка на запись и подключение телефона.
-  if (path === '/api/okna' && method === 'GET') return getOkna(env);
-  if (path === '/api/requests' && method === 'POST') return createRequest(request, env, ctx);
-  if (path === '/api/pair' && method === 'POST') return pair(request, env);
+  // Для всех: страница клиентов (?m=<мастер>), личная ссылка на запись, регистрация и вход.
+  if (path === '/api/okna' && method === 'GET') return getOkna(env, slug);
+  if (path === '/api/requests' && method === 'POST') return createRequest(request, env, ctx, slug);
   if ((m = path.match(/^\/api\/bookings\/([\w-]{16,64})$/)) && method === 'GET') return getBooking(env, m[1]);
+  if (path === '/api/register' && method === 'POST') return register(request, env);
+  if (path === '/api/login' && method === 'POST') return login(request, env);
+  if (path === '/api/contact' && method === 'GET') return getContact(env);
+  if (path === '/api/pair' && method === 'POST') return pair(request, env); // вход по коду, как до 2.0.0
+  if (path === '/api/errors' && method === 'POST') return reportError(request, env);
 
-  // Дальше — только для подключённого телефона мастера.
-  const deviceId = await authDevice(request, env);
-  if (path === '/api/push' && method === 'PUT') return savePush(request, env, deviceId);
-  if (path === '/api/schedule' && method === 'PUT') return saveSchedule(request, env);
-  if (path === '/api/requests' && method === 'GET') return listRequests(env);
-  if ((m = path.match(/^\/api\/requests\/([\w-]+)\/(confirm|decline)$/)) && method === 'POST') return closeRequest(request, env, m[1], m[2]);
-  if ((m = path.match(/^\/api\/bookings\/([\w-]{16,64})$/)) && method === 'PUT') return putBooking(request, env, m[1]);
-  if (path === '/api/backup' && method === 'PUT') return putBackup(request, env);
-  if (path === '/api/backup' && method === 'GET') return getBackup(env);
-  if (path === '/api/photos' && method === 'GET') return listPhotos(env);
+  // Администратор: мастера, сброс пароля, контакт для «Забыли пароль?».
+  if (path.startsWith('/api/admin/')) {
+    await authAdmin(request, env);
+    if (path === '/api/admin/masters' && method === 'GET') return listMasters(env);
+    if ((m = path.match(/^\/api\/admin\/masters\/([\w-]+)\/password$/)) && method === 'POST') return resetPassword(request, env, m[1]);
+    if (path === '/api/admin/contact' && method === 'PUT') return putContact(request, env);
+    throw new HttpError(404, 'Не найдено');
+  }
+
+  // Дальше — только для телефона мастера, по ключу устройства. me — { deviceId, masterId }.
+  const me = await authDevice(request, env);
+  if (path === '/api/account' && method === 'GET') return getAccount(env, me);
+  if (path === '/api/account/claim' && method === 'POST') return claimAccount(request, env, me);
+  if (path === '/api/account/password' && method === 'PUT') return changePassword(request, env, me);
+  if (path === '/api/account/session' && method === 'DELETE') return logout(env, me);
+  if (path === '/api/push' && method === 'PUT') return savePush(request, env, me);
+  if (path === '/api/schedule' && method === 'PUT') return saveSchedule(request, env, me);
+  if (path === '/api/requests' && method === 'GET') return listRequests(env, me);
+  if ((m = path.match(/^\/api\/requests\/([\w-]+)\/(confirm|decline)$/)) && method === 'POST') return closeRequest(request, env, me, m[1], m[2]);
+  if ((m = path.match(/^\/api\/bookings\/([\w-]{16,64})$/)) && method === 'PUT') return putBooking(request, env, me, m[1]);
+  if (path === '/api/backup' && method === 'PUT') return putBackup(request, env, me);
+  if (path === '/api/backup' && method === 'GET') return getBackup(env, me);
+  if (path === '/api/photos' && method === 'GET') return listPhotos(env, me);
   if ((m = path.match(/^\/api\/photos\/([\w-]+)$/))) {
-    if (method === 'PUT') return putPhoto(request, env, m[1]);
-    if (method === 'GET') return getPhoto(env, m[1]);
-    if (method === 'DELETE') return deletePhoto(env, m[1]);
+    if (method === 'PUT') return putPhoto(request, env, me, m[1]);
+    if (method === 'GET') return getPhoto(env, me, m[1]);
+    if (method === 'DELETE') return deletePhoto(env, me, m[1]);
   }
   throw new HttpError(404, 'Не найдено');
 }
@@ -116,7 +143,7 @@ function toBytes(value) {
   return Uint8Array.from(value || []);
 }
 
-// Ограничение попыток: не больше max за windowMs с одного адреса.
+// Ограничение попыток: не больше max за windowMs (who — хэш адреса, номера или id мастера).
 async function tooMany(env, kind, who, max, windowMs) {
   const row = await env.DB.prepare('SELECT COUNT(*) AS n FROM attempts WHERE kind = ? AND who = ? AND at > ?')
     .bind(kind, who, Date.now() - windowMs).first();
@@ -129,30 +156,58 @@ function remember(env, kind, who) {
 
 const visitor = request => sha256hex('ip:' + (request.headers.get('CF-Connecting-IP') || 'local'));
 
-// Старые заявки, личные ссылки (через 60 дней после записи) и счётчики попыток не храним.
+// Старые заявки, личные ссылки (через 60 дней после записи), счётчики попыток
+// и журнал ошибок (через 14 дней) не храним.
 async function cleanup(env, today) {
   await env.DB.batch([
     env.DB.prepare('DELETE FROM requests WHERE date < ?').bind(today),
     env.DB.prepare('DELETE FROM bookings WHERE date < ?').bind(L.addDays(today, -60)),
     env.DB.prepare('DELETE FROM attempts WHERE at < ?').bind(Date.now() - 864e5),
+    env.DB.prepare('DELETE FROM errors WHERE at < ?').bind(new Date(Date.now() - 14 * 864e5).toISOString()),
   ]);
+}
+
+// Журнал ошибок — чтобы узнать о сбое раньше, чем мастер или клиент напишут.
+// Не больше ERRORS_PER_HOUR записей в час: поток одинаковых ошибок не съест лимит базы.
+const ERRORS_PER_HOUR = 300;
+
+async function logError(env, source, place, message) {
+  const now = new Date();
+  await env.DB.prepare(`
+    INSERT INTO errors (at, source, place, message) SELECT ?, ?, ?, ?
+    WHERE (SELECT COUNT(*) FROM errors WHERE at > ?) < ?`)
+    .bind(now.toISOString(), source, String(place).slice(0, 160), String(message).slice(0, 400), new Date(now - HOUR).toISOString(), ERRORS_PER_HOUR)
+    .run();
+}
+
+// Ошибка со страницы (frontend/errors.js): приложение мастера, страница клиентов, администратор.
+async function reportError(request, env) {
+  const who = await visitor(request);
+  if (await tooMany(env, 'error', who, 20, HOUR)) return json({ ok: true }); // это только журнал — молча
+  const body = await readJson(request, 2048);
+  const source = ['app', 'okna', 'admin'].includes(body.source) ? body.source : 'page';
+  await remember(env, 'error', who);
+  await logError(env, source, String(body.place || ''), String(body.message || ''));
+  return json({ ok: true });
 }
 
 const newToken = () => L.bytesToB64u(crypto.getRandomValues(new Uint8Array(16)));
 
-async function saveBooking(env, token, booking) {
+// Запись клиента по личной ссылке. Чужую (другого мастера) не перезаписываем.
+async function saveBooking(env, masterId, token, booking) {
   const now = new Date().toISOString();
   await env.DB.prepare(`
-    INSERT INTO bookings (token, created, updated, status, date, time, name, services, total, prepaid)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO bookings (token, created, updated, status, date, time, name, services, total, prepaid, master_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (token) DO UPDATE SET updated = excluded.updated, status = excluded.status, date = excluded.date,
-      time = excluded.time, name = excluded.name, services = excluded.services, total = excluded.total, prepaid = excluded.prepaid`)
-    .bind(token, now, now, booking.status, booking.date, booking.time, booking.name, JSON.stringify(booking.services), booking.total, booking.prepaid)
+      time = excluded.time, name = excluded.name, services = excluded.services, total = excluded.total, prepaid = excluded.prepaid
+    WHERE bookings.master_id = excluded.master_id`)
+    .bind(token, now, now, booking.status, booking.date, booking.time, booking.name, JSON.stringify(booking.services), booking.total, booking.prepaid, masterId)
     .run();
 }
 
-async function hasDevice(env) {
-  return Boolean(await env.DB.prepare('SELECT 1 FROM devices LIMIT 1').first());
+async function hasDevice(env, masterId) {
+  return Boolean(await env.DB.prepare('SELECT 1 FROM devices WHERE master_id = ? LIMIT 1').bind(masterId).first());
 }
 
 async function vapidKeys(env) {
@@ -164,47 +219,295 @@ async function vapidKeys(env) {
   return JSON.parse(saved.value);
 }
 
+// ---------- Мастера ----------
+
+// Мастер по ссылке для клиентов: okna/?m=<slug>; без неё — прежний мастер (ссылка Арай до аккаунтов).
+async function masterBySlug(env, slug) {
+  const s = String(slug || '').trim().toLowerCase();
+  const row = s
+    ? await env.DB.prepare('SELECT id, name, slug FROM masters WHERE slug = ?').bind(s).first()
+    : await env.DB.prepare('SELECT id, name, slug FROM masters WHERE id = ?').bind(LEGACY).first();
+  if (!row) throw new HttpError(404, 'Мастер не найден — проверьте ссылку');
+  return row;
+}
+
+// Свободная ссылка по имени: «Арай» → aray, занята — aray-2, aray-3…
+async function freeSlug(env, name) {
+  const base = L.slugify(name);
+  for (let i = 1; i < 100; i++) {
+    const slug = i === 1 ? base : `${base}-${i}`;
+    if (!(await env.DB.prepare('SELECT 1 FROM masters WHERE slug = ?').bind(slug).first())) return slug;
+  }
+  return `${base}-${Date.now().toString(36)}`;
+}
+
+const accountJson = m => ({ name: m.name, phone: m.phone ? L.formatPhone(m.phone) : '', slug: m.slug, claimed: Boolean(m.pass_hash) });
+const hashSecret = (salt, secret) => sha256hex(`${salt}:${secret}`);
+
+function readName(body) {
+  const name = String(body.name || '').trim().replace(/\s+/g, ' ').slice(0, 40);
+  if (!name) throw new HttpError(400, 'Укажите имя');
+  return name;
+}
+
+function readPhone(body) {
+  const phone = L.phoneDigits(body.phone);
+  if (!/^7\d{10}$/.test(phone)) throw new HttpError(400, 'Укажите номер телефона полностью');
+  return phone;
+}
+
+// Секрет — пароль, растянутый на телефоне (base64url, 43 знака). Сам пароль сюда не приходит.
+function readSecret(value) {
+  const secret = String(value || '');
+  if (!/^[\w-]{40,100}$/.test(secret)) throw new HttpError(400, 'Неверный пароль');
+  return secret;
+}
+
+function readKey(body) {
+  const key = String(body.key || '');
+  if (!/^[\w-]{40,100}$/.test(key)) throw new HttpError(400, 'Неверный ключ устройства');
+  return key;
+}
+
+async function deviceRow(env, masterId, key, name) {
+  return env.DB.prepare('INSERT INTO devices (id, key_hash, name, created, master_id) VALUES (?, ?, ?, ?, ?)')
+    .bind(crypto.randomUUID(), await sha256hex(key), String(name || 'Телефон мастера').slice(0, 60), new Date().toISOString(), masterId);
+}
+
+// Один телефон на аккаунт: вход на новом телефоне отключает прежний (например, потерянный).
+async function startSession(env, masterId, key, name) {
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM devices WHERE master_id = ?').bind(masterId),
+    await deviceRow(env, masterId, key, name),
+  ]);
+}
+
+async function register(request, env) {
+  const who = await visitor(request);
+  if (await tooMany(env, 'register', who, 5, HOUR)) throw new HttpError(429, 'Слишком много регистраций подряд. Попробуйте через час');
+  const body = await readJson(request, 2048);
+  const name = readName(body);
+  const phone = readPhone(body);
+  const secret = readSecret(body.secret);
+  const key = readKey(body);
+  await remember(env, 'register', who);
+  if (await env.DB.prepare('SELECT 1 FROM masters WHERE phone = ?').bind(phone).first()) {
+    throw new HttpError(409, 'Этот номер уже зарегистрирован — войдите по нему');
+  }
+  const id = crypto.randomUUID(), salt = newToken(), now = new Date().toISOString();
+  const master = { name, phone, slug: await freeSlug(env, name), pass_hash: await hashSecret(salt, secret) };
+  try {
+    await env.DB.prepare('INSERT INTO masters (id, phone, name, slug, pass_hash, pass_salt, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .bind(id, phone, name, master.slug, master.pass_hash, salt, now, now).run();
+  } catch (e) {
+    // Два запроса с одним номером одновременно: второй упирается в UNIQUE.
+    if (/UNIQUE/i.test(String(e && e.message))) throw new HttpError(409, 'Этот номер уже зарегистрирован — войдите по нему');
+    throw e;
+  }
+  await startSession(env, id, key, body.device);
+  return json({ ok: true, account: accountJson(master), pushKey: (await vapidKeys(env)).publicKey }, 201);
+}
+
+async function login(request, env) {
+  const who = await visitor(request);
+  const body = await readJson(request, 2048);
+  const phone = readPhone(body);
+  const secret = readSecret(body.secret);
+  const key = readKey(body);
+  const byPhone = await sha256hex('phone:' + phone);
+  if (await tooMany(env, 'login', who, 10, HOUR) || await tooMany(env, 'login-phone', byPhone, 20, HOUR)) {
+    throw new HttpError(429, 'Слишком много попыток входа. Попробуйте через час или напишите администратору');
+  }
+  const master = await env.DB.prepare('SELECT id, name, phone, slug, pass_hash, pass_salt FROM masters WHERE phone = ?').bind(phone).first();
+  if (!master || !master.pass_hash || await hashSecret(master.pass_salt, secret) !== master.pass_hash) {
+    await remember(env, 'login', who);
+    await remember(env, 'login-phone', byPhone);
+    throw new HttpError(403, 'Неверный номер или пароль');
+  }
+  await startSession(env, master.id, key, body.device);
+  return json({ ok: true, account: accountJson(master), pushKey: (await vapidKeys(env)).publicKey });
+}
+
+async function getAccount(env, me) {
+  const master = await env.DB.prepare('SELECT name, phone, slug, pass_hash FROM masters WHERE id = ?').bind(me.masterId).first();
+  if (!master) throw new HttpError(401, 'Аккаунт не найден — войдите заново');
+  return json({ account: accountJson(master) });
+}
+
+// Прежний мастер (до 2.0.0) задаёт номер, имя и пароль — дальше входит, как все.
+async function claimAccount(request, env, me) {
+  const master = await env.DB.prepare('SELECT name, phone, slug, pass_hash FROM masters WHERE id = ?').bind(me.masterId).first();
+  if (!master) throw new HttpError(401, 'Аккаунт не найден — войдите заново');
+  if (master.pass_hash) throw new HttpError(409, 'Аккаунт уже оформлен');
+  const body = await readJson(request, 2048);
+  const name = readName(body);
+  const phone = readPhone(body);
+  const secret = readSecret(body.secret);
+  if (await env.DB.prepare('SELECT 1 FROM masters WHERE phone = ? AND id <> ?').bind(phone, me.masterId).first()) {
+    throw new HttpError(409, 'Этот номер уже занят другим аккаунтом — напишите администратору');
+  }
+  const salt = newToken(), hash = await hashSecret(salt, secret);
+  await env.DB.prepare('UPDATE masters SET phone = ?, name = ?, pass_hash = ?, pass_salt = ?, updated = ? WHERE id = ?')
+    .bind(phone, name, hash, salt, new Date().toISOString(), me.masterId).run();
+  return json({ ok: true, account: accountJson({ ...master, name, phone, pass_hash: hash }) });
+}
+
+async function changePassword(request, env, me) {
+  if (await tooMany(env, 'password', me.masterId, 5, HOUR)) throw new HttpError(429, 'Слишком много попыток. Попробуйте через час');
+  const body = await readJson(request, 2048);
+  const old = readSecret(body.old);
+  const secret = readSecret(body.secret);
+  const master = await env.DB.prepare('SELECT pass_hash, pass_salt FROM masters WHERE id = ?').bind(me.masterId).first();
+  if (!master || !master.pass_hash) throw new HttpError(409, 'Сначала оформите аккаунт');
+  if (await hashSecret(master.pass_salt, old) !== master.pass_hash) {
+    await remember(env, 'password', me.masterId);
+    throw new HttpError(403, 'Текущий пароль неверный');
+  }
+  const salt = newToken();
+  await env.DB.prepare('UPDATE masters SET pass_hash = ?, pass_salt = ?, updated = ? WHERE id = ?')
+    .bind(await hashSecret(salt, secret), salt, new Date().toISOString(), me.masterId).run();
+  return json({ ok: true });
+}
+
+async function logout(env, me) {
+  await env.DB.prepare('DELETE FROM devices WHERE id = ?').bind(me.deviceId).run();
+  return json({ ok: true });
+}
+
+// Вход по коду доступа, как до 2.0.0 (старые версии приложения), — к прежнему мастеру
+// и только пока его аккаунт не оформлен.
+async function pair(request, env) {
+  const who = await visitor(request);
+  if (await tooMany(env, 'pair', who, 5, HOUR)) throw new HttpError(429, 'Слишком много попыток. Попробуйте через час');
+  const body = await readJson(request, 2048);
+  const code = String(env.ACCESS_CODE || '');
+  if (code.length < 8) throw new HttpError(503, 'Код доступа ещё не задан на сервере');
+  // Сравниваем хэши, чтобы время ответа не выдавало совпавшие символы.
+  if (await sha256hex(String(body.code || '').trim()) !== await sha256hex(code)) {
+    await remember(env, 'pair', who);
+    throw new HttpError(403, 'Неверный код доступа');
+  }
+  const legacy = await env.DB.prepare('SELECT pass_hash FROM masters WHERE id = ?').bind(LEGACY).first();
+  if (legacy && legacy.pass_hash) throw new HttpError(410, 'Вход по коду больше не работает — обновите приложение и войдите по номеру и паролю');
+  // Подключённый телефон не отключаем: в новом приложении по коду уже не войти,
+  // и прежний мастер остался бы без доступа, пока не оформит аккаунт.
+  await (await deviceRow(env, LEGACY, readKey(body), body.name)).run();
+  return json({ ok: true, pushKey: (await vapidKeys(env)).publicKey });
+}
+
+async function authDevice(request, env) {
+  const m = (request.headers.get('Authorization') || '').match(/^Bearer ([\w-]{40,100})$/);
+  if (!m) throw new HttpError(401, 'Войдите в аккаунт');
+  const row = await env.DB.prepare('SELECT id, master_id FROM devices WHERE key_hash = ?').bind(await sha256hex(m[1])).first();
+  if (!row) throw new HttpError(401, 'Вы вошли в аккаунт на другом телефоне или пароль сменили — войдите снова');
+  return { deviceId: row.id, masterId: row.master_id };
+}
+
+// ---------- Администратор ----------
+
+// Код приходит в заголовке «Admin <base64url кода>»: так он может быть и по-русски.
+async function authAdmin(request, env) {
+  const code = String(env.ADMIN_CODE || env.ACCESS_CODE || '');
+  if (code.length < 8) throw new HttpError(503, 'Код администратора не задан на сервере');
+  const who = await visitor(request);
+  if (await tooMany(env, 'admin', who, 5, HOUR)) throw new HttpError(429, 'Слишком много попыток. Попробуйте через час');
+  const m = (request.headers.get('Authorization') || '').match(/^Admin ([\w-]+)$/);
+  let given = '';
+  try {
+    given = m ? new TextDecoder().decode(L.b64uToBytes(m[1])).trim() : '';
+  } catch (e) { /* неверная кодировка — как неверный код */ }
+  if (await sha256hex(given) !== await sha256hex(code)) {
+    await remember(env, 'admin', who);
+    throw new HttpError(403, 'Неверный код администратора');
+  }
+}
+
+async function listMasters(env) {
+  const { results } = await env.DB.prepare(`
+    SELECT m.id, m.name, m.phone, m.slug, m.created, m.pass_hash <> '' AS claimed,
+      (SELECT COUNT(*) FROM devices d WHERE d.master_id = m.id) AS devices,
+      (SELECT updated FROM schedules s WHERE s.master_id = m.id) AS active
+    FROM masters m ORDER BY m.created DESC`).all();
+  return json({
+    masters: results.map(r => ({
+      id: r.id, name: r.name, phone: r.phone ? L.formatPhone(r.phone) : '', slug: r.slug, created: r.created,
+      claimed: Boolean(r.claimed), devices: r.devices, active: r.active || null,
+    })),
+  });
+}
+
+// Новый пароль задаёт администратор: страница администратора придумывает временный пароль
+// и растягивает его так же, как телефон мастера. Прежний телефон мастера отключается.
+async function resetPassword(request, env, id) {
+  const master = await env.DB.prepare('SELECT phone FROM masters WHERE id = ?').bind(id).first();
+  if (!master) throw new HttpError(404, 'Мастер не найден');
+  if (!master.phone) throw new HttpError(409, 'У мастера ещё нет номера — аккаунт не оформлен');
+  const secret = readSecret((await readJson(request, 2048)).secret);
+  const salt = newToken();
+  await env.DB.batch([
+    env.DB.prepare('UPDATE masters SET pass_hash = ?, pass_salt = ?, updated = ? WHERE id = ?')
+      .bind(await hashSecret(salt, secret), salt, new Date().toISOString(), id),
+    env.DB.prepare('DELETE FROM devices WHERE master_id = ?').bind(id),
+  ]);
+  return json({ ok: true });
+}
+
+// Куда писать, если забыли пароль: WhatsApp администратора.
+async function getContact(env) {
+  const row = await env.DB.prepare("SELECT value FROM config WHERE key = 'contact'").first();
+  return json({ whatsapp: row ? row.value : '' });
+}
+
+async function putContact(request, env) {
+  const digits = L.phoneDigits((await readJson(request, 1024)).whatsapp);
+  if (digits && !/^7\d{10}$/.test(digits)) throw new HttpError(400, 'Укажите номер WhatsApp полностью');
+  await env.DB.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('contact', ?)").bind(digits).run();
+  return json({ ok: true, whatsapp: digits });
+}
+
 // ---------- Страница клиентов ----------
 
-async function loadSchedule(env) {
-  const row = await env.DB.prepare("SELECT value FROM config WHERE key = 'schedule'").first();
-  if (row) return JSON.parse(row.value);
+// Расписание проверяется и при выдаче: в базе может лежать сохранённое до проверки.
+async function loadSchedule(env, masterId) {
+  const row = await env.DB.prepare('SELECT value FROM schedules WHERE master_id = ?').bind(masterId).first();
+  if (row) return L.cleanSchedule(JSON.parse(row.value));
+  if (masterId !== LEGACY) return null;
   try {
     const res = await fetch(GITHUB_OKNA, { cf: { cacheTtl: 60 } });
-    if (res.ok) {
-      const schedule = await res.json();
-      if (schedule && schedule.kind === 'okna') return schedule;
-    }
+    if (res.ok) return L.cleanSchedule(await res.json());
   } catch (e) { /* нет расписания — страница покажет «скоро появится» */ }
   return null;
 }
 
-// Заявки, которые ждут ответа: занимают время по своим услугам.
-async function holds(env) {
-  const { results } = await env.DB.prepare('SELECT date, time, services FROM requests').all();
+// Заявки мастера, которые ждут ответа: занимают время по своим услугам.
+async function holds(env, masterId) {
+  const { results } = await env.DB.prepare('SELECT date, time, services FROM requests WHERE master_id = ?').bind(masterId).all();
   return results.map(r => ({ date: r.date, time: r.time, services: JSON.parse(r.services || '[]') }));
 }
 
-async function getOkna(env) {
-  const schedule = await loadSchedule(env);
-  if (!schedule) return json({ app: 'kae-zapis', kind: 'okna', days: [], booking: false });
-  // booking: заявки принимаем, только когда подключён телефон мастера.
-  return json({ ...L.applyHolds(schedule, await holds(env)), booking: await hasDevice(env) });
+async function getOkna(env, slug) {
+  const master = await masterBySlug(env, slug);
+  const schedule = await loadSchedule(env, master.id);
+  const legacy = master.id === LEGACY; // прежняя ссылка Арай (до аккаунтов)
+  if (!schedule) return json({ app: 'kae-zapis', kind: 'okna', name: master.name, slug: master.slug, legacy, days: [], booking: false });
+  // booking: заявки принимаем, только когда у мастера есть телефон, на который они придут.
+  return json({ ...L.applyHolds(schedule, await holds(env, master.id)), slug: master.slug, legacy, booking: await hasDevice(env, master.id) });
 }
 
-async function createRequest(request, env, ctx) {
+async function createRequest(request, env, ctx, slug) {
   const who = await visitor(request);
-  if (await tooMany(env, 'request', who, 5, 3600e3)) {
+  if (await tooMany(env, 'request', who, 5, HOUR)) {
     throw new HttpError(429, 'Слишком много заявок подряд. Попробуйте через час или напишите мастеру в WhatsApp');
   }
   const body = await readJson(request, 8 * 1024);
   if (body.website) return json({ ok: true }, 201); // скрытое поле заполняют только боты
-  const schedule = await loadSchedule(env);
-  if (!schedule || !(await hasDevice(env))) throw new HttpError(503, 'Запись через сайт пока не работает — напишите мастеру в WhatsApp');
+  const master = await masterBySlug(env, slug);
+  const schedule = await loadSchedule(env, master.id);
+  if (!schedule || !(await hasDevice(env, master.id))) throw new HttpError(503, 'Запись через сайт пока не работает — напишите мастеру в WhatsApp');
 
   const clock = L.masterClock(schedule.tzOffset || 0);
   await cleanup(env, clock.date);
-  const check = L.validateRequest(body, L.applyHolds(schedule, await holds(env)), clock);
+  const check = L.validateRequest(body, L.applyHolds(schedule, await holds(env, master.id)), clock);
   if (!check.ok) throw new HttpError(check.status, check.error);
 
   const r = check.request;
@@ -212,22 +515,23 @@ async function createRequest(request, env, ctx) {
   const token = newToken(); // личная ссылка клиента на эту заявку и будущую запись
   const minutes = L.toMinutes(r.time);
   const fallback = L.scheduleSettings(schedule).duration; // у заявок до 1.8.0 длительности нет
-  // Вставляем, только если никто не успел оставить заявку, которая пересекается по времени.
+  // Вставляем, только если никто не успел оставить этому мастеру заявку, которая пересекается по времени.
   const result = await env.DB.prepare(`
-    INSERT INTO requests (id, created, date, time, minutes, name, phone, services, comment, token, duration)
-    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-    WHERE NOT EXISTS (SELECT 1 FROM requests WHERE date = ? AND minutes < ? AND ? < minutes + (CASE WHEN duration > 0 THEN duration ELSE ? END))`)
-    .bind(id, new Date().toISOString(), r.date, r.time, minutes, r.name, r.phone, JSON.stringify(r.services), r.comment, token, r.duration,
-      r.date, minutes + r.duration, minutes, fallback)
+    INSERT INTO requests (id, created, date, time, minutes, name, phone, services, comment, token, duration, master_id)
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    WHERE NOT EXISTS (SELECT 1 FROM requests WHERE master_id = ? AND date = ? AND minutes < ?
+      AND ? < minutes + (CASE WHEN duration > 0 THEN duration ELSE ? END))`)
+    .bind(id, new Date().toISOString(), r.date, r.time, minutes, r.name, r.phone, JSON.stringify(r.services), r.comment, token, r.duration, master.id,
+      master.id, r.date, minutes + r.duration, minutes, fallback)
     .run();
   if (!result.meta.changes) throw new HttpError(409, 'Это время только что заняли — выберите другое');
   await remember(env, 'request', who);
-  ctx.waitUntil(notifyMaster(env, { id, ...r }));
+  ctx.waitUntil(notifyMaster(env, master.id, { id, ...r }));
   return json({ ok: true, token }, 201);
 }
 
-async function notifyMaster(env, r) {
-  const { results } = await env.DB.prepare('SELECT id, push FROM devices WHERE push IS NOT NULL').all();
+async function notifyMaster(env, masterId, r) {
+  const { results } = await env.DB.prepare('SELECT id, push FROM devices WHERE master_id = ? AND push IS NOT NULL').bind(masterId).all();
   if (!results.length) return;
   const vapid = await vapidKeys(env);
   const payload = JSON.stringify({ title: 'Новая заявка на запись', body: L.requestSummary(r), tag: `request-${r.id}`, url: './?open=requests' });
@@ -245,119 +549,103 @@ async function notifyMaster(env, r) {
   }
 }
 
-// ---------- Подключение телефона мастера ----------
-
-async function pair(request, env) {
-  const who = await visitor(request);
-  if (await tooMany(env, 'pair', who, 5, 3600e3)) throw new HttpError(429, 'Слишком много попыток. Попробуйте через час');
-  const body = await readJson(request, 2048);
-  const code = String(env.ACCESS_CODE || '');
-  if (code.length < 8) throw new HttpError(503, 'Код доступа ещё не задан на сервере');
-  // Сравниваем хэши, чтобы время ответа не выдавало совпавшие символы.
-  if (await sha256hex(String(body.code || '').trim()) !== await sha256hex(code)) {
-    await remember(env, 'pair', who);
-    throw new HttpError(403, 'Неверный код доступа');
+// Личная ссылка клиента: заявка (ждёт ответа) или запись. Мастер — тот, чья это запись.
+async function getBooking(env, token) {
+  const b = await env.DB.prepare('SELECT status, date, time, name, services, total, prepaid, updated, master_id FROM bookings WHERE token = ?').bind(token).first();
+  const r = b ? null : await env.DB.prepare('SELECT date, time, name, services, created, master_id FROM requests WHERE token = ?').bind(token).first();
+  if (!b && !r) throw new HttpError(404, 'Запись не найдена');
+  const masterId = (b || r).master_id;
+  const row = await env.DB.prepare('SELECT name, slug FROM masters WHERE id = ?').bind(masterId).first();
+  const schedule = await loadSchedule(env, masterId);
+  const master = {
+    name: (schedule && schedule.name) || (row && row.name) || 'Мастер',
+    whatsapp: (schedule && schedule.whatsapp) || '',
+    slug: row ? row.slug : '',
+  };
+  if (b) {
+    const { master_id: _, ...booking } = b;
+    return json({ ...booking, services: JSON.parse(b.services), master });
   }
-  const key = String(body.key || '');
-  if (!/^[\w-]{40,100}$/.test(key)) throw new HttpError(400, 'Неверный ключ устройства');
-  // Подключён только один телефон: при новом подключении прежний (например, потерянный) отключается.
-  await env.DB.batch([
-    env.DB.prepare('DELETE FROM devices'),
-    env.DB.prepare('INSERT INTO devices (id, key_hash, name, created) VALUES (?, ?, ?, ?)')
-      .bind(crypto.randomUUID(), await sha256hex(key), String(body.name || '').slice(0, 60), new Date().toISOString()),
-  ]);
-  return json({ ok: true, pushKey: (await vapidKeys(env)).publicKey });
+  const services = JSON.parse(r.services);
+  const total = L.servicesTotal(services, (schedule && schedule.services) || []);
+  return json({ status: 'pending', date: r.date, time: r.time, name: r.name, services, total, prepaid: 0, updated: r.created, master });
 }
 
-async function authDevice(request, env) {
-  const m = (request.headers.get('Authorization') || '').match(/^Bearer ([\w-]{40,100})$/);
-  if (!m) throw new HttpError(401, 'Телефон не подключён к облаку');
-  const row = await env.DB.prepare('SELECT id FROM devices WHERE key_hash = ?').bind(await sha256hex(m[1])).first();
-  if (!row) throw new HttpError(401, 'Телефон отключён от облака — подключите его заново');
-  return row.id;
-}
+// ---------- Для телефона мастера ----------
 
-async function savePush(request, env, deviceId) {
+async function savePush(request, env, me) {
   const sub = await readJson(request, 4096);
   // http://localhost — только для проверки на компьютере разработчика.
   if (!/^(https:\/\/|http:\/\/localhost[:/])/.test(sub.endpoint || '') || !sub.keys || !sub.keys.p256dh || !sub.keys.auth) {
     throw new HttpError(400, 'Неверная подписка на уведомления');
   }
   const clean = { endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth } };
-  await env.DB.prepare('UPDATE devices SET push = ? WHERE id = ?').bind(JSON.stringify(clean), deviceId).run();
+  await env.DB.prepare('UPDATE devices SET push = ? WHERE id = ?').bind(JSON.stringify(clean), me.deviceId).run();
   return json({ ok: true });
 }
 
-// ---------- Для телефона мастера ----------
-
-async function saveSchedule(request, env) {
-  const schedule = await readJson(request, 64 * 1024);
-  if (schedule.kind !== 'okna' || !Array.isArray(schedule.days)) throw new HttpError(400, 'Неверное расписание');
-  await env.DB.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('schedule', ?)").bind(JSON.stringify(schedule)).run();
+// Расписание мастера для клиентов. Имя из него — и имя мастера в аккаунте.
+async function saveSchedule(request, env, me) {
+  const schedule = L.cleanSchedule(await readJson(request, 64 * 1024));
+  if (!schedule) throw new HttpError(400, 'Неверное расписание');
+  const now = new Date().toISOString();
+  const name = schedule.name;
+  await env.DB.batch([
+    env.DB.prepare('INSERT OR REPLACE INTO schedules (master_id, value, updated) VALUES (?, ?, ?)').bind(me.masterId, JSON.stringify(schedule), now),
+    env.DB.prepare('UPDATE masters SET name = ? WHERE id = ? AND ? <> \'\'').bind(name, me.masterId, name),
+  ]);
   return json({ ok: true });
 }
 
-async function listRequests(env) {
-  const schedule = await loadSchedule(env);
+async function listRequests(env, me) {
+  const schedule = await loadSchedule(env, me.masterId);
   await cleanup(env, L.masterClock(schedule ? schedule.tzOffset || 0 : -300).date);
   const { results } = await env.DB.prepare(
-    'SELECT id, created, date, time, name, phone, services, comment, token FROM requests ORDER BY date, time').all();
+    'SELECT id, created, date, time, name, phone, services, comment, token FROM requests WHERE master_id = ? ORDER BY date, time').bind(me.masterId).all();
   return json({ requests: results.map(r => ({ ...r, services: JSON.parse(r.services) })) });
 }
 
 // «Подтвердить»: заявка становится записью по той же личной ссылке клиента (данные записи
 // присылает телефон). «Отклонить»: клиент по ссылке увидит, что заявку не приняли.
-async function closeRequest(request, env, id, action) {
+async function closeRequest(request, env, me, id, action) {
   const body = await readJson(request, 4096).catch(() => ({}));
-  const r = await env.DB.prepare('SELECT date, time, name, services, token FROM requests WHERE id = ?').bind(id).first();
+  const r = await env.DB.prepare('SELECT date, time, name, services, token FROM requests WHERE id = ? AND master_id = ?').bind(id, me.masterId).first();
   const token = /^[\w-]{16,64}$/.test(body.token || '') ? body.token : r && r.token;
   if (token) {
     const booking = action === 'confirm'
       ? L.normalizeBooking({ ...body.booking, status: 'confirmed' })
       : r && L.normalizeBooking({ status: 'declined', date: r.date, time: r.time, name: r.name, services: JSON.parse(r.services) });
-    if (booking) await saveBooking(env, token, booking);
+    if (booking) await saveBooking(env, me.masterId, token, booking);
   }
-  const result = await env.DB.prepare('DELETE FROM requests WHERE id = ?').bind(id).run();
+  const result = await env.DB.prepare('DELETE FROM requests WHERE id = ? AND master_id = ?').bind(id, me.masterId).run();
   return json({ ok: true, found: result.meta.changes > 0, token: token || null });
 }
 
 // Телефон мастера обновляет запись клиента: перенос, изменение услуг, оплата, отмена.
-async function putBooking(request, env, token) {
+async function putBooking(request, env, me, token) {
   const booking = L.normalizeBooking(await readJson(request, 4096));
   if (!booking) throw new HttpError(400, 'Неверная запись');
-  await saveBooking(env, token, booking);
+  const owner = await env.DB.prepare('SELECT master_id FROM bookings WHERE token = ?').bind(token).first();
+  if (owner && owner.master_id !== me.masterId) throw new HttpError(403, 'Это запись другого мастера');
+  await saveBooking(env, me.masterId, token, booking);
   return json({ ok: true });
 }
 
-// Личная ссылка клиента: заявка (ждёт ответа) или запись.
-async function getBooking(env, token) {
-  const schedule = await loadSchedule(env);
-  const master = { name: (schedule && schedule.name) || 'Мастер', whatsapp: (schedule && schedule.whatsapp) || '' };
-  const b = await env.DB.prepare('SELECT status, date, time, name, services, total, prepaid, updated FROM bookings WHERE token = ?').bind(token).first();
-  if (b) return json({ ...b, services: JSON.parse(b.services), master });
-  const r = await env.DB.prepare('SELECT date, time, name, services, created FROM requests WHERE token = ?').bind(token).first();
-  if (r) {
-    const services = JSON.parse(r.services);
-    const total = L.servicesTotal(services, (schedule && schedule.services) || []);
-    return json({ status: 'pending', date: r.date, time: r.time, name: r.name, services, total, prepaid: 0, updated: r.created, master });
-  }
-  throw new HttpError(404, 'Запись не найдена');
-}
-
-async function putBackup(request, env) {
+async function putBackup(request, env, me) {
   const format = request.headers.get('Content-Type') === 'application/gzip' ? 'gzip' : 'json';
   const bytes = await readBytes(request, MAX_BACKUP);
   const created = new Date().toISOString();
-  // Храним несколько последних копий: если на телефоне что-то пошло не так, есть к чему вернуться.
+  // Храним несколько последних копий мастера: если на телефоне что-то пошло не так, есть к чему вернуться.
   await env.DB.batch([
-    env.DB.prepare('INSERT INTO backups (created, format, data) VALUES (?, ?, ?)').bind(created, format, bytes),
-    env.DB.prepare('DELETE FROM backups WHERE id NOT IN (SELECT id FROM backups ORDER BY id DESC LIMIT ?)').bind(BACKUPS_KEPT),
+    env.DB.prepare('INSERT INTO backups (created, format, data, master_id) VALUES (?, ?, ?, ?)').bind(created, format, bytes, me.masterId),
+    env.DB.prepare('DELETE FROM backups WHERE master_id = ? AND id NOT IN (SELECT id FROM backups WHERE master_id = ? ORDER BY id DESC LIMIT ?)')
+      .bind(me.masterId, me.masterId, BACKUPS_KEPT),
   ]);
   return json({ ok: true, created });
 }
 
-async function getBackup(env) {
-  const row = await env.DB.prepare('SELECT created, format, data FROM backups ORDER BY id DESC LIMIT 1').first();
+async function getBackup(env, me) {
+  const row = await env.DB.prepare('SELECT created, format, data FROM backups WHERE master_id = ? ORDER BY id DESC LIMIT 1').bind(me.masterId).first();
   if (!row) throw new HttpError(404, 'В облаке пока нет копии');
   return new Response(toBytes(row.data), {
     headers: {
@@ -368,25 +656,27 @@ async function getBackup(env) {
   });
 }
 
-async function listPhotos(env) {
-  const { results } = await env.DB.prepare('SELECT id FROM photos').all();
+async function listPhotos(env, me) {
+  const { results } = await env.DB.prepare('SELECT id FROM photos WHERE master_id = ?').bind(me.masterId).all();
   return json({ ids: results.map(r => r.id) });
 }
 
-async function putPhoto(request, env, id) {
+async function putPhoto(request, env, me, id) {
   const bytes = await readBytes(request, MAX_PHOTO);
-  await env.DB.prepare('INSERT OR REPLACE INTO photos (id, created, data) VALUES (?, ?, ?)')
-    .bind(id, new Date().toISOString(), bytes).run();
+  await env.DB.prepare(`
+    INSERT INTO photos (id, created, data, master_id) VALUES (?, ?, ?, ?)
+    ON CONFLICT (id) DO UPDATE SET created = excluded.created, data = excluded.data WHERE photos.master_id = excluded.master_id`)
+    .bind(id, new Date().toISOString(), bytes, me.masterId).run();
   return json({ ok: true });
 }
 
-async function getPhoto(env, id) {
-  const row = await env.DB.prepare('SELECT data FROM photos WHERE id = ?').bind(id).first();
+async function getPhoto(env, me, id) {
+  const row = await env.DB.prepare('SELECT data FROM photos WHERE id = ? AND master_id = ?').bind(id, me.masterId).first();
   if (!row) throw new HttpError(404, 'Фото не найдено');
   return new Response(toBytes(row.data), { headers: { 'Content-Type': 'image/jpeg', 'Cache-Control': 'no-store' } });
 }
 
-async function deletePhoto(env, id) {
-  await env.DB.prepare('DELETE FROM photos WHERE id = ?').bind(id).run();
+async function deletePhoto(env, me, id) {
+  await env.DB.prepare('DELETE FROM photos WHERE id = ? AND master_id = ?').bind(id, me.masterId).run();
   return json({ ok: true });
 }

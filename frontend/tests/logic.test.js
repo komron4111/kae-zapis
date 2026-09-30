@@ -525,6 +525,20 @@ test('карточка клиента: поля переходят к клиен
   ]);
 });
 
+// ---------- Аккаунт мастера (2.0.0) ----------
+
+test('ссылка мастера из имени: латиница, казахские буквы, пустое — master', () => {
+  eq(['Арай', 'Айгүл Нұр', 'Жанна-Мари  ', '  ', 'Nail Studio 24'].map(L.slugify), ['aray', 'aygul-nur', 'zhanna-mari', 'master', 'nail-studio-24']);
+  eq(L.slugify('Щедрая Юлия Ёлкина Длинное Имя').length <= 24, true);
+});
+
+test('пароль растягивается одинаково на любом телефоне и зависит от номера', async () => {
+  const secret = await L.passwordSecret('+7 701 123 45 67', 'секрет12');
+  eq(secret, 'TEGwxNssEt480MDCHeSX8fBkgm16boPWzkHcvX1-Vp0');
+  eq(await L.passwordSecret('87011234567', 'секрет12'), secret);
+  eq((await L.passwordSecret('+7 702 123 45 67', 'секрет12')) === secret, false);
+});
+
 test('копия: длительность услуг и отметки об оплате аренды', () => {
   const copy = L.readBackup(JSON.stringify({
     app: 'kae-zapis',
@@ -569,6 +583,45 @@ test('сообщение клиенту о подтверждении запис
 });
 
 // ---------- Архив копии (ZIP) ----------
+
+test('расписание для клиентов: настоящее проходит без изменений', () => {
+  const s = L.buildSchedule({
+    appointments: [{ id: 'a', date: '2026-10-01', time: '10:00', status: 'booked', services: ['Маникюр'] }],
+    blocks: [{ id: 'b', from: '2026-10-02', to: '2026-10-02' }],
+    settings: { ...L.DEFAULT_SETTINGS, clientName: 'Мадина', whatsapp: '+7 701 123 45 67' },
+    prices: [{ id: 'p', name: 'Маникюр', price: 5000, duration: 60 }],
+  }, new Date(2026, 9, 1, 9, 0), 3);
+  eq(L.cleanSchedule(s), s);
+});
+
+test('расписание для клиентов: чужой код и мусор не проходят', () => {
+  const evil = '"><img src=x onerror=alert(1)>';
+  const s = L.cleanSchedule({
+    kind: 'okna', v: 2, name: `  Мастер ${evil}  `, whatsapp: '<b>+7 (701) 123-45-67</b>',
+    dayStart: evil, lastStart: '21:00', duration: evil, tzOffset: 'x', updated: evil, extra: evil,
+    services: [{ name: evil, price: evil, duration: evil }, { name: '', price: 100 }, 'строка', null],
+    days: [
+      { date: evil, busy: [] },
+      { date: '2026-10-01\n', busy: [] },
+      { date: '2026-10-02', busy: [[600, 660], [evil, 700], [900, 10000], [-5, 30]] },
+      { date: '2026-10-03', times: ['10:00', evil, '1:00'] },
+      { date: '2026-10-04', off: evil },
+    ],
+  });
+  eq(s.name, 'Мастер "><img src=x onerror=alert(1)>'); // строку экранирует страница, здесь — только длина
+  eq(s.whatsapp, '77011234567');
+  eq([s.dayStart, s.lastStart, s.duration, s.tzOffset, s.updated], ['09:00', '21:00', 150, 0, '1970-01-01T00:00:00.000Z']);
+  eq(s.services, [{ name: evil, price: 1, duration: 0 }]);
+  eq(s.days, [
+    { date: '2026-10-02', busy: [[600, 660]] },
+    { date: '2026-10-03', times: ['10:00'] },
+    { date: '2026-10-04', off: true },
+  ]);
+  eq('extra' in s, false);
+  eq(L.cleanSchedule({ kind: 'okna' }), null);
+  eq(L.cleanSchedule({ kind: 'other', days: [] }), null);
+  eq(L.cleanSchedule('okna'), null);
+});
 
 test('контрольная сумма CRC32', () => {
   eq(Z.crc32(new TextEncoder().encode('The quick brown fox jumps over the lazy dog')), 0x414FA339);

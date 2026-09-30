@@ -2,6 +2,9 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8">
+  <!-- Политика безопасности: скрипты — только файлы сайта, запросы — только к своему серверу.
+       Сменился адрес сервера (config.js) — поменяйте его и здесь, во всех трёх страницах. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob:; connect-src 'self' https://kae-zapis-api.kae-zapis.workers.dev http://127.0.0.1:8787 http://localhost:8787; object-src 'none'; base-uri 'self'; form-action 'self'">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Nailapp</title>
   <meta name="description" content="Записи клиентов, прайс и финансы мастера маникюра.">
@@ -16,15 +19,8 @@
   <link rel="icon" href="icons/favicon-64.png" type="image/png">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
   <link rel="stylesheet" href="style.css">
-  <script>
-    // Тема и светлый/тёмный режим — до первой отрисовки, чтобы экран не мигал (см. app.js).
-    document.documentElement.dataset.mode = 'light'; // исходно — светлый режим
-    try {
-      const theme = localStorage.getItem('kae:theme'), mode = localStorage.getItem('kae:mode');
-      if (theme) document.documentElement.dataset.theme = theme;
-      if (mode) document.documentElement.dataset.mode = mode;
-    } catch (e) { /* приватный режим — цвета по умолчанию */ }
-  </script>
+  <script src="errors.js" data-source="app"></script>
+  <script src="theme-init.js"></script>
   <script type="module" src="app.js"></script>
 </head>
 <body>

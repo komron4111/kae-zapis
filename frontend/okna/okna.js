@@ -42,8 +42,12 @@ function rememberBooking(entry) {
   saveBookings([entry, ...myBookings().filter(b => b.token !== entry.token)]);
 }
 
-const bookingEntry = (token, b) => ({ token, date: b.date, time: b.time, services: b.services || [], status: b.status });
-const bookingUrl = token => `${location.pathname}?z=${token}`;
+// Мастер этой страницы: okna/?m=<slug>. Без него — прежняя ссылка Арай (до аккаунтов).
+const MASTER = (new URLSearchParams(location.search).get('m') || '').trim().toLowerCase();
+const withMaster = (url, slug = MASTER) => (slug ? `${url}${url.includes('?') ? '&' : '?'}m=${encodeURIComponent(slug)}` : url);
+
+const bookingEntry = (token, b) => ({ token, m: (b.master && b.master.slug) || MASTER, date: b.date, time: b.time, services: b.services || [], status: b.status });
+const bookingUrl = token => `${location.pathname}?z=${encodeURIComponent(token)}`;
 
 // Мастер могла подтвердить, перенести или отменить запись — сверяем «Мои записи» с сервером.
 async function refreshMine() {
@@ -62,16 +66,23 @@ async function refreshMine() {
   render();
 }
 
+// Расписание проверяет сервер; здесь — ещё раз, по тому же образцу (L.cleanSchedule):
+// страница показывает то, что прислал телефон мастера.
 async function load() {
   try {
-    const res = await fetch(`${API}/api/okna`, { cache: 'no-store' });
-    if (res.ok) return await res.json();
+    const res = await fetch(withMaster(`${API}/api/okna`), { cache: 'no-store' });
+    if (res.ok) {
+      const raw = await res.json();
+      const clean = L.cleanSchedule(raw);
+      return clean && { ...clean, booking: raw.booking === true, legacy: raw.legacy === true, slug: String(raw.slug || '').replace(/[^\w-]/g, '') };
+    }
+    if (res.status === 404) return { missing: true };
   } catch (e) { /* покажем ошибку */ }
   return null;
 }
 
 function whatsappLink(text) {
-  return `https://wa.me/${schedule.whatsapp}${text ? `?text=${encodeURIComponent(text)}` : ''}`;
+  return `https://wa.me/${L.phoneDigits(schedule.whatsapp)}${text ? `?text=${encodeURIComponent(text)}` : ''}`;
 }
 
 function render() {
@@ -104,19 +115,19 @@ function render() {
     if (!d.times.length) {
       return `
         <section class="card okna-day none">
-          <div class="okna-head"><span><b>${L.dayTitle(d.date)}</b><small>${summary}</small></span></div>
+          <div class="okna-head"><span><b>${L.dayTitle(d.date)}</b><small>${esc(summary)}</small></span></div>
         </section>`;
     }
     const open = d.date === openDay;
     const chips = d.times.map(t => (s.booking
-      ? `<button type="button" class="chip" data-date="${d.date}" data-time="${t}">${L.shortTime(t)}</button>`
+      ? `<button type="button" class="chip" data-date="${esc(d.date)}" data-time="${esc(t)}">${esc(L.shortTime(t))}</button>`
       : s.whatsapp
-        ? `<a class="chip" href="${whatsappLink(`Здравствуйте! Хочу записаться ${L.shortDate(d.date)} в ${L.shortTime(t)}.`)}" target="_blank" rel="noopener">${L.shortTime(t)}</a>`
-        : `<span class="chip">${L.shortTime(t)}</span>`)).join('');
+        ? `<a class="chip" href="${esc(whatsappLink(`Здравствуйте! Хочу записаться ${L.shortDate(d.date)} в ${L.shortTime(t)}.`))}" target="_blank" rel="noopener">${esc(L.shortTime(t))}</a>`
+        : `<span class="chip">${esc(L.shortTime(t))}</span>`)).join('');
     return `
-      <section class="card okna-day${open ? ' open' : ''}" data-day="${d.date}">
+      <section class="card okna-day${open ? ' open' : ''}" data-day="${esc(d.date)}">
         <button class="okna-head" aria-expanded="${open}">
-          <span><b>${L.dayTitle(d.date)}</b><small>свободно: ${summary}</small></span>${chevron}
+          <span><b>${L.dayTitle(d.date)}</b><small>свободно: ${esc(summary)}</small></span>${chevron}
         </button>
         <div class="chips okna-times"${open ? '' : ' hidden'}>${chips}</div>
       </section>`;
@@ -125,7 +136,8 @@ function render() {
   const intro = s.booking
     ? 'Выберите день и время начала — затем имя, телефон и услуги.'
     : s.whatsapp ? 'Выберите день и время начала — откроется WhatsApp, чтобы записаться.' : 'Чтобы записаться, напишите мастеру.';
-  const mine = myBookings().filter(b => b.date >= clock.date);
+  // Записи, оставленные до аккаунтов (без m), — у прежнего мастера.
+  const mine = myBookings().filter(b => b.date >= clock.date && (b.m ? b.m === s.slug : Boolean(s.legacy)));
   view.innerHTML = `
     ${title}
     ${mine.length ? `
@@ -133,11 +145,11 @@ function render() {
       <h2 class="section-title">Мои записи</h2>
       ${mine.map(b => {
         const [tone, label] = MINE_STATUS[b.status] || [];
-        return `<a class="card my-booking" href="${bookingUrl(b.token)}"><b>${L.dayTitle(b.date)}, ${L.shortTime(b.time)}</b><small>${esc(L.servicesLabel(b.services || []))}</small>${label ? `<span class="badge ${tone}">${label}</span>` : ''}</a>`;
+        return `<a class="card my-booking" href="${esc(bookingUrl(b.token))}"><b>${L.dayTitle(b.date)}, ${esc(L.shortTime(b.time))}</b><small>${esc(L.servicesLabel(b.services || []))}</small>${label ? `<span class="badge ${tone}">${label}</span>` : ''}</a>`;
       }).join('')}
     </section>` : ''}
     <p class="okna-intro">${intro} ${s.v >= 2 ? 'Сколько займёт запись, покажем после выбора услуг.' : `Одна запись занимает до ${L.formatDuration(s.duration || 150)}.`}
-      ${s.whatsapp ? `<br><a href="${whatsappLink('')}" target="_blank" rel="noopener">Написать мастеру в WhatsApp</a>` : ''}</p>
+      ${s.whatsapp ? `<br><a href="${esc(whatsappLink(''))}" target="_blank" rel="noopener">Написать мастеру в WhatsApp</a>` : ''}</p>
     ${stale ? '<div class="banner warn"><div class="grow">Расписание давно не обновлялось — уточните время у мастера.</div></div>' : ''}
     ${rows}
     <p class="okna-foot">Обновлено ${updated.getDate()} ${L.MONTHS_GEN[updated.getMonth()]} в ${updated.getHours()}:${String(updated.getMinutes()).padStart(2, '0')}</p>`;
@@ -155,13 +167,13 @@ function openForm(date, time) {
       <span></span>
     </header>
     <form id="request-form" class="sheet-body" novalidate autocomplete="on">
-      <p class="lead"><b>${L.dayTitle(date)}, ${L.shortTime(time)}</b></p>
+      <p class="lead"><b>${L.dayTitle(date)}, ${esc(L.shortTime(time))}</b></p>
       <label>Ваше имя<input name="name" autocomplete="name" autocapitalize="words" enterkeyhint="next" value="${esc(me.name)}" placeholder="Например, Айгуль"></label>
       <label>Телефон (WhatsApp)<input name="phone" type="tel" autocomplete="tel" enterkeyhint="done" value="${esc(L.phoneFieldStart(me.phone))}"></label>
       <fieldset>
         <legend>Что будем делать — можно несколько</legend>
         <div class="chips">${services.map(p => `
-          <button type="button" class="chip" data-service="${esc(p.name)}" data-price="${p.price}">
+          <button type="button" class="chip" data-service="${esc(p.name)}" data-price="${L.toMoney(p.price)}">
             ${esc(p.name)}${p.price ? `<small>${L.formatAmount(p.price)} ₸</small>` : ''}
           </button>`).join('')}
         </div>
@@ -219,7 +231,7 @@ function openForm(date, time) {
     button.textContent = 'Отправляем…';
     let res, answer = {};
     try {
-      res = await fetch(`${API}/api/requests`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      res = await fetch(withMaster(`${API}/api/requests`), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       answer = await res.json().catch(() => ({}));
     } catch (err) {
       res = null;
@@ -233,7 +245,7 @@ function openForm(date, time) {
       return;
     }
     remember({ name: body.name, phone: body.phone });
-    if (answer.token) rememberBooking({ token: answer.token, date, time, services: body.services, status: 'pending' });
+    if (answer.token) rememberBooking({ token: answer.token, m: MASTER || schedule.slug || '', date, time, services: body.services, status: 'pending' });
     showDone(date, time, body.services, answer.token);
     refresh();
   });
@@ -251,7 +263,7 @@ function showDone(date, time, services, token) {
     <div class="sheet-body okna-done">
       <p class="done-mark">✓</p>
       <h2>Заявка отправлена</h2>
-      <p>${L.dayTitle(date)}, ${L.shortTime(time)}<br>${esc(L.servicesLabel(services))}</p>
+      <p>${L.dayTitle(date)}, ${esc(L.shortTime(time))}<br>${esc(L.servicesLabel(services))}</p>
       <p class="hint">${esc(schedule.name || 'Мастер')} напишет вам в WhatsApp, чтобы подтвердить запись.${token ? ' По ссылке «Моя запись» видно, подтверждена ли она.' : ''}</p>
       ${token ? `<a class="btn secondary block" href="${bookingUrl(token)}">Моя запись</a>` : ''}
       <button type="button" class="btn primary block" data-close>Готово</button>
@@ -292,12 +304,12 @@ function renderBooking(b) {
   const [tone, label] = BOOKING_STATUS[b.status] || BOOKING_STATUS.pending;
   const due = Math.max((b.total || 0) - (b.prepaid || 0), 0);
   const active = b.status === 'pending' || b.status === 'confirmed';
-  const whatsapp = b.master && b.master.whatsapp;
+  const whatsapp = L.phoneDigits(b.master && b.master.whatsapp);
   view.innerHTML = `
     <h2 class="okna-title">Моя запись<small>мастер ${esc(master)}</small></h2>
     <p class="status ${tone} booking-status">${label}</p>
     <section class="card booking-card${active ? '' : ' past'}">
-      <p class="lead"><b>${L.dayTitle(b.date)}, ${L.shortTime(b.time)}</b></p>
+      <p class="lead"><b>${L.dayTitle(b.date)}, ${esc(L.shortTime(b.time))}</b></p>
       <p>${esc(L.servicesLabel(b.services || []))}</p>
       ${b.total ? `
       <div class="line"><span>${b.status === 'pending' ? 'Примерная стоимость' : 'Стоимость'}</span><b>${L.formatMoney(b.total)}</b></div>
@@ -307,7 +319,7 @@ function renderBooking(b) {
     ${b.status === 'pending' ? `<p class="hint">${esc(master)} напишет вам в WhatsApp, чтобы подтвердить запись. Эта страница обновится сама.</p>` : ''}
     ${b.status === 'declined' ? '<p class="hint">Выберите другое время или напишите мастеру.</p>' : ''}
     ${whatsapp ? `<a class="btn secondary block" href="https://wa.me/${whatsapp}" target="_blank" rel="noopener">Написать мастеру в WhatsApp</a>` : ''}
-    <a class="btn ${active ? 'ghost' : 'primary'} block" href="${location.pathname}">${active ? 'Свободное время' : 'Выбрать другое время'}</a>
+    <a class="btn ${active ? 'ghost' : 'primary'} block" href="${esc(withMaster(location.pathname, b.master && b.master.slug))}">${active ? 'Свободное время' : 'Выбрать другое время'}</a>
     <p class="okna-foot">Сохраните эту страницу — по ней всегда видна ваша запись.</p>`;
 }
 
@@ -318,16 +330,20 @@ async function startBooking(token) {
     return;
   }
   if (b.missing) {
-    view.innerHTML = `<h2 class="okna-title">Моя запись</h2><div class="empty"><p>Запись не найдена. Возможно, ссылка устарела.</p><a class="btn secondary small" href="${location.pathname}">Свободное время</a></div>`;
+    view.innerHTML = `<h2 class="okna-title">Моя запись</h2><div class="empty"><p>Запись не найдена. Возможно, ссылка устарела.</p><a class="btn secondary small" href="${esc(location.pathname)}">Свободное время</a></div>`;
     return;
   }
   renderBooking(b);
   rememberBooking(bookingEntry(token, b));
-  // Пока клиент смотрит, мастер могла подтвердить или перенести запись.
-  setInterval(async () => {
+  // Пока клиент смотрит, мастер могла подтвердить или перенести запись. Свёрнутая
+  // вкладка сервер не спрашивает — обновимся, когда клиент к ней вернётся.
+  const update = async () => {
+    if (document.visibilityState !== 'visible') return;
     const fresh = await loadBooking(token);
     if (fresh && !fresh.missing) renderBooking(fresh);
-  }, 30000);
+  };
+  setInterval(update, 30000);
+  document.addEventListener('visibilitychange', update);
 }
 
 function closeForm() {
@@ -387,6 +403,10 @@ async function start() {
     return;
   }
   schedule = await load();
+  if (schedule && schedule.missing) {
+    view.innerHTML = '<div class="empty"><p>Мастер не найден. Проверьте ссылку — её можно попросить у мастера.</p></div>';
+    return;
+  }
   if (!schedule || schedule.kind !== 'okna') {
     view.innerHTML = `
       <div class="empty">
@@ -397,8 +417,10 @@ async function start() {
   }
   render();
   refreshMine();
-  // Пока страница открыта, время могли занять — обновляем раз в минуту.
-  setInterval(() => { if (sheet.hidden) refresh(); }, 60000);
+  // Пока страница открыта, время могли занять — обновляем раз в минуту (свёрнутую — когда к ней вернутся).
+  const update = () => { if (sheet.hidden && document.visibilityState === 'visible') refresh(); };
+  setInterval(update, 60000);
+  document.addEventListener('visibilitychange', update);
 }
 
 start();
