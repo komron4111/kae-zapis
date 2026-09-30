@@ -1,8 +1,11 @@
-// Страница администратора Nailapp: все мастера, сброс забытого пароля и свой WhatsApp
-// для кнопки «Забыли пароль?». Вход — код администратора (секрет ADMIN_CODE на сервере,
-// а если он не задан — ACCESS_CODE) или Face ID / код-пароль телефона (WebAuthn), если
-// администратор включил его на этом устройстве. Ни код, ни вход по Face ID нигде не
-// сохраняются: только в памяти открытой страницы, чтобы их не прочитал другой код сайта.
+// Страница администратора Nailapp. Разделы, в которые проваливаешься, как «Настройки» в приложении:
+// «Мастера» (поиск, карточка мастера, сброс пароля), «Сервер» (место в базе), «WhatsApp для мастеров»
+// (куда пишут через «Забыли пароль?»), «Вход по Face ID». Назад — кнопкой «‹» или жестом браузера:
+// каждый раздел — запись в истории (history.pushState).
+//
+// Вход — код администратора (секрет ADMIN_CODE на сервере, а если он не задан — ACCESS_CODE)
+// или Face ID / код-пароль телефона (WebAuthn), если администратор включил его на этом устройстве.
+// Ни код, ни вход по Face ID нигде не сохраняются: только в памяти открытой страницы.
 //
 // Временный пароль придумывает эта страница и «растягивает» его так же, как телефон
 // мастера (L.passwordSecret): на сервер уходит только результат.
@@ -20,6 +23,16 @@ const $ = sel => document.querySelector(sel);
 const view = $('#view');
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+const ICONS = {
+  users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20.5c.8-3.6 3.3-5.5 6.5-5.5s5.7 1.9 6.5 5.5"/><path d="M15.5 4.8a3.5 3.5 0 0 1 0 6.4M17.5 15.2c2 .6 3.4 2.4 4 5.3"/>',
+  cloud: '<path d="M7 18.5a4.5 4.5 0 0 1-.6-9 6 6 0 0 1 11.6 1.6 3.8 3.8 0 0 1-.5 7.4z"/>',
+  chat: '<path d="M21 11.5a8.5 8.5 0 0 1-12.4 7.6L3 21l1.9-5.4A8.5 8.5 0 1 1 21 11.5z"/>',
+  lock: '<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/>',
+  left: '<path d="M15 5l-7 7 7 7"/>',
+  right: '<path d="M9 5l7 7-7 7"/>',
+};
+const icon = name => `<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
+
 let code = '';
 let session = ''; // вход по Face ID: сеанс на 12 часов
 let masters = [];
@@ -27,6 +40,11 @@ let dbSize = null; // размер всей базы, байт
 let contact = '';
 let passkeys = [];
 let query = '';
+
+// Где мы: '' — меню разделов; 'masters', 'master' (карточка masterId), 'server', 'contact', 'face'.
+let page = '';
+let masterId = '';
+let resetNote = null; // временный пароль после сброса — показывается в карточке мастера один раз
 
 // Face ID: вызов сервера готовим заранее — iPhone показывает Face ID, только если его
 // попросили сразу по нажатию, без ожидания сети.
@@ -72,6 +90,7 @@ function deviceName() {
 function renderLogin(error = '') {
   code = '';
   session = '';
+  page = '';
   view.innerHTML = `
     <h2 class="page-title">Администратор</h2>
     <section class="card page-card" id="face-card" hidden>
@@ -88,7 +107,7 @@ function renderLogin(error = '') {
   $('#code-form').addEventListener('submit', e => {
     e.preventDefault();
     code = e.target.elements.code.value.trim();
-    load();
+    load(true);
   });
   $('#face-login').addEventListener('click', faceLogin);
   prepareFaceLogin();
@@ -145,14 +164,15 @@ async function faceLogin() {
       signature: b64(credential.response.signature),
     });
     session = res.token;
-    load();
+    load(true);
   } catch (e) {
     prepareFaceLogin();
     faceError(e.message);
   }
 }
 
-async function load() {
+// Данные всех разделов. first — сразу после входа: открыть меню разделов.
+async function load(first = false) {
   try {
     const list = await call('GET', '/api/admin/masters');
     masters = list.masters;
@@ -165,13 +185,94 @@ async function load() {
     } catch (e) {
       passkeys = [];
     }
-    renderList();
   } catch (e) {
     renderLogin(e.message);
+    return;
   }
+  if (first) {
+    page = '';
+    history.replaceState({ page: '' }, '');
+  }
+  render();
 }
 
-// ---------- Мастера ----------
+// ---------- Разделы ----------
+
+const SECTIONS = {
+  masters: ['users', 'Мастера'],
+  server: ['cloud', 'Сервер'],
+  contact: ['chat', 'WhatsApp для мастеров'],
+  face: ['lock', 'Вход по Face ID'],
+};
+
+function summary(id) {
+  if (id === 'masters') return `${masters.length} · поиск, адреса, место, сброс пароля`;
+  if (id === 'server') return dbSize ? `база ${size(dbSize)} из 500 МБ · место по мастерам` : 'место по мастерам';
+  if (id === 'contact') return contact ? L.formatPhone(contact) : 'не указан — мастерам некуда писать';
+  if (id === 'face') return passkeys.length ? `включён: ${passkeys.length} ${L.plural(passkeys.length, ['устройство', 'устройства', 'устройств'])}` : 'выключен';
+  return '';
+}
+
+// Провалиться в раздел (или карточку мастера) — запись в истории, чтобы «назад» работал и жестом.
+function go(next, id = '') {
+  page = next;
+  masterId = id;
+  resetNote = null;
+  history.pushState({ page, masterId }, '');
+  render('next');
+  scrollTo(0, 0);
+}
+
+addEventListener('popstate', e => {
+  if (!code && !session) return;
+  const state = e.state || {};
+  page = state.page || '';
+  masterId = state.masterId || '';
+  resetNote = null;
+  if (page && !SECTIONS[page] && page !== 'master') page = '';
+  render('prev');
+});
+
+function render(anim) {
+  const enter = anim ? ` enter-${anim}` : '';
+  if (!page) {
+    view.innerHTML = `
+      <div class="slide-clip"><div class="settings-home${enter}">
+        <h2 class="page-title">Администратор</h2>
+        <section class="card settings-menu">${Object.entries(SECTIONS).map(([id, [ic, title]]) => `
+          <button class="menu-row" data-go="${id}">
+            <span class="menu-ico">${icon(ic)}</span>
+            <span class="grow"><b>${title}</b><small>${esc(summary(id))}</small></span>
+            ${icon('right')}
+          </button>`).join('')}
+        </section>
+        <button class="btn ghost block" id="leave">Выйти</button>
+      </div></div>`;
+    return;
+  }
+  const m = page === 'master' ? masters.find(x => x.id === masterId) : null;
+  if (page === 'master' && !m) {
+    page = 'masters';
+    return render();
+  }
+  const title = m ? esc(m.name || 'Без имени') : SECTIONS[page][1];
+  const backTitle = m ? 'Мастера' : 'Администратор';
+  view.innerHTML = `
+    <div class="slide-clip"><div class="settings-page${enter}">
+      <button class="back-link" data-back>${icon('left')} ${backTitle}</button>
+      <h2 class="page-title">${title}</h2>
+      ${m ? masterHtml(m) : page === 'masters' ? mastersHtml() : page === 'server' ? serverHtml() : page === 'contact' ? contactHtml() : faceHtml()}
+    </div></div>`;
+  if (page === 'masters') {
+    const search = $('#q');
+    search.addEventListener('input', () => {
+      query = search.value;
+      $('#masters').innerHTML = rows();
+    });
+  }
+  if (page === 'contact') $('#contact-form').addEventListener('submit', saveContact);
+  if (page === 'face') prepareRegister();
+}
 
 // 1 234 567 байт → «1,2 МБ», 5 400 → «5 КБ».
 function size(n) {
@@ -180,28 +281,13 @@ function size(n) {
   return `${(n / 1e6).toFixed(1).replace('.', ',')} МБ`;
 }
 
-// Сколько места данные мастера занимают на сервере: фото, копии, прочее (расписание, личные ссылки).
-function storageLine(st) {
-  if (!st) return '';
-  const total = st.photoBytes + st.backupBytes + st.otherBytes;
-  return `на сервере ${size(total)}: фото ${st.photos} шт. — ${size(st.photoBytes)}, копии ${st.backups} — ${size(st.backupBytes)}, прочее ${size(st.otherBytes)}`;
+const total = st => (st ? st.photoBytes + st.backupBytes + st.otherBytes : 0);
+
+function clientLink(m) {
+  return `${new URL(IS_LOCAL ? '../okna/' : 'okna/', IS_LOCAL ? location.href : PUBLIC_URL).href}?m=${encodeURIComponent(m.slug)}`;
 }
 
-function masterRow(m) {
-  const link = `${new URL(IS_LOCAL ? '../okna/' : 'okna/', IS_LOCAL ? location.href : PUBLIC_URL).href}?m=${encodeURIComponent(m.slug)}`;
-  const notes = [m.claimed ? '' : 'аккаунт не оформлен', m.devices ? '' : 'сейчас не в приложении'].filter(Boolean).join(' · ');
-  return `
-    <div class="admin-master">
-      <div class="grow">
-        <b>${esc(m.name || 'Без имени')}</b>
-        <small>${esc(m.phone || 'номер ещё не указан')} · с ${esc(formatDate(m.created))}</small>
-        <small><a href="${esc(link)}" target="_blank" rel="noopener">ссылка: ${esc(m.slug)}</a>${notes ? ` · ${esc(notes)}` : ''}</small>
-        <small>${m.address ? esc(m.address) : 'адрес не указан'}${L.gisLink(m.gis) ? ` · <a href="${esc(L.gisLink(m.gis))}" target="_blank" rel="noopener">2ГИС</a>` : ''}</small>
-        <small>${esc(storageLine(m.storage))}</small>
-      </div>
-      ${m.phone ? `<button class="btn small secondary" data-reset="${esc(m.id)}">Сбросить пароль</button>` : ''}
-    </div>`;
-}
+// ---------- Мастера ----------
 
 // Поиск по имени, ссылке, адресу или цифрам номера (от 3 цифр).
 function rows() {
@@ -209,11 +295,103 @@ function rows() {
   const qd = q.replace(/\D/g, '');
   const list = masters.filter(m => !q || m.name.toLowerCase().includes(q) || m.slug.includes(q) || (m.address || '').toLowerCase().includes(q)
     || (qd.length >= 3 && L.phoneDigits(m.phone).includes(qd)));
-  return list.map(masterRow).join('') || '<p class="hint list-empty">Никого не нашли</p>';
+  return list.map(m => `
+    <button class="menu-row" data-master="${esc(m.id)}">
+      <span class="grow"><b>${esc(m.name || 'Без имени')}</b><small>${esc([m.phone || 'номер не указан', m.address, `${size(total(m.storage))} на сервере`].filter(Boolean).join(' · '))}</small></span>
+      ${icon('right')}
+    </button>`).join('') || '<p class="hint list-empty">Никого не нашли</p>';
 }
 
-// Карточка «Вход по Face ID»: устройства, на которых он включён, и кнопка для этого устройства.
-function faceCard() {
+function mastersHtml() {
+  return `
+    <input type="search" id="q" class="search" placeholder="Имя, номер, ссылка или адрес" aria-label="Поиск мастера" value="${esc(query)}">
+    <section class="card settings-menu" id="masters">${rows()}</section>`;
+}
+
+function masterHtml(m) {
+  const st = m.storage || { photos: 0, photoBytes: 0, backups: 0, backupBytes: 0, otherBytes: 0 };
+  const gis = L.gisLink(m.gis);
+  const link = clientLink(m);
+  if (resetNote && resetNote.id === m.id) {
+    const text = `Здравствуйте, ${m.name}! Ваш временный пароль для входа в Nailapp: ${resetNote.temp}. Войдите по своему номеру ${m.phone} и смените пароль: «Настройки» → «Аккаунт» → «Сменить пароль».`;
+    return `
+      <section class="card page-card">
+        <h3 class="card-title">Пароль сброшен</h3>
+        <p>Временный пароль для <b>${esc(m.name)}</b> (${esc(m.phone)}):</p>
+        <p class="temp-password">${esc(resetNote.temp)}</p>
+        <p class="hint">Отправьте его мастеру. После входа мастер сменит пароль в «Настройки» → «Аккаунт». Второй раз этот пароль здесь не покажется.</p>
+        <a class="btn primary block" href="https://wa.me/${L.phoneDigits(m.phone)}?text=${encodeURIComponent(text)}" target="_blank" rel="noopener">Отправить в WhatsApp</a>
+      </section>`;
+  }
+  return `
+    <section class="card page-card">
+      <div class="line"><span>Телефон</span><b>${esc(m.phone || 'не указан')}</b></div>
+      <div class="line"><span>Зарегистрирован</span><b>${esc(formatDate(m.created))}</b></div>
+      <div class="line"><span>Аккаунт</span><b>${m.claimed ? 'оформлен' : 'не оформлен'}</b></div>
+      <div class="line"><span>Приложение</span><b>${m.devices ? 'подключено' : 'сейчас не в приложении'}</b></div>
+      <div class="line"><span>Адрес</span><b>${esc(m.address || 'не указан')}</b></div>
+      ${gis ? `<a class="btn small secondary" href="${esc(gis)}" target="_blank" rel="noopener">Открыть в 2ГИС</a>` : ''}
+    </section>
+    <section class="card page-card">
+      <h3 class="card-title">Ссылка для клиентов</h3>
+      <div class="link-box">${esc(link)}</div>
+      <a class="btn small secondary" href="${esc(link)}" target="_blank" rel="noopener">Открыть</a>
+    </section>
+    <section class="card page-card">
+      <h3 class="card-title">Данные на сервере — ${size(total(st))}</h3>
+      <div class="line"><span>Фото, ${st.photos} шт.</span><b>${size(st.photoBytes)}</b></div>
+      <div class="line"><span>Копии данных, ${st.backups} шт.</span><b>${size(st.backupBytes)}</b></div>
+      <div class="line"><span>Прочее (расписание, записи клиентов)</span><b>${size(st.otherBytes)}</b></div>
+    </section>
+    ${m.phone ? `<button class="btn secondary block" data-reset="${esc(m.id)}">Сбросить пароль</button>` : ''}`;
+}
+
+// ---------- Сервер ----------
+
+function serverHtml() {
+  const byStorage = [...masters].sort((a, b) => total(b.storage) - total(a.storage));
+  return `
+    <section class="card page-card">
+      ${dbSize ? `<div class="line"><span>Вся база</span><b>${esc(size(dbSize))} из 500 МБ (${Math.round(dbSize / 5e6)}%)</b></div>` : ''}
+      <p class="hint">Бесплатный тариф Cloudflare: база до 500 МБ, в сутки — 100 000 запросов к серверу и 100 000 записей в базу. Больше всего места займут фото. Если подойдём к пределу, придёт уведомление проверки.</p>
+    </section>
+    <h3 class="section-title">Место по мастерам</h3>
+    <section class="card settings-menu">${byStorage.map(m => `
+      <button class="menu-row" data-master="${esc(m.id)}">
+        <span class="grow"><b>${esc(m.name || 'Без имени')}</b><small>фото ${m.storage ? m.storage.photos : 0} шт. · копии ${m.storage ? m.storage.backups : 0}</small></span>
+        <b>${size(total(m.storage))}</b>
+        ${icon('right')}
+      </button>`).join('') || '<p class="hint list-empty">Мастеров пока нет</p>'}
+    </section>`;
+}
+
+// ---------- WhatsApp для мастеров ----------
+
+function contactHtml() {
+  return `
+    <section class="card page-card">
+      <p class="hint">Мастер, который забыл пароль, нажмёт «Забыли пароль?» и напишет вам сюда.</p>
+      <form id="contact-form" novalidate>
+        <label>WhatsApp администратора<input type="tel" name="whatsapp" value="${esc(L.phoneFieldStart(contact))}"></label>
+        <button type="submit" class="btn secondary block">Сохранить</button>
+      </form>
+    </section>`;
+}
+
+async function saveContact(e) {
+  e.preventDefault();
+  const whatsapp = L.phoneFromField(e.target.elements.whatsapp.value);
+  try {
+    contact = (await call('PUT', '/api/admin/contact', { whatsapp })).whatsapp;
+    alert(contact ? 'Сохранено: мастера будут писать на этот номер' : 'Номер убран');
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+// ---------- Вход по Face ID: устройства, включить, убрать ----------
+
+function faceHtml() {
   const keys = passkeys.map(k => `
     <div class="admin-master">
       <div class="grow">
@@ -224,51 +402,11 @@ function faceCard() {
     </div>`).join('');
   return `
     <section class="card page-card">
-      <h3 class="card-title">Вход по Face ID</h3>
       <p class="hint">Чтобы не вводить код каждый раз, включите на этом устройстве вход по Face ID (или Touch ID, или код-паролю телефона). Ключ хранится в «Связке ключей» Apple и появится на других ваших устройствах Apple; сервер знает только его открытую часть.</p>
       ${keys ? `<div class="list">${keys}</div>` : ''}
       ${canFace ? '<button class="btn secondary block" id="add-face">Включить вход по Face ID на этом устройстве</button>' : '<p class="hint">Этот браузер не умеет входить по Face ID.</p>'}
     </section>`;
 }
-
-function renderList() {
-  view.innerHTML = `
-    <h2 class="page-title">Мастера · ${masters.length}</h2>
-    ${dbSize ? `<p class="hint">Вся база на сервере: ${esc(size(dbSize))} из 500 МБ бесплатного тарифа (${Math.round(dbSize / 5e6)}%).</p>` : ''}
-    <input type="search" id="q" class="search" placeholder="Имя, номер, ссылка или адрес" aria-label="Поиск мастера" value="${esc(query)}">
-    <section class="card list" id="masters">${rows()}</section>
-    <section class="card page-card">
-      <h3 class="card-title">Ваш WhatsApp для мастеров</h3>
-      <p class="hint">Мастер, который забыл пароль, нажмёт «Забыли пароль?» и напишет вам сюда.</p>
-      <form id="contact-form" novalidate>
-        <label>WhatsApp администратора<input type="tel" name="whatsapp" value="${esc(L.phoneFieldStart(contact))}"></label>
-        <button type="submit" class="btn secondary block">Сохранить</button>
-      </form>
-    </section>
-    ${faceCard()}
-    <button class="btn ghost block" id="leave">Выйти</button>`;
-  const search = $('#q');
-  search.addEventListener('input', () => {
-    query = search.value;
-    $('#masters').innerHTML = rows();
-  });
-  $('#contact-form').addEventListener('submit', async e => {
-    e.preventDefault();
-    const whatsapp = L.phoneFromField(e.target.elements.whatsapp.value);
-    try {
-      contact = (await call('PUT', '/api/admin/contact', { whatsapp })).whatsapp;
-      alert(contact ? 'Сохранено: мастера будут писать на этот номер' : 'Номер убран');
-    } catch (err) {
-      alert(err.message);
-    }
-  });
-  const add = $('#add-face');
-  if (add) add.addEventListener('click', addFace);
-  $('#leave').addEventListener('click', () => renderLogin());
-  prepareRegister();
-}
-
-// ---------- Включить и убрать вход по Face ID ----------
 
 async function prepareRegister() {
   registerOptions = null;
@@ -348,24 +486,21 @@ async function resetPassword(id) {
     alert(e.message);
     return;
   }
-  const text = `Здравствуйте, ${m.name}! Ваш временный пароль для входа в Nailapp: ${temp}. Войдите по своему номеру ${m.phone} и смените пароль: «Настройки» → «Аккаунт» → «Сменить пароль».`;
-  view.innerHTML = `
-    <h2 class="page-title">Пароль сброшен</h2>
-    <section class="card page-card">
-      <p>Временный пароль для <b>${esc(m.name)}</b> (${esc(m.phone)}):</p>
-      <p class="temp-password">${esc(temp)}</p>
-      <p class="hint">Отправьте его мастеру. После входа мастер сменит пароль в «Настройки» → «Аккаунт». Второй раз этот пароль здесь не покажется.</p>
-      <a class="btn primary block" href="https://wa.me/${L.phoneDigits(m.phone)}?text=${encodeURIComponent(text)}" target="_blank" rel="noopener">Отправить в WhatsApp</a>
-    </section>
-    <button class="btn ghost block" id="back">К списку мастеров</button>`;
-  $('#back').addEventListener('click', load);
+  resetNote = { id, temp };
+  render();
+  scrollTo(0, 0);
 }
 
 view.addEventListener('click', e => {
-  const reset = e.target.closest('[data-reset]');
-  if (reset) resetPassword(reset.dataset.reset);
-  const unkey = e.target.closest('[data-unkey]');
-  if (unkey) removeFace(unkey.dataset.unkey);
+  const target = e.target.closest('[data-go], [data-master], [data-back], [data-reset], [data-unkey], #add-face, #leave');
+  if (!target) return;
+  if (target.dataset.go) go(target.dataset.go);
+  else if (target.dataset.master) go('master', target.dataset.master);
+  else if ('back' in target.dataset) history.back();
+  else if (target.dataset.reset) resetPassword(target.dataset.reset);
+  else if (target.dataset.unkey) removeFace(target.dataset.unkey);
+  else if (target.id === 'add-face') addFace();
+  else if (target.id === 'leave') renderLogin();
 });
 
 renderLogin();

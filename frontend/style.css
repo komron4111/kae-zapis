@@ -606,6 +606,10 @@ body.auth { padding-bottom: env(safe-area-inset-bottom); }
 .admin-master b { display: block; }
 .admin-master small { display: block; color: var(--muted); font-size: 13px; }
 .admin-master a { color: var(--accent); font-weight: 600; }
+/* Страница администратора: разделы и карточка мастера */
+body.admin .line b { white-space: normal; text-align: right; overflow-wrap: anywhere; }
+body.admin .menu-row > b { flex: none; font-variant-numeric: tabular-nums; }
+body.admin .page-card > .btn.small { margin-top: 10px; }
 .temp-password { margin: 10px 0; font-size: 28px; font-weight: 800; letter-spacing: .08em; text-align: center; -webkit-user-select: all; user-select: all; }
 
 /* ---------- Карточка клиента: Instagram, день рождения, откуда ---------- */
