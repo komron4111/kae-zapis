@@ -351,7 +351,7 @@ function renderBooking(b) {
 async function startBooking(token) {
   const b = await loadBooking(token);
   if (!b) {
-    view.innerHTML = '<div class="empty"><p>Не удалось загрузить запись. Проверьте интернет.</p><button class="btn secondary small" onclick="location.reload()">Обновить</button></div>';
+    view.innerHTML = '<div class="empty"><p>Не удалось загрузить запись. Проверьте интернет.</p><button class="btn secondary small" data-reload>Обновить</button></div>';
     return;
   }
   if (b.missing) {
@@ -436,7 +436,7 @@ async function start() {
     view.innerHTML = `
       <div class="empty">
         <p>Не удалось загрузить свободное время. Проверьте интернет.</p>
-        <button class="btn secondary small" onclick="location.reload()">Обновить</button>
+        <button class="btn secondary small" data-reload>Обновить</button>
       </div>`;
     return;
   }
@@ -447,5 +447,10 @@ async function start() {
   setInterval(update, 60000);
   document.addEventListener('visibilitychange', update);
 }
+
+// Кнопки «Обновить» на экранах ошибок (встроенный onclick запрещён политикой безопасности страницы).
+document.addEventListener('click', e => {
+  if (e.target.closest('[data-reload]')) location.reload();
+});
 
 start();

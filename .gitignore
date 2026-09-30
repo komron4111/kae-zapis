@@ -11,3 +11,7 @@ backend/.wrangler/
 # Служебная папка wrangler после выкладки сайта из корня проекта (pages deploy)
 .wrangler/
 backend/.dev.vars
+
+# Исследования и отчёты Claude (рынок, конкуренты) — не для публичного репозитория
+research_notes/
+reports/

@@ -348,7 +348,7 @@ test('кривые поля в копии приводятся к нужному
   }));
   eq(copy.appointments.length, 1);
   eq([copy.appointments[0].id, copy.appointments[0].total, copy.appointments[0].status], ['r0', 12000, 'booked']);
-  eq(copy.rent, [{ from: '2000-01', amount: 70000 }]);
+  eq(copy.rent, [{ from: '2000-01', amount: L.DEFAULT_RENT }]); // своя аренда не указана — по умолчанию (0 с 2.2.1)
   eq(copy.settings, L.DEFAULT_SETTINGS);
   eq(copy.clients, []);
 });

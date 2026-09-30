@@ -8,7 +8,7 @@ import { API_URL, PUBLIC_URL, IS_LOCAL } from './config.js';
 import { phoneMask } from './phone-input.js';
 
 const APP_NAME = 'Nailapp';
-const APP_VERSION = '2.2.0';
+const APP_VERSION = '2.2.1';
 
 phoneMask();
 
@@ -2279,7 +2279,7 @@ async function submitAuth(form) {
       cloud.account = res.account;
       cloud.lastPhone = res.account.phone;
       await dbSet('cloud', cloud).catch(() => {});
-      data.settings = { ...settings(), clientName: name, address, gis };
+      data.settings = { ...settings(), clientName: name, address, gis, whatsapp: settings().whatsapp || phone };
       await save();
       render();
       toast('Аккаунт готов. Входите по номеру и паролю');
@@ -2296,7 +2296,7 @@ async function submitAuth(form) {
     ui.authNote = '';
     ui.authPhone = '';
     if (kind === 'register') {
-      data.settings = { ...settings(), clientName: name, address, gis };
+      data.settings = { ...settings(), clientName: name, address, gis, whatsapp: settings().whatsapp || phone };
       await save();
       render();
       toast('Аккаунт создан');
