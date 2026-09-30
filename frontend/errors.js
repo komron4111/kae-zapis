@@ -9,7 +9,8 @@
   const source = (document.currentScript && document.currentScript.dataset.source) || 'page';
   const sent = new Set();
   const file = url => String(url || '').split(/[?#]/)[0].split('/').slice(-2).join('/');
-  const NOISE = /AbortError|NotAllowedError|Failed to fetch|Load failed|NetworkError|network error|aborted|нет связи/i;
+  // Сбои связи — не ошибки сайта; «Script error.» без файла — чужой скрипт (расширение браузера).
+  const NOISE = /AbortError|NotAllowedError|Failed to fetch|Load failed|NetworkError|network error|aborted|нет связи|^Script error\.?$/i;
 
   function send(message, place) {
     message = String(message || '').slice(0, 400);

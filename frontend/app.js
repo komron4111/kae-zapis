@@ -8,7 +8,7 @@ import { API_URL, PUBLIC_URL, IS_LOCAL } from './config.js';
 import { phoneMask } from './phone-input.js';
 
 const APP_NAME = 'Nailapp';
-const APP_VERSION = '2.1.0';
+const APP_VERSION = '2.1.1';
 
 phoneMask();
 
