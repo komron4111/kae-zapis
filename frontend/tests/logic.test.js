@@ -322,16 +322,28 @@ test('копия сохраняется и читается обратно', () 
   eq(copy.expenses, data.expenses);
   eq(copy.prices, data.prices);
   eq(copy.rent, data.rent);
-  eq(copy.settings, data.settings);
+  eq(copy.settings, { ...data.settings, themeV: L.THEME_V }); // отметка темы 2.9.1 — в каждой прочитанной копии
   eq(copy.blocks, data.blocks);
   eq(copy.clients, data.clients);
   eq(copy.appointments[0].photos, ['ph1']);
 });
 
-test('тема оформления в копии: своя сохраняется, неизвестная — пурпурная (исходная)', () => {
-  const read = theme => L.readBackup(JSON.stringify({ app: 'kae-zapis', appointments: [], settings: { theme } })).settings.theme;
-  eq([read('lavender'), read('rose'), read('neon'), read('disco'), read(undefined)], ['lavender', 'rose', 'neon', 'plum', 'plum']);
+test('тема оформления в копии: своя сохраняется, неизвестная — розово-чёрная (исходная с 2.9.1)', () => {
+  const read = (theme, themeV) => L.readBackup(JSON.stringify({ app: 'kae-zapis', appointments: [], settings: { theme, themeV } })).settings.theme;
+  eq([read('lavender'), read('rose'), read('neon'), read('disco'), read(undefined)], ['lavender', 'rose', 'neon', 'neon', 'neon']);
+  // Копия до 2.9.1: пурпурная (прежняя исходная) → розово-чёрная; пурпурная, выбранная после 2.9.1, остаётся.
+  eq([read('plum'), read('plum', L.THEME_V)], ['neon', 'plum']);
   eq(Object.keys(L.THEMES), ['neon', 'rose', 'plum', 'lavender', 'graphite']); // розово-чёрная (2.7.0) — первой
+});
+
+test('исходная тема 2.9.1: пурпурная меняется на розово-чёрную один раз', () => {
+  eq(L.DEFAULT_SETTINGS.theme, 'neon');
+  const old = { theme: 'plum' };
+  eq([L.upgradeTheme(old), old.theme, old.themeV], [true, 'neon', L.THEME_V]);
+  old.theme = 'plum'; // мастер сам выбрал пурпурную после обновления
+  eq([L.upgradeTheme(old), old.theme], [false, 'plum']);
+  const rose = { theme: 'rose' };
+  eq([L.upgradeTheme(rose), rose.theme], [true, 'rose']);
 });
 
 test('чужой файл не принимается', () => {
@@ -350,7 +362,7 @@ test('кривые поля в копии приводятся к нужному
   eq(copy.appointments.length, 1);
   eq([copy.appointments[0].id, copy.appointments[0].total, copy.appointments[0].status], ['r0', 12000, 'booked']);
   eq(copy.rent, [{ from: '2000-01', amount: L.DEFAULT_RENT }]); // своя аренда не указана — по умолчанию (0 с 2.2.1)
-  eq(copy.settings, L.DEFAULT_SETTINGS);
+  eq(copy.settings, { ...L.DEFAULT_SETTINGS, themeV: L.THEME_V });
   eq(copy.clients, []);
 });
 
@@ -769,7 +781,7 @@ test('расписание для клиентов: тема, Instagram и на�
   eq(L.cleanSchedule(s), s);
   eq(L.cleanSchedule({ ...s, theme: 'neon' }).theme, 'neon');
   const evil = L.cleanSchedule({ ...s, theme: '"><script>', instagram: 'javascript:alert(1)', specialty: '<b>x</b>'.repeat(20) });
-  eq([evil.theme, evil.instagram, evil.specialty], ['plum', '', Array(20).fill('x').join(' ')]);
+  eq([evil.theme, evil.instagram, evil.specialty], ['neon', '', Array(20).fill('x').join(' ')]);
   eq(['"><img src=x onerror=alert(1)>', 'Барбер '.repeat(10), ' Визажист >> '].map(L.specialtyText),
     ['"', 'Барбер '.repeat(10).slice(0, 40), 'Визажист']);
 });

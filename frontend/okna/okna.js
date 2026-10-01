@@ -38,7 +38,7 @@ function placeHtml(master) {
 const themeKey = slug => `kae-okna:theme:${slug || 'legacy'}`;
 
 function applyTheme(theme, slug) {
-  const id = L.THEMES[theme] ? theme : 'plum';
+  const id = L.THEMES[theme] ? theme : 'neon';
   const root = document.documentElement;
   if (root.dataset.theme !== id) root.dataset.theme = id;
   try { localStorage.setItem(themeKey(slug), id); } catch (e) { /* не страшно */ }

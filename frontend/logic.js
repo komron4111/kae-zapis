@@ -33,7 +33,7 @@ export const DEFAULT_RENT = 0; // своя сумма — в «Настройк�
 // duration — сколько длится услуга, у которой в прайсе не указана длительность.
 // specialty — направление мастера, instagram — ник для клиентов, kaspi — номер для счёта Kaspi за подписку.
 // remindDays, remindHours — за сколько дней и часов до записи напомнить мастеру уведомлением (2.8.0; 0 — не напоминать).
-export const DEFAULT_SETTINGS = { dayStart: '09:00', lastStart: '20:00', duration: 150, clientName: '', whatsapp: '', address: '', gis: '', instagram: '', specialty: '', kaspi: '', theme: 'plum', remindDays: 0, remindHours: 2 };
+export const DEFAULT_SETTINGS = { dayStart: '09:00', lastStart: '20:00', duration: 150, clientName: '', whatsapp: '', address: '', gis: '', instagram: '', specialty: '', kaspi: '', theme: 'neon', remindDays: 0, remindHours: 2 };
 // Что можно выбрать в «Напоминаниях о записях».
 export const REMIND_DAYS = [0, 1, 2, 3, 7];
 export const REMIND_HOURS = [0, 1, 2, 3, 4, 5, 6, 12];
@@ -41,6 +41,16 @@ export const REMIND_HOURS = [0, 1, 2, 3, 4, 5, 6, 12];
 // без розового (например, для парикмахеров и барберов). Клиенты видят страницу записи в теме мастера.
 // «Розово-чёрная» (2.7.0) — как фон значка на экране «Домой»: чёрный с розовым неоном; в «Оформлении» — первой, во всю ширину.
 export const THEMES = { neon: 'Розово-чёрная', rose: 'Розовая', plum: 'Пурпурная', lavender: 'Фиолетовая', graphite: 'Графит' };
+
+// 2.9.1: исходная тема — розово-чёрная (до 2.9.1 — пурпурная). У данных до 2.9.1 пурпурная один раз меняется
+// на розово-чёрную; пурпурная, выбранная после этого, остаётся: отметка themeV в настройках (она же — в копии).
+export const THEME_V = 2;
+export function upgradeTheme(settings) {
+  if (!settings || settings.themeV === THEME_V) return false;
+  if (settings.theme === 'plum') settings.theme = 'neon';
+  settings.themeV = THEME_V;
+  return true;
+}
 
 // Направления мастера — подсказки при регистрации; можно вписать своё.
 export const SPECIALTIES = ['Маникюр и педикюр', 'Парикмахер', 'Барбер', 'Брови и ресницы', 'Визажист', 'Косметолог', 'Массаж', 'Депиляция и шугаринг', 'Тату и перманент'];
@@ -1178,6 +1188,8 @@ function readSettings(src) {
   if (typeof s.specialty === 'string') out.specialty = specialtyText(s.specialty);
   if (typeof s.kaspi === 'string') out.kaspi = s.kaspi;
   if (typeof s.theme === 'string' && Object.keys(THEMES).includes(s.theme)) out.theme = s.theme;
+  if (s.themeV === THEME_V) out.themeV = THEME_V;
+  upgradeTheme(out); // копия до 2.9.1: прежняя исходная пурпурная → розово-чёрная
   if (REMIND_DAYS.includes(s.remindDays)) out.remindDays = s.remindDays;
   if (REMIND_HOURS.includes(s.remindHours)) out.remindHours = s.remindHours;
   return out;

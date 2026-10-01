@@ -901,7 +901,7 @@ async function getOkna(env, slug) {
   if (!masterActive(master)) {
     const s = schedule || {};
     return json({ app: 'kae-zapis', kind: 'okna', v: 2, name: s.name || master.name, whatsapp: s.whatsapp || '', address: s.address || '', gis: s.gis || '',
-      instagram: s.instagram || '', specialty: s.specialty || '', theme: s.theme || 'plum',
+      instagram: s.instagram || '', specialty: s.specialty || '', theme: s.theme || 'neon',
       slug: master.slug, legacy, paused: true, booking: false, days: [], updated: s.updated || new Date(0).toISOString() });
   }
   if (!schedule) return json({ app: 'kae-zapis', kind: 'okna', name: master.name, slug: master.slug, legacy, days: [], booking: false });
@@ -988,7 +988,7 @@ async function getBooking(env, token) {
     gis: (schedule && schedule.gis) || '',
     instagram: (schedule && schedule.instagram) || '',
     specialty: (schedule && schedule.specialty) || '',
-    theme: (schedule && schedule.theme) || 'plum',
+    theme: (schedule && schedule.theme) || 'neon',
     slug: row ? row.slug : '',
   };
   if (b) {

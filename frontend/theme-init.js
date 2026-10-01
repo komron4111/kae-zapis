@@ -2,6 +2,7 @@
 // Отдельным файлом, а не внутри index.html: политика безопасности страницы (CSP)
 // запускает только скрипты из файлов сайта.
 document.documentElement.dataset.mode = 'light'; // исходно — светлый режим
+document.documentElement.dataset.theme = 'neon'; // исходная тема (с 2.9.1) — розово-чёрная, как значок
 try {
   const theme = localStorage.getItem('kae:theme'), mode = localStorage.getItem('kae:mode');
   if (theme) document.documentElement.dataset.theme = theme;

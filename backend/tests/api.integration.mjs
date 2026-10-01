@@ -144,7 +144,7 @@ check('расписание с чужим кодом принято', r.status =
 r = await call('GET', `/api/okna?m=${B.slug}`);
 check('клиенты получают его очищенным', r.status === 200 && !JSON.stringify(r.data).includes('<img') && !('extra' in r.data)
   && r.data.whatsapp === '77011' && r.data.gis === '' && r.data.services[1].price === 1 && r.data.services[1].duration === 0
-  && r.data.instagram === '' && r.data.theme === 'plum', JSON.stringify(r.data).slice(0, 200));
+  && r.data.instagram === '' && r.data.theme === 'neon', JSON.stringify(r.data).slice(0, 200));
 r = await call('PUT', '/api/schedule', { key: B.key, body: { kind: 'okna' } });
 check('не расписание — 400', r.status === 400, r.data.error);
 r = await call('PUT', '/api/schedule', { key: B.key, body: schedule('Бота', [['Педикюр', 90]]) });

@@ -10,7 +10,7 @@ import * as Install from './install.js';
 import { t, getLang, setLang, otherLangLabel } from './i18n.js';
 
 const APP_NAME = 'Beautybook';
-const APP_VERSION = '2.9.0';
+const APP_VERSION = '2.9.1';
 
 phoneMask();
 
@@ -151,7 +151,7 @@ function freshData() {
     expenses: [],
     prices: [], // с 2.4.0 мастер (любого направления) заполняет прайс сам
     rent: [{ from: '2000-01', amount: L.DEFAULT_RENT }],
-    settings: { ...L.DEFAULT_SETTINGS },
+    settings: { ...L.DEFAULT_SETTINGS, themeV: L.THEME_V },
     blocks: [],
     clients: [],
     rentPaid: {}, // оплата аренды: { 'YYYY-MM': 'YYYY-MM-DD' }
@@ -211,7 +211,7 @@ function setHeader(actions = '') {
 }
 
 // ---------- Тема и режим ----------
-// Тема (розовая, пурпурная, фиолетовая; исходно — пурпурная) — в настройках:
+// Тема (исходно с 2.9.1 — розово-чёрная, как значок; до этого — пурпурная) — в настройках:
 // уходит в облако и копию. Светлый или тёмный режим — только для этого телефона:
 // исходно светлый, меняется кнопкой в шапке. Копию темы и режима в localStorage
 // читает index.html, чтобы экран сразу открывался в своих цветах.
@@ -3472,6 +3472,9 @@ async function start() {
     }
     pref('plumDefault', '1');
   }
+  // 2.9.1: исходная тема — розово-чёрная, как значок. Прежняя исходная (пурпурная) меняется на неё один раз;
+  // выбранная потом пурпурная остаётся (отметка themeV в настройках). Копии из облака меняет L.readBackup.
+  if (stored && L.upgradeTheme(data.settings)) migrated = true;
   render();
   if (migrated) save();
   // Ключ GitHub от прежней версии больше не нужен — удаляем его с телефона.
