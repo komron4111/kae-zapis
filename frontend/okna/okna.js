@@ -111,7 +111,7 @@ async function load() {
     if (res.ok) {
       const raw = await res.json();
       const clean = L.cleanSchedule(raw);
-      return clean && { ...clean, booking: raw.booking === true, legacy: raw.legacy === true, paused: raw.paused === true, slug: String(raw.slug || '').replace(/[^\w-]/g, '') };
+      return clean && { ...clean, booking: raw.booking === true, legacy: raw.legacy === true, slug: String(raw.slug || '').replace(/[^\w-]/g, '') };
     }
     if (res.status === 404) return { missing: true };
   } catch (e) { /* покажем ошибку */ }
@@ -146,18 +146,6 @@ function render() {
   applyTheme(s.theme, MASTER || s.slug);
   // Шапка — как в приложении (логотип и Beautybook, в okna/index.html), имя и направление мастера — в заголовке.
   const title = `<h2 class="okna-title">${t('Запись к мастеру: {name}', { name: esc(name) })}${s.specialty ? `<small>${esc(L.specialtyName(s.specialty))}</small>` : ''}</h2>`;
-  // Подписка мастера на Beautybook закончилась: онлайн-запись на паузе, записаться — через WhatsApp.
-  if (s.paused) {
-    view.innerHTML = `
-      ${title}
-      ${placeHtml(s)}
-      <section class="card page-card">
-        <p>${t('Онлайн-запись к этому мастеру временно недоступна.')}</p>
-        ${s.whatsapp ? `<a class="btn primary block" href="${esc(whatsappLink(t('Здравствуйте! Хочу записаться к вам.')))}" target="_blank" rel="noopener">${t('Написать мастеру в WhatsApp')}</a>` : `<p class="hint">${t('Свяжитесь с мастером, чтобы записаться.')}</p>`}
-      </section>`;
-    return;
-  }
-
   const clock = L.masterClock(s.tzOffset || 0);
   // Время свободно, если в него помещается хотя бы самая короткая услуга;
   // подходят ли выбранные услуги, форма проверит после выбора.

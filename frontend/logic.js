@@ -831,7 +831,12 @@ export function confirmationText(a, link, lang = LANG) {
 
 // «Айгуль · 30 сентября в 14:30 · Маникюр + Педикюр» — для уведомления мастеру (lang — язык его телефона).
 export function requestSummary(r, lang = LANG) {
-  return `${r.name} · ${shortDate(r.date, lang)}${lang === 'kk' ? ',' : ' в'} ${shortTime(r.time)} · ${servicesLabel(r.services)}`;
+  return `${r.name} · ${requestWhen(r, lang)} · ${servicesLabel(r.services)}`;
+}
+
+// Когда заявка: «3 октября в 14:30» (по-казахски — «3 қазан, 14:30»).
+export function requestWhen(r, lang = LANG) {
+  return `${shortDate(r.date, lang)}${lang === 'kk' ? ',' : ' в'} ${shortTime(r.time)}`;
 }
 
 // ---------- base64url (ключи уведомлений и устройства) ----------

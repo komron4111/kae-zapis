@@ -137,13 +137,14 @@ async function route(request, env, ctx) {
   if (path === '/api/chat' && method === 'GET') return getChat(env, me); // чат — и после окончания подписки
   if (path === '/api/chat' && method === 'POST') return postChat(request, env, ctx, me);
   if (path === '/api/account/paid' && method === 'POST') return reportPaid(env, ctx, me); // «Я оплатил(а)» — администратору
+  // И после окончания подписки (2.9.4): уведомления о заявках приходят, а заявки видны — только дата и время.
+  if (path === '/api/push' && method === 'PUT') return savePush(request, env, me);
+  if (path === '/api/requests' && method === 'GET') return listRequests(env, me);
   // Подписка закончилась: данные мастера не принимаем и не отдаём, пока администратор её не продлит.
   if (!me.active) throw new HttpError(402, 'Подписка закончилась — продлите её у администратора');
-  if (path === '/api/push' && method === 'PUT') return savePush(request, env, me);
   if (path === '/api/reminders' && method === 'PUT') return saveReminders(request, env, me);
   if (path === '/api/schedule' && method === 'PUT') return saveSchedule(request, env, me);
   if (path === '/api/stats' && method === 'PUT') return putStats(request, env, me);
-  if (path === '/api/requests' && method === 'GET') return listRequests(env, me);
   if ((m = path.match(/^\/api\/requests\/([\w-]+)\/(confirm|decline)$/)) && method === 'POST') return closeRequest(request, env, me, m[1], m[2]);
   if ((m = path.match(/^\/api\/bookings\/([\w-]{16,64})$/)) && method === 'PUT') return putBooking(request, env, me, m[1]);
   if (path === '/api/backup' && method === 'PUT') return putBackup(request, env, me);
@@ -902,13 +903,8 @@ async function getOkna(env, slug) {
   const master = await masterBySlug(env, slug);
   const schedule = await loadSchedule(env, master.id);
   const legacy = master.id === LEGACY; // прежняя ссылка Арай (до аккаунтов)
-  // Подписка мастера закончилась: время не показываем (оно не обновляется), только связь с мастером.
-  if (!masterActive(master)) {
-    const s = schedule || {};
-    return json({ app: 'kae-zapis', kind: 'okna', v: 2, name: s.name || master.name, whatsapp: s.whatsapp || '', address: s.address || '', gis: s.gis || '',
-      instagram: s.instagram || '', specialty: s.specialty || '', theme: s.theme || 'neon',
-      slug: master.slug, legacy, paused: true, booking: false, days: [], updated: s.updated || new Date(0).toISOString() });
-  }
+  // Подписка мастера закончилась — ссылка всё равно работает (2.9.4, до этого — пауза): заявки приходят,
+  // кто записался, мастер увидит после продления. Расписание тогда — последнее, что прислал телефон.
   if (!schedule) return json({ app: 'kae-zapis', kind: 'okna', name: master.name, slug: master.slug, legacy, days: [], booking: false });
   // booking: заявки принимаем, только когда у мастера есть телефон, на который они придут.
   return json({ ...L.applyHolds(schedule, await holds(env, master.id)), slug: master.slug, legacy, booking: await hasDevice(env, master.id) });
@@ -922,7 +918,6 @@ async function createRequest(request, env, ctx, slug) {
   const body = await readJson(request, 8 * 1024);
   if (body.website) return json({ ok: true }, 201); // скрытое поле заполняют только боты
   const master = await masterBySlug(env, slug);
-  if (!masterActive(master)) throw new HttpError(503, 'Онлайн-запись временно недоступна — напишите мастеру в WhatsApp');
   const schedule = await loadSchedule(env, master.id);
   if (!schedule || !(await hasDevice(env, master.id))) throw new HttpError(503, 'Онлайн-запись пока не работает — напишите мастеру в WhatsApp');
 
@@ -948,12 +943,17 @@ async function createRequest(request, env, ctx, slug) {
   if (!result.meta.changes) throw new HttpError(409, 'Это время только что заняли — выберите другое');
   await countRequest(env, master.id, r.date, 'sent');
   await remember(env, 'request', who);
-  ctx.waitUntil(notifyMaster(env, master.id, { id, ...r }));
+  ctx.waitUntil(notifyMaster(env, master.id, { id, ...r }, masterActive(master)));
   return json({ ok: true, token }, 201);
 }
 
-async function notifyMaster(env, masterId, r) {
-  return pushToMaster(env, masterId, lang => ({ title: tr(lang, 'Новая заявка на запись'), body: L.requestSummary(r, lang), tag: `request-${r.id}`, url: './?open=requests', kind: 'request' }));
+// Подписка мастера закончилась (2.9.4): в уведомлении только дата и время — кто записался, видно после продления.
+async function notifyMaster(env, masterId, r, active = true) {
+  return pushToMaster(env, masterId, lang => ({
+    title: tr(lang, 'Новая заявка на запись'),
+    body: active ? L.requestSummary(r, lang) : tr(lang, '{when} — чтобы увидеть, кто записался, продлите подписку', { when: L.requestWhen(r, lang) }),
+    tag: `request-${r.id}`, url: './?open=requests', kind: 'request',
+  }));
 }
 
 // Уведомление на телефон мастера: заявка клиента, сообщение администратора (kind: 'chat') или напоминание
@@ -1235,6 +1235,8 @@ async function listRequests(env, me) {
   await cleanup(env, L.masterClock(schedule ? schedule.tzOffset || 0 : -300).date);
   const { results } = await env.DB.prepare(
     'SELECT id, created, date, time, name, phone, services, comment, token FROM requests WHERE master_id = ? ORDER BY date, time').bind(me.masterId).all();
+  // Подписка закончилась (2.9.4): только дата и время; кто записался и подтверждение — после продления.
+  if (!me.active) return json({ locked: true, requests: results.map(r => ({ id: r.id, created: r.created, date: r.date, time: r.time })) });
   return json({ requests: results.map(r => ({ ...r, services: JSON.parse(r.services) })) });
 }
 

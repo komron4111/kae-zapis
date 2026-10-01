@@ -143,6 +143,7 @@ let storageBroken = false;
 let cloud = freshCloud();
 // Заявки клиентов, которые ждут ответа (приходят с сервера).
 let requests = [];
+let lockedRequests = []; // подписка закончилась (2.9.4): заявки без данных клиента — только дата и время
 
 function freshData() {
   return {
@@ -833,8 +834,19 @@ function drawConfirmed(id) {
 async function loadRequests() {
   if (!cloud.key) return;
   const res = await api('GET', '/api/requests');
+  const body = await res.json();
+  // Подписка закончилась (2.9.4): сервер присылает только дату и время — их показывает экран «Продлите подписку».
+  if (body.locked) {
+    const changed = JSON.stringify(body.requests) !== JSON.stringify(lockedRequests);
+    lockedRequests = body.requests;
+    requests = [];
+    updateBadge();
+    if (changed && authGate() === 'expired') render();
+    return;
+  }
+  lockedRequests = [];
   const closing = cloud.closing || [];
-  const fresh = (await res.json()).requests.filter(r => !closing.includes(r.id));
+  const fresh = body.requests.filter(r => !closing.includes(r.id));
   const changed = JSON.stringify(fresh.map(r => r.id)) !== JSON.stringify(requests.map(r => r.id));
   requests = fresh;
   updateBadge();
@@ -855,7 +867,8 @@ function renderTabbarOnly() {
 // Число заявок на значке приложения (iOS 16.4+ для приложения на экране «Домой»).
 function updateBadge() {
   try {
-    const p = requests.length ? navigator.setAppBadge && navigator.setAppBadge(requests.length) : navigator.clearAppBadge && navigator.clearAppBadge();
+    const count = requests.length || lockedRequests.length;
+    const p = count ? navigator.setAppBadge && navigator.setAppBadge(count) : navigator.clearAppBadge && navigator.clearAppBadge();
     if (p && p.catch) p.catch(() => {});
   } catch (e) { /* значки не поддерживаются */ }
 }
@@ -2332,9 +2345,20 @@ function termsHtml() {
       <li>${t('Оплата — через Kaspi.kz: администратор выставляет счёт на номер Kaspi из вашей анкеты, вы оплачиваете его в приложении Kaspi.')}</li>
       <li>${t('После оплаты доступ продлевается на оплаченный срок: от конца текущего периода, а если он уже закончился — со дня оплаты.')}</li>
       <li>${t('За 3 дня до окончания приложение напомнит о продлении.')}</li>
-      <li>${t('На следующий день после окончания приложение и онлайн-запись для ваших клиентов приостанавливаются. Все данные сохраняются и снова доступны после оплаты; личные ссылки клиентов на уже сделанные записи работают.')}</li>
+      <li>${t('На следующий день после окончания приложение приостанавливается. Ссылка для клиентов продолжает работать: заявки приходят, вы видите их дату и время, а кто записался и подтверждение — после оплаты. Все данные сохраняются и снова доступны после оплаты; личные ссылки клиентов на уже сделанные записи работают.')}</li>
       <li>${t('Вопросы по оплате — в чате с администратором («Настройки» → «Чат с администратором»).')}</li>
     </ul>`;
+}
+
+// Заявки, пока подписка закончилась (2.9.4): только дата и время — кто записался и подтверждение — после продления.
+function lockedHtml() {
+  if (!lockedRequests.length) return '';
+  return `
+      <section class="card page-card">
+        <h3 class="card-title">${t('Новые заявки: {count}', { count: lockedRequests.length })}</h3>
+        ${lockedRequests.map(r => `<div class="line"><span>${esc(L.dayTitle(r.date))}</span><b>${esc(L.shortTime(r.time))}</b></div>`).join('')}
+        <p class="hint">${t('Кто записался, вы увидите и сможете подтвердить запись после продления подписки.')}</p>
+      </section>`;
 }
 
 // Направление мастера: подсказки кнопками, можно вписать своё.
@@ -2435,12 +2459,13 @@ function renderAuth(screen) {
     html = `
       <h2 class="page-title">${t('Продлите подписку')}</h2>
       <section class="card page-card">
-        <p>${sub && sub.until ? t('Подписка на Beautybook закончилась {date}. Приложение и онлайн-запись для клиентов приостановлены — все ваши данные сохранены.', { date: esc(fullDateOn(sub.until)) }) : t('Подписка на Beautybook закончилась. Приложение и онлайн-запись для клиентов приостановлены — все ваши данные сохранены.')}</p>
+        <p>${sub && sub.until ? t('Подписка на Beautybook закончилась {date}. Приложение приостановлено, все ваши данные сохранены. Ссылка для клиентов работает: заявки приходят, но увидеть, кто записался, и подтвердить запись можно только после продления.', { date: esc(fullDateOn(sub.until)) }) : t('Подписка на Beautybook закончилась. Приложение приостановлено, все ваши данные сохранены. Ссылка для клиентов работает: заявки приходят, но увидеть, кто записался, и подтвердить запись можно только после продления.')}</p>
         <p class="hint">${t('Тариф «Про»: {month} в месяц или {year} в год. Напишите администратору — он выставит счёт в Kaspi.kz на ваш номер, а после оплаты приложение снова откроется.', { month: L.formatMoney(L.TARIFF.month.price), year: L.formatMoney(L.TARIFF.year.price) })}</p>
         <button class="btn primary block" data-act="open-chat">${icon('chat')} ${t('Чат с администратором')} ${chatBadge('btn-badge')}</button>
         <div id="contact-box"><p class="hint">${t('Загружаем контакт администратора…')}</p></div>
         <button class="btn secondary block" data-act="check-subscription">${t('Я оплатил(а) — проверить')}</button>
       </section>
+      ${lockedHtml()}
       <details class="terms card page-card"><summary>${t('Условия подписки')}</summary>${termsHtml()}</details>`;
   } else if (screen === 'profile') {
     const a = cloud.account || {};

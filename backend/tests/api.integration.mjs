@@ -236,14 +236,20 @@ r = await subCall(aId, { action: 'undo' });
 check('отменить оплату — снова до конца бесплатных дней', r.status === 200 && r.data.subscription.until === trialEnd);
 r = await subCall(aId, { action: 'until', value: L.addDays(todayKz, -1) });
 check('администратор сократил доступ до вчера', r.status === 200 && r.data.subscription.active === false);
-r = await call('GET', '/api/requests', { key: A.key });
+r = await call('GET', '/api/backup', { key: A.key });
 check('подписка закончилась — данные мастера закрыты (402)', r.status === 402, r.data.error);
 r = await call('GET', '/api/account', { key: A.key });
 check('аккаунт открывается и говорит, что подписка закончилась', r.status === 200 && r.data.account.subscription.active === false);
+// С 2.9.4 ссылка работает и после окончания подписки: заявки приходят, мастер видит только дату и время.
 r = await call('GET', `/api/okna?m=${A.slug}`);
-check('ссылка для клиентов на паузе', r.status === 200 && r.data.paused === true && r.data.booking === false && r.data.days.length === 0 && r.data.name === 'Айгерим', JSON.stringify(r.data).slice(0, 160));
+check('ссылка для клиентов работает и после окончания подписки', r.status === 200 && !r.data.paused && r.data.booking === true && r.data.days.length > 0 && r.data.name === 'Айгерим', JSON.stringify(r.data).slice(0, 160));
 r = await call('POST', `/api/requests?m=${A.slug}`, { body: { date: d1, time: '11:00', name: 'Клиентка', phone: '+7 701 555 44 33', services: ['Маникюр'] } });
-check('заявки не принимаются — 503', r.status === 503, r.data.error);
+check('заявка принимается и после окончания подписки', r.status === 201 && Boolean(r.data.token), JSON.stringify(r.data));
+r = await call('GET', '/api/requests', { key: A.key });
+const lockedReq = r.status === 200 && (r.data.requests || []).find(x => x.date === d1 && x.time === '11:00');
+check('мастер видит заявку — только дату и время, без клиента', r.data.locked === true && Boolean(lockedReq) && Object.keys(lockedReq).sort().join() === 'created,date,id,time', JSON.stringify(r.data));
+r = await call('POST', `/api/requests/${lockedReq && lockedReq.id}/confirm`, { key: A.key, body: {} });
+check('подтвердить заявку без подписки нельзя (402)', r.status === 402, r.data.error);
 r = await call('GET', `/api/bookings/${token}`);
 check('личная ссылка клиента работает и на паузе', r.status === 200 && r.data.status === 'confirmed');
 r = await call('PUT', '/api/account/profile', { key: A.key, body: { specialty: 'Барбер', kaspi: '+7 700 999 88 77' } });
@@ -255,7 +261,9 @@ check('чат: мастер пишет администратору и посл�
 r = await subCall(aId, { action: 'extend' });
 check('оплата после окончания — месяц с сегодняшнего дня', r.status === 200 && r.data.subscription.until === L.subscriptionEnd(todayKz) && r.data.subscription.active === true, r.data.subscription && r.data.subscription.until);
 r = await call('GET', '/api/requests', { key: A.key });
-check('доступ вернулся', r.status === 200);
+const openedReq = r.status === 200 && lockedReq && (r.data.requests || []).find(x => x.id === lockedReq.id);
+check('доступ вернулся — видно, кто записался', r.status === 200 && !r.data.locked && Boolean(openedReq) && openedReq.name === 'Клиентка' && Boolean(openedReq.phone), JSON.stringify(openedReq));
+if (openedReq) await call('POST', `/api/requests/${openedReq.id}/decline`, { key: A.key });
 r = await subCall(aId, { action: 'extend', plan: 'year' });
 const yearEnd = L.nextPeriod(L.subscriptionEnd(todayKz), todayKz, 12).end;
 check('оплата за год — ещё 12 месяцев', r.status === 200 && r.data.subscription.until === yearEnd, r.data.subscription && r.data.subscription.until);
@@ -384,6 +392,16 @@ const ruFrom = pushed.length;
 await call('POST', `/api/admin/chats/${aId}`, { admin: CODE, body: { text: 'Привет!' } });
 note = (got = await nthPush(ruFrom + 1)) && await decryptPush(got.body, ua2);
 check('без lang — по-русски, как раньше', note && note.title === 'Сообщение от администратора', JSON.stringify(note));
+// ---------- Подписка закончилась: уведомление о заявке — без имени и услуг (2.9.4) ----------
+await subCall(aId, { action: 'until', value: L.addDays(todayKz, -1) });
+const lockFrom = pushed.length;
+r = await call('POST', `/api/requests?m=${A.slug}`, { body: { date: d1, time: '12:00', name: 'Тайная Клиентка', phone: '+7 701 555 44 35', services: ['Маникюр'] } });
+note = (got = await nthPush(lockFrom + 1)) && await decryptPush(got.body, ua2);
+check('подписка закончилась — уведомление о заявке: дата и время, без клиента', r.status === 201 && note && note.kind === 'request' && note.body.includes('12:00')
+  && !note.body.includes('Тайная') && !note.body.includes('Маникюр') && note.body.includes('продлите подписку'), JSON.stringify(note));
+await subCall(aId, { action: 'until', value: L.subscriptionEnd(todayKz) });
+r = await call('GET', '/api/requests', { key: A.key });
+for (const x of (r.data.requests || []).filter(x => x.date === d1 && x.time === '12:00')) await call('POST', `/api/requests/${x.id}/decline`, { key: A.key });
 // ---------- Напоминания мастеру о записях (2.8.0) ----------
 // У мастера A подписка masterSub (по-русски). Сервер шлёт напоминания по расписанию «*/5 * * * *».
 const remindCron = () => fetch(`${API}/__scheduled?cron=${encodeURIComponent('*/5 * * * *')}`);
