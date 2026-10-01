@@ -1,0 +1,14 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Мастерская значков Beautybook</title>
+<body style="background:#777;margin:0;padding:16px;font:14px sans-serif;color:#fff">
+<p><button id="build">Собрать значки</button> — готовые PNG появятся в папке <code>design/out/</code>.</p>
+<div id="out"></div>
+<script type="module">
+  import { build } from './make.js';
+  document.getElementById('build').addEventListener('click', async () => {
+    const names = await build();
+    document.title = `Готово: ${names.length}`;
+  });
+</script>
+</body>

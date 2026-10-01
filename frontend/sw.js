@@ -1,7 +1,7 @@
 // Офлайн-кэш и уведомления: заявки клиентов и сообщения администратора.
 // После любой правки файлов увеличьте VERSION — телефоны скачают
 // новую версию при следующем запуске приложения.
-const VERSION = 'v20';
+const VERSION = 'v21';
 const CACHE = `zapisi-arai-${VERSION}`;
 const FILES = [
   './',
@@ -15,12 +15,12 @@ const FILES = [
   './theme-init.js',
   './errors.js',
   './manifest.webmanifest',
-  './icons/favicon-64.png',
+  './icons/bb-favicon-64.png',
   './icons/logo-neon.png',
-  './icons/icon-192.png',
-  './icons/icon-512.png',
-  './icons/icon-maskable-512.png',
-  './icons/apple-touch-icon.png',
+  './icons/bb-192.png',
+  './icons/bb-512.png',
+  './icons/bb-maskable-512.png',
+  './icons/bb-touch-180.png',
 ];
 
 self.addEventListener('install', event => {
@@ -68,8 +68,8 @@ self.addEventListener('push', event => {
   const chat = msg.kind === 'chat';
   const show = self.registration.showNotification(msg.title || (chat ? 'Сообщение от администратора' : 'Новая заявка на запись'), {
     body: msg.body || (chat ? 'Откройте чат с администратором' : 'Откройте приложение, чтобы посмотреть заявку'),
-    icon: './icons/icon-192.png',
-    badge: './icons/icon-192.png',
+    icon: './icons/bb-192.png',
+    badge: './icons/bb-192.png',
     tag: msg.tag || (chat ? 'chat' : 'request'),
     data: { url: msg.url || (chat ? './?open=chat' : './?open=requests') },
   });

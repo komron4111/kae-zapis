@@ -1,7 +1,8 @@
 // Страница администратора Beautybook (до 2.4.0 — Nailapp). Разделы, в которые проваливаешься, как «Настройки»
 // в приложении: «Мастера» (поиск, сортировка, карточка мастера: анкета, записи по месяцам, подписка, сброс
 // пароля), «Подписки» (календарь по месяцам: галочка «оплата получена» продлевает доступ на месяц или год,
-// шкала до конца подписки, сортировка), «Чат с мастерами», «Сервер» (шкалы загрузки, место по мастерам),
+// шкала до конца подписки, сортировка), «Чат с мастерами», «Уведомления» (с 2.5.0: на телефон администратора —
+// сообщения мастеров, новые мастера, «Я оплатил(а)», утренняя сводка по подпискам), «Сервер» (шкалы загрузки, место по мастерам),
 // «WhatsApp для мастеров» (куда пишут через «Забыли пароль?»), «Вход по Face ID». Назад — кнопкой «‹»
 // или жестом браузера: каждый раздел — запись в истории (history.pushState).
 //
@@ -38,6 +39,7 @@ const ICONS = {
   copy: '<rect x="8.5" y="8.5" width="12" height="12" rx="2.5"/><path d="M15.5 8.5V6a2.5 2.5 0 0 0-2.5-2.5H6A2.5 2.5 0 0 0 3.5 6v7A2.5 2.5 0 0 0 6 15.5h2.5"/>',
   check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
   instagram: '<rect x="3.5" y="3.5" width="17" height="17" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.2" cy="6.8" r=".4"/>',
+  bell: '<path d="M6 16v-5a6 6 0 0 1 12 0v5l2 2H4z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>',
 };
 const icon = name => `<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
 
@@ -58,6 +60,16 @@ let usage = null; // нагрузка за сутки — снимок посл�
 let chats = null; // переписки с мастерами: последнее сообщение и непрочитанные
 let messages = []; // сообщения открытого чата
 let chatTimer = null;
+let pushInfo = null; // уведомления администратору: { key — ключ сервера, devices — устройства с уведомлениями }
+let myEndpoint; // подписка этого устройства: undefined — ещё не проверили, null — нет
+
+// Нажали на уведомление: адрес ?open=chat|master|subs&m=<мастер>. Сначала вход, потом — нужный раздел.
+const startParams = new URLSearchParams(location.search);
+let pendingOpen = startParams.get('open') ? { page: startParams.get('open'), id: startParams.get('m') || '' } : null;
+if (location.search) history.replaceState(null, '', location.pathname);
+
+// Свой Service Worker (область admin/) — только для уведомлений администратору.
+const swReady = 'serviceWorker' in navigator ? navigator.serviceWorker.register('sw.js', { scope: './' }).catch(() => null) : Promise.resolve(null);
 
 // Где мы: '' — меню разделов; 'masters', 'master' (карточка masterId), 'subs', 'chats', 'chat' (переписка
 // с masterId), 'server', 'contact', 'face'.
@@ -211,6 +223,11 @@ async function load(first = false) {
     } catch (e) {
       passkeys = [];
     }
+    try {
+      pushInfo = await call('GET', '/api/admin/push');
+    } catch (e) {
+      pushInfo = null;
+    }
   } catch (e) {
     renderLogin(e.message);
     return;
@@ -219,7 +236,13 @@ async function load(first = false) {
     page = '';
     history.replaceState({ page: '' }, '');
   }
+  if (myEndpoint === undefined) await checkPush();
   render();
+  if (first && pendingOpen) {
+    const target = pendingOpen;
+    pendingOpen = null;
+    openTarget(target);
+  }
 }
 
 // ---------- Разделы ----------
@@ -228,6 +251,7 @@ const SECTIONS = {
   masters: ['users', 'Мастера'],
   subs: ['calendar', 'Подписки'],
   chats: ['chat', 'Чат с мастерами'],
+  push: ['bell', 'Уведомления'],
   server: ['cloud', 'Сервер'],
   contact: ['phone', 'WhatsApp для мастеров'],
   face: ['lock', 'Вход по Face ID'],
@@ -246,6 +270,10 @@ function summary(id) {
   if (id === 'chats') return unreadTotal() ? `новых сообщений: ${unreadTotal()}` : 'вопросы мастеров по оплате и приложению';
   if (id === 'server') return `загрузка ${loadLevel()[1]} · база ${dbSize ? size(dbSize) : '—'} из 500 МБ`;
   if (id === 'contact') return contact ? L.formatPhone(contact) : 'не указан — мастерам некуда писать';
+  if (id === 'push') {
+    const n = pushInfo ? pushInfo.devices.length : 0;
+    return pushHere() ? 'включены на этом устройстве' : n ? `включены: ${n} ${L.plural(n, ['устройство', 'устройства', 'устройств'])}` : 'выключены';
+  }
   if (id === 'face') return passkeys.length ? `включён: ${passkeys.length} ${L.plural(passkeys.length, ['устройство', 'устройства', 'устройств'])}` : 'выключен';
   return '';
 }
@@ -300,7 +328,7 @@ function render(anim) {
       <button class="back-link" data-back>${icon('left')} ${backTitle}</button>
       <h2 class="page-title">${title}</h2>
       ${page === 'chat' ? chatHtml() : m ? masterHtml(m) : page === 'masters' ? mastersHtml() : page === 'subs' ? subsHtml() : page === 'chats' ? chatsHtml()
-        : page === 'server' ? serverHtml() : page === 'contact' ? contactHtml() : faceHtml()}
+        : page === 'push' ? pushHtml() : page === 'server' ? serverHtml() : page === 'contact' ? contactHtml() : faceHtml()}
     </div></div>`;
   if (page === 'chat') startChat();
   if (page === 'chats') loadChats();
@@ -744,6 +772,173 @@ function stopChat() {
   chatTimer = null;
 }
 
+// ---------- Уведомления администратору (2.5.0) ----------
+// На iPhone уведомления приходят странице, открытой с экрана «Домой» (iOS 16.4+), и разрешение
+// спрашивается только сразу по нажатию — поэтому ключ сервера страница берёт заранее (load).
+
+const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+const standalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const pushHere = () => Boolean(myEndpoint && pushInfo && pushInfo.devices.some(d => d.endpoint === myEndpoint));
+
+// Почему уведомления здесь не включить: '' — можно.
+function pushBlocker() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) return isIOS && !standalone() ? 'home' : 'browser';
+  if (Notification.permission === 'denied') return 'denied';
+  return '';
+}
+
+async function checkPush() {
+  try {
+    const reg = await swReady;
+    const sub = reg && reg.pushManager ? await reg.pushManager.getSubscription() : null;
+    myEndpoint = sub ? sub.endpoint : null;
+  } catch (e) {
+    myEndpoint = null;
+  }
+}
+
+function pushHtml() {
+  const devices = (pushInfo && pushInfo.devices) || [];
+  const blocker = pushBlocker();
+  const status = blocker === 'home'
+    ? '<p class="status warn">На iPhone уведомления приходят, когда страница открыта с экрана «Домой»: в Safari нажмите «Поделиться» → «На экран „Домой“», откройте «BB Админ» с иконки и включите уведомления здесь.</p>'
+    : blocker === 'browser' ? '<p class="status warn">Этот браузер не умеет получать уведомления.</p>'
+    : blocker === 'denied' ? '<p class="status bad">Уведомления запрещены в настройках телефона: Настройки → Уведомления → BB Админ.</p>'
+    : pushHere() ? `<p class="status ok">${icon('check')} Включены на этом устройстве</p>
+      <button class="btn secondary block" data-push="test">Прислать пробное уведомление</button>
+      <button class="btn ghost block" data-push="off">Выключить на этом устройстве</button>`
+    : '<button class="btn primary block" data-push="on">Включить уведомления на этом устройстве</button>';
+  return `
+    <section class="card page-card">
+      <p class="hint">Уведомления приходят на телефон, даже когда страница закрыта:</p>
+      <ul class="terms-list">
+        <li>мастер написал в чат;</li>
+        <li>зарегистрировался новый мастер;</li>
+        <li>мастер нажал «Я оплатил(а)» — проверьте Kaspi и отметьте оплату;</li>
+        <li>каждое утро в 9:00 — у кого подписка кончается сегодня или завтра и у кого закончилась вчера.</li>
+      </ul>
+      ${status}
+    </section>
+    ${devices.length ? `
+    <h3 class="section-title">Устройства с уведомлениями</h3>
+    <section class="card list">${devices.map(d => `
+      <div class="admin-master">
+        <div class="grow"><b>${esc(d.name || 'Устройство')}${d.endpoint === myEndpoint ? ' · это устройство' : ''}</b><small>включены ${esc(formatDate(d.created))}</small></div>
+        <button class="btn small ghost" data-push-remove="${esc(d.endpoint)}">Убрать</button>
+      </div>`).join('')}
+    </section>` : ''}`;
+}
+
+async function swRegistration() {
+  const reg = await swReady;
+  if (!reg) throw new Error('не удалось подключить уведомления — перезагрузите страницу');
+  const worker = reg.active || reg.waiting || reg.installing;
+  if (!reg.active && worker) {
+    await new Promise(resolve => worker.addEventListener('statechange', () => worker.state === 'activated' && resolve()));
+  }
+  return reg;
+}
+
+// Разрешение спрашиваем первым делом, прямо по нажатию (иначе iPhone не покажет вопрос).
+async function enablePush() {
+  if (pushBlocker()) return render();
+  let permission = 'denied';
+  try {
+    permission = await Notification.requestPermission();
+  } catch (e) { /* ниже — понятное сообщение */ }
+  if (permission !== 'granted') {
+    render();
+    return alert('Уведомления не разрешены. Их можно включить: Настройки → Уведомления → BB Админ');
+  }
+  try {
+    const reg = await swRegistration();
+    if (!pushInfo || !pushInfo.key) pushInfo = await call('GET', '/api/admin/push');
+    let sub = await reg.pushManager.getSubscription();
+    const current = sub && sub.options && sub.options.applicationServerKey;
+    if (sub && current && L.bytesToB64u(new Uint8Array(current)) !== pushInfo.key) {
+      await sub.unsubscribe(); // подписка на другой ключ сервера не подойдёт
+      sub = null;
+    }
+    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: L.b64uToBytes(pushInfo.key) });
+    pushInfo = await call('PUT', '/api/admin/push', { subscription: sub.toJSON(), name: deviceName() });
+    myEndpoint = sub.endpoint;
+    render();
+  } catch (e) {
+    alert(`Не удалось включить уведомления: ${e.message}`);
+  }
+}
+
+async function disablePush() {
+  try {
+    const reg = await swReady;
+    const sub = reg && reg.pushManager ? await reg.pushManager.getSubscription() : null;
+    if (sub) {
+      pushInfo = await call('DELETE', '/api/admin/push', { endpoint: sub.endpoint });
+      await sub.unsubscribe().catch(() => {});
+    }
+    myEndpoint = null;
+    render();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function removePushDevice(endpoint) {
+  const d = ((pushInfo && pushInfo.devices) || []).find(x => x.endpoint === endpoint);
+  if (!d || !confirm(`Не присылать уведомления на «${d.name || 'устройство'}»?`)) return;
+  try {
+    pushInfo = await call('DELETE', '/api/admin/push', { endpoint });
+    render();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function testPush() {
+  try {
+    const { sent } = await call('POST', '/api/admin/push/test', {});
+    alert(sent ? `Отправлено (устройств: ${sent}) — уведомление придёт через несколько секунд` : 'Не отправилось: служба уведомлений не приняла подписку. Выключите и включите уведомления заново');
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+// Куда вести после нажатия на уведомление.
+function openTarget({ page: to, id }) {
+  if ((to === 'chat' || to === 'master') && masters.some(m => m.id === id)) go(to, id);
+  else if (SECTIONS[to]) go(to);
+}
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', e => {
+    const msg = e.data || {};
+    if (msg.type === 'open') {
+      const url = new URL(msg.url, location.href);
+      const target = { page: url.searchParams.get('open') || '', id: url.searchParams.get('m') || '' };
+      if (code || session) openTarget(target);
+      else pendingOpen = target;
+    }
+    if (msg.type === 'push' && (code || session)) {
+      // Пришло уведомление, пока страница открыта: обновить то, что на экране.
+      if (page === 'chat') loadMessages();
+      else if (page === 'chats') loadChats();
+      else if (!page) load();
+    }
+  });
+}
+
+// Число на иконке «BB Админ» убираем, когда страницу открыли.
+const clearBadge = () => {
+  try {
+    const p = navigator.clearAppBadge && navigator.clearAppBadge();
+    if (p && p.catch) p.catch(() => {});
+  } catch (e) { /* значки не поддерживаются */ }
+};
+clearBadge();
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') clearBadge();
+});
+
 // ---------- Сервер ----------
 
 // Бесплатный тариф Cloudflare: база до 500 МБ, в сутки — 100 000 запросов к серверу, 100 000 записанных
@@ -927,8 +1122,12 @@ async function resetPassword(id) {
 }
 
 view.addEventListener('click', e => {
-  const target = e.target.closest('[data-go], [data-master], [data-back], [data-reset], [data-unkey], [data-month], [data-sub], [data-sort], [data-chat], [data-copy], [data-pay-plan], #add-face, #leave');
+  const target = e.target.closest('[data-go], [data-master], [data-back], [data-reset], [data-unkey], [data-month], [data-sub], [data-sort], [data-chat], [data-copy], [data-pay-plan], [data-push], [data-push-remove], #add-face, #leave');
   if (!target) return;
+  if (target.dataset.push === 'on') return enablePush();
+  if (target.dataset.push === 'off') return disablePush();
+  if (target.dataset.push === 'test') return testPush();
+  if (target.dataset.pushRemove) return removePushDevice(target.dataset.pushRemove);
   if (target.dataset.month) {
     const step = Number(target.dataset.month);
     if (target.dataset.kind === 'stat') statMonth = L.addMonths(statMonth, step);

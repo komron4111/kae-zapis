@@ -4,9 +4,10 @@
 // и в errors.js.
 export const API_URL = 'https://kae-zapis-api.kae-zapis.workers.dev';
 
-// Основной адрес сайта (Cloudflare Pages). На нём ссылки для клиентов — okna/?m=… и личные
-// ссылки на запись, даже если приложение открыто со старого адреса komron4111.github.io/kae-zapis/.
-export const PUBLIC_URL = 'https://nailapp.pages.dev/';
+// Основной адрес сайта (Cloudflare Pages, проект beautybook-kz, с 2.5.0). На нём ссылки для клиентов —
+// okna/?m=… и личные ссылки на запись, даже если приложение открыто со старых адресов
+// nailapp.pages.dev или komron4111.github.io/kae-zapis/ (они работают по-прежнему).
+export const PUBLIC_URL = 'https://beautybook-kz.pages.dev/';
 
 // Сайт открыт на компьютере для проверки — ссылки тогда ведут на него же.
 export const IS_LOCAL = /^(localhost|127\.0\.0\.1|\[::1\])$|\.localhost$/.test(location.hostname);

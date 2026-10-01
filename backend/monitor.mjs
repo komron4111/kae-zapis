@@ -16,6 +16,8 @@ const WRANGLER = `${process.env.HOME}/.local/node/bin/wrangler`;
 const API = 'https://kae-zapis-api.kae-zapis.workers.dev';
 const CHECKS = [
   [`${API}/api/okna?m=aray`, 'сервер (ссылка Арай)'],
+  ['https://beautybook-kz.pages.dev/', 'приложение beautybook-kz.pages.dev'],
+  ['https://beautybook-kz.pages.dev/okna/', 'страница клиентов beautybook-kz.pages.dev'],
   ['https://nailapp.pages.dev/', 'приложение nailapp.pages.dev'],
   ['https://nailapp.pages.dev/okna/', 'страница клиентов nailapp.pages.dev'],
   ['https://komron4111.github.io/kae-zapis/okna/', 'страница клиентов на прежнем адресе'],

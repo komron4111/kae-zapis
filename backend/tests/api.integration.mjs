@@ -8,6 +8,7 @@
 //   ~/.local/node/bin/node ~/.local/node/bin/wrangler d1 execute kae-zapis --local --command "DELETE FROM attempts"
 
 import fs from 'node:fs';
+import http from 'node:http';
 import * as L from '../../frontend/logic.js';
 import * as T from './soft-authenticator.mjs';
 
@@ -22,6 +23,51 @@ const check = (name, ok, extra = '') => {
   if (!ok) failed++;
 };
 const newKey = () => L.bytesToB64u(crypto.getRandomValues(new Uint8Array(32)));
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+// «Служба уведомлений» для проверки уведомлений администратору: сервер шлёт сюда зашифрованные
+// уведомления (Web Push), тест расшифровывает их по RFC 8291 и смотрит текст.
+const pushed = [];
+const pushServer = http.createServer((req, res) => {
+  const chunks = [];
+  req.on('data', c => chunks.push(c));
+  req.on('end', () => {
+    pushed.push({ path: req.url, headers: req.headers, body: Buffer.concat(chunks) });
+    res.writeHead(201);
+    res.end();
+  });
+});
+await new Promise(resolve => pushServer.listen(0, '::', resolve));
+const PUSH_PORT = pushServer.address().port;
+
+async function pushKeys() {
+  const pair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+  return { privateKey: pair.privateKey, publicRaw: new Uint8Array(await crypto.subtle.exportKey('raw', pair.publicKey)), auth: crypto.getRandomValues(new Uint8Array(16)) };
+}
+
+async function decryptPush(body, ua) {
+  const salt = body.subarray(0, 16), idlen = body[20];
+  const asPublic = body.subarray(21, 21 + idlen), ciphertext = body.subarray(21 + idlen);
+  const asKey = await crypto.subtle.importKey('raw', asPublic, { name: 'ECDH', namedCurve: 'P-256' }, false, []);
+  const ecdh = new Uint8Array(await crypto.subtle.deriveBits({ name: 'ECDH', public: asKey }, ua.privateKey, 256));
+  const hkdf = async (salt, ikm, info, length) => new Uint8Array(await crypto.subtle.deriveBits(
+    { name: 'HKDF', hash: 'SHA-256', salt, info }, await crypto.subtle.importKey('raw', ikm, 'HKDF', false, ['deriveBits']), length * 8));
+  const text = s => new TextEncoder().encode(s);
+  const ikm = await hkdf(ua.auth, ecdh, Buffer.concat([text('WebPush: info\0'), ua.publicRaw, asPublic]), 32);
+  const cek = await hkdf(salt, ikm, text('Content-Encoding: aes128gcm\0'), 16);
+  const nonce = await hkdf(salt, ikm, text('Content-Encoding: nonce\0'), 12);
+  const aes = await crypto.subtle.importKey('raw', cek, 'AES-GCM', false, ['decrypt']);
+  const plain = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: nonce }, aes, ciphertext));
+  let end = plain.length - 1;
+  while (end > 0 && plain[end] === 0) end--; // после текста — 0x02 и нули
+  return JSON.parse(new TextDecoder().decode(plain.subarray(0, end)));
+}
+
+// Ждём n-е уведомление (сервер отправляет его уже после ответа — ctx.waitUntil).
+async function nthPush(n) {
+  for (let i = 0; i < 60 && pushed.length < n; i++) await sleep(100);
+  return pushed[n - 1] || null;
+}
 async function call(method, path, { body, key, admin } = {}) {
   const headers = {};
   if (key) headers.Authorization = `Bearer ${key}`;
@@ -267,6 +313,64 @@ const reqStat = statsA.stats[d1.slice(0, 7)] || {};
 check('заявки по ссылке считает сервер: отправлена и принята', reqStat.sent >= 1 && reqStat.confirmed >= 1, JSON.stringify(reqStat));
 r = await call('PUT', '/api/stats', { body: { months: {}, clients: 1 } });
 check('статистика без ключа устройства — 401', r.status === 401);
+
+// ---------- Уведомления администратору (2.5.0) ----------
+const ua = await pushKeys();
+const adminSub = { endpoint: `http://localhost:${PUSH_PORT}/admin-${RUN}`, keys: { p256dh: L.bytesToB64u(ua.publicRaw), auth: L.bytesToB64u(ua.auth) } };
+r = await call('GET', '/api/admin/push', { admin: CODE });
+check('ключ сервера для уведомлений администратору', r.status === 200 && typeof r.data.key === 'string' && r.data.key.length > 80);
+for (const d of (r.data.devices || []).filter(d => d.endpoint.startsWith('http://localhost'))) {
+  await call('DELETE', '/api/admin/push', { admin: CODE, body: { endpoint: d.endpoint } }); // подписки прошлых запусков
+}
+r = await call('PUT', '/api/admin/push', { body: { subscription: adminSub, name: 'Тестовый телефон' } });
+check('без кода администратора уведомления не включить', r.status === 403 || r.status === 401, String(r.status));
+r = await call('PUT', '/api/admin/push', { admin: CODE, body: { subscription: { endpoint: 'javascript:alert(1)', keys: { p256dh: 'x', auth: 'y' } } } });
+check('чужой адрес подписки — 400', r.status === 400, r.data.error);
+r = await call('PUT', '/api/admin/push', { admin: CODE, body: { subscription: adminSub, name: 'Тестовый телефон' } });
+check('администратор включил уведомления', r.status === 200 && r.data.devices.some(d => d.endpoint === adminSub.endpoint && d.name === 'Тестовый телефон'));
+r = await call('POST', '/api/admin/push/test', { admin: CODE });
+let got = await nthPush(1);
+let note = got && await decryptPush(got.body, ua);
+check('пробное уведомление дошло и расшифровывается', r.data.sent === 1 && note && note.title === 'Уведомления работают', JSON.stringify(note));
+check('уведомление по правилам Web Push (aes128gcm, VAPID)', got && got.headers['content-encoding'] === 'aes128gcm' && /^vapid t=/.test(got.headers.authorization || '') && Boolean(got.headers.ttl));
+r = await call('POST', '/api/chat', { key: A.key, body: { text: 'Проверка уведомления администратору' } });
+note = (got = await nthPush(2)) && await decryptPush(got.body, ua);
+check('сообщение мастера — уведомление администратору', r.status === 201 && note && note.kind === 'chat' && note.title === 'Сообщение: Айгерим'
+  && note.body === 'Проверка уведомления администратору' && note.url === `./?open=chat&m=${aId}`, JSON.stringify(note));
+r = await call('POST', '/api/account/paid', { key: A.key });
+note = (got = await nthPush(3)) && await decryptPush(got.body, ua);
+check('«Я оплатил(а)» — уведомление администратору с номером Kaspi', r.data.notified === true && note && note.kind === 'paid'
+  && note.body.includes(L.formatPhone('+7 700 999 88 77')) && note.url === `./?open=master&m=${aId}`, JSON.stringify(note));
+await call('POST', '/api/account/paid', { key: A.key });
+await call('POST', '/api/account/paid', { key: A.key });
+r = await call('POST', '/api/account/paid', { key: A.key });
+check('«Я оплатил(а)» — не чаще 3 раз в час', r.status === 200 && r.data.notified === false);
+await nthPush(5);
+const C = { name: 'Тест Чингиз', phone: phone('03'), key: newKey() };
+C.secret = await L.passwordSecret(C.phone, 'пароль-Ч3');
+r = await call('POST', '/api/register', { body: { name: C.name, phone: C.phone, secret: C.secret, key: C.key, specialty: 'Барбер', kaspi: C.phone } });
+note = (got = await nthPush(6)) && await decryptPush(got.body, ua);
+check('новый мастер — уведомление администратору', r.status === 201 && note && note.kind === 'master' && note.title === 'Новый мастер'
+  && note.body.startsWith('Тест Чингиз — Барбер') && /^\.\/\?open=master&m=[\w-]+$/.test(note.url), JSON.stringify(note));
+const tomorrowKz = L.addDays(todayKz, 1);
+await subCall(aId, { action: 'until', value: tomorrowKz });
+const before = pushed.length;
+const cron = await fetch(`${API}/__scheduled?cron=${encodeURIComponent('0 4 * * *')}`);
+if (cron.status === 404) {
+  check('утренняя сводка — пропущено: wrangler dev запущен без --test-scheduled', true);
+} else {
+  note = (got = await nthPush(before + 1)) && await decryptPush(got.body, ua);
+  check('утренняя сводка: у кого подписка кончается завтра', note && note.kind === 'subs' && note.body.includes('Завтра заканчивается') && note.body.includes('Айгерим')
+    && note.url === './?open=subs', JSON.stringify(note));
+}
+await subCall(aId, { action: 'until', value: L.subscriptionEnd(todayKz) });
+r = await call('DELETE', '/api/admin/push', { admin: CODE, body: { endpoint: adminSub.endpoint } });
+check('уведомления администратору выключены', r.status === 200 && !r.data.devices.some(d => d.endpoint === adminSub.endpoint));
+const count = pushed.length;
+await call('POST', '/api/chat', { key: A.key, body: { text: 'после выключения' } });
+await sleep(1500);
+check('после выключения уведомления не приходят', pushed.length === count);
+pushServer.close();
 
 // ---------- Вход администратора по Face ID (программный «телефон») ----------
 const ORIGIN = 'http://localhost:8765';

@@ -13,7 +13,7 @@ import * as L from '../../frontend/logic.js';
 import { generateVapidKeys, sendPush } from './push.js';
 import * as W from './webauthn.js';
 
-const SITE = 'https://nailapp.pages.dev/'; // адрес сайта для подписи уведомлений (VAPID)
+const SITE = 'https://beautybook-kz.pages.dev/'; // адрес сайта для подписи уведомлений (VAPID)
 // Пока у прежнего мастера нет расписания в базе, свободное время берём из прежнего места.
 const GITHUB_OKNA = 'https://raw.githubusercontent.com/komron4111/kae-zapis-okna/main/okna.json';
 const LEGACY = 'legacy';
@@ -63,6 +63,11 @@ export default {
     for (const [name, value] of Object.entries(CORS)) response.headers.set(name, value);
     return response;
   },
+
+  // Каждый день в 9:00 по Алматы (cron в wrangler.toml): у кого из мастеров подписка кончается.
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(subscriptionDigest(env).catch(e => logError(env, 'server', 'scheduled', (e && e.message) || String(e))));
+  },
 };
 
 async function route(request, env, ctx) {
@@ -76,7 +81,7 @@ async function route(request, env, ctx) {
   if (path === '/api/okna' && method === 'GET') return getOkna(env, slug);
   if (path === '/api/requests' && method === 'POST') return createRequest(request, env, ctx, slug);
   if ((m = path.match(/^\/api\/bookings\/([\w-]{16,64})$/)) && method === 'GET') return getBooking(env, m[1]);
-  if (path === '/api/register' && method === 'POST') return register(request, env);
+  if (path === '/api/register' && method === 'POST') return register(request, env, ctx);
   if (path === '/api/login' && method === 'POST') return login(request, env);
   if (path === '/api/contact' && method === 'GET') return getContact(env);
   if (path === '/api/pair' && method === 'POST') return pair(request, env); // вход по коду, как до 2.0.0
@@ -98,6 +103,10 @@ async function route(request, env, ctx) {
     if (path === '/api/admin/chats' && method === 'GET') return listChats(env);
     if ((m = path.match(/^\/api\/admin\/chats\/([\w-]+)$/)) && method === 'GET') return getAdminChat(env, m[1]);
     if ((m = path.match(/^\/api\/admin\/chats\/([\w-]+)$/)) && method === 'POST') return postAdminChat(request, env, ctx, m[1]);
+    if (path === '/api/admin/push' && method === 'GET') return listAdminPush(env);
+    if (path === '/api/admin/push' && method === 'PUT') return saveAdminPush(request, env);
+    if (path === '/api/admin/push' && method === 'DELETE') return deleteAdminPush(request, env);
+    if (path === '/api/admin/push/test' && method === 'POST') return testAdminPush(env);
     throw new HttpError(404, 'Не найдено');
   }
 
@@ -109,7 +118,8 @@ async function route(request, env, ctx) {
   if (path === '/api/account/session' && method === 'DELETE') return logout(env, me);
   if (path === '/api/account/profile' && method === 'PUT') return saveProfile(request, env, me);
   if (path === '/api/chat' && method === 'GET') return getChat(env, me); // чат — и после окончания подписки
-  if (path === '/api/chat' && method === 'POST') return postChat(request, env, me);
+  if (path === '/api/chat' && method === 'POST') return postChat(request, env, ctx, me);
+  if (path === '/api/account/paid' && method === 'POST') return reportPaid(env, ctx, me); // «Я оплатил(а)» — администратору
   // Подписка закончилась: данные мастера не принимаем и не отдаём, пока администратор её не продлит.
   if (!me.active) throw new HttpError(402, 'Подписка закончилась — продлите её у администратора');
   if (path === '/api/push' && method === 'PUT') return savePush(request, env, me);
@@ -332,7 +342,7 @@ async function startSession(env, masterId, key, name) {
   ]);
 }
 
-async function register(request, env) {
+async function register(request, env, ctx) {
   const who = await visitor(request);
   if (await tooMany(env, 'register', who, 5, HOUR)) throw new HttpError(429, 'Слишком много регистраций подряд. Попробуйте через час');
   const body = await readJson(request, 2048);
@@ -362,6 +372,8 @@ async function register(request, env) {
   await env.DB.prepare("INSERT INTO subscriptions (master_id, start_date, end_date, kind, created) VALUES (?, ?, ?, 'trial', ?)")
     .bind(id, first.start, first.end, now).run();
   await startSession(env, id, key, body.device);
+  ctx.waitUntil(pushToAdmin(env, { title: 'Новый мастер', body: `${name} — ${profile.specialty}, ${L.formatPhone(phone)}`, tag: `master-${id}`, url: `./?open=master&m=${id}`, kind: 'master' })
+    .catch(e => console.error('push admin', e)));
   return json({ ok: true, account: accountJson(master, [{ from: first.start, to: first.end, kind: 'trial', marked: now, plan: '', amount: 0 }]), pushKey: (await vapidKeys(env)).publicKey }, 201);
 }
 
@@ -503,7 +515,7 @@ async function authAdmin(request, env) {
 // администратора открывается по Face ID или код-паролю телефона. Сеанс — 12 часов, только в памяти страницы.
 
 // Где открыта страница администратора (заголовок Origin). Ключ Face ID привязан к этому адресу.
-const ADMIN_ORIGINS = ['https://nailapp.pages.dev', 'https://komron4111.github.io'];
+const ADMIN_ORIGINS = ['https://beautybook-kz.pages.dev', 'https://nailapp.pages.dev', 'https://komron4111.github.io'];
 const CHALLENGE_TTL = 5 * 60e3;
 const ADMIN_SESSION = 12 * HOUR;
 
@@ -754,12 +766,28 @@ async function getChat(env, me) {
   return json({ messages: await chatMessages(env, me.masterId) });
 }
 
-async function postChat(request, env, me) {
+async function postChat(request, env, ctx, me) {
   if (await tooMany(env, 'chat', me.masterId, 60, HOUR)) throw new HttpError(429, 'Слишком много сообщений подряд. Попробуйте позже');
   const text = readMessage(await readJson(request, 8192));
   await remember(env, 'chat', me.masterId);
   await env.DB.prepare("INSERT INTO messages (master_id, author, text, created) VALUES (?, 'master', ?, ?)").bind(me.masterId, text, new Date().toISOString()).run();
+  const master = await env.DB.prepare('SELECT name FROM masters WHERE id = ?').bind(me.masterId).first();
+  ctx.waitUntil(pushToAdmin(env, { title: `Сообщение: ${(master && master.name) || 'мастер'}`, body: text.slice(0, 140), tag: `chat-${me.masterId}`,
+    url: `./?open=chat&m=${me.masterId}`, kind: 'chat' }).catch(e => console.error('push admin', e)));
   return json({ messages: await chatMessages(env, me.masterId) }, 201);
+}
+
+// «Я оплатил(а) — проверить» в окне «Продлите подписку»: администратору — уведомление, чтобы он
+// проверил Kaspi и отметил оплату. Не чаще 3 раз в час от мастера.
+async function reportPaid(env, ctx, me) {
+  if (await tooMany(env, 'paid', me.masterId, 3, HOUR)) return json({ ok: true, notified: false });
+  await remember(env, 'paid', me.masterId);
+  const master = await env.DB.prepare('SELECT name, phone, kaspi_phone FROM masters WHERE id = ?').bind(me.masterId).first();
+  const name = (master && master.name) || 'Мастер';
+  const kaspi = master && (master.kaspi_phone || master.phone);
+  ctx.waitUntil(pushToAdmin(env, { title: 'Мастер сообщает об оплате', body: `${name}${kaspi ? ` (Kaspi ${L.formatPhone(kaspi)})` : ''} нажал(а) «Я оплатил(а)». Проверьте Kaspi и отметьте оплату.`,
+    tag: `paid-${me.masterId}`, url: `./?open=master&m=${me.masterId}`, kind: 'paid' }).catch(e => console.error('push admin', e)));
+  return json({ ok: true, notified: true });
 }
 
 // Администратор: все переписки — последнее сообщение и сколько непрочитанных от мастера.
@@ -953,15 +981,90 @@ async function getBooking(env, token) {
 
 // ---------- Для телефона мастера ----------
 
-async function savePush(request, env, me) {
-  const sub = await readJson(request, 4096);
-  // http://localhost — только для проверки на компьютере разработчика.
-  if (!/^(https:\/\/|http:\/\/localhost[:/])/.test(sub.endpoint || '') || !sub.keys || !sub.keys.p256dh || !sub.keys.auth) {
+// Подписка на уведомления из браузера: адрес службы уведомлений (https) и два ключа.
+// http://localhost — только для проверки на компьютере разработчика.
+function readPushSubscription(sub) {
+  if (!sub || typeof sub !== 'object' || !/^(https:\/\/|http:\/\/localhost[:/])/.test(sub.endpoint || '') || String(sub.endpoint).length > 1000
+    || !sub.keys || typeof sub.keys.p256dh !== 'string' || typeof sub.keys.auth !== 'string') {
     throw new HttpError(400, 'Неверная подписка на уведомления');
   }
-  const clean = { endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth } };
+  return { endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh.slice(0, 200), auth: sub.keys.auth.slice(0, 100) } };
+}
+
+async function savePush(request, env, me) {
+  const clean = readPushSubscription(await readJson(request, 4096));
   await env.DB.prepare('UPDATE devices SET push = ? WHERE id = ?').bind(JSON.stringify(clean), me.deviceId).run();
   return json({ ok: true });
+}
+
+// ---------- Уведомления администратору (2.5.0) ----------
+// Сообщения мастеров, новые мастера, «Я оплатил(а)» и утренняя сводка по подпискам —
+// на все устройства, где администратор включил уведомления (раздел «Уведомления»).
+
+async function listAdminPush(env) {
+  const { results } = await env.DB.prepare('SELECT endpoint, name, created FROM admin_push ORDER BY created').all();
+  return json({ key: (await vapidKeys(env)).publicKey, devices: results });
+}
+
+async function saveAdminPush(request, env) {
+  const body = await readJson(request, 4096);
+  const sub = readPushSubscription(body.subscription);
+  const name = String(body.name || '').trim().slice(0, 60);
+  await env.DB.prepare(`INSERT INTO admin_push (endpoint, value, name, created) VALUES (?, ?, ?, ?)
+    ON CONFLICT (endpoint) DO UPDATE SET value = excluded.value, name = excluded.name`)
+    .bind(sub.endpoint, JSON.stringify(sub), name, new Date().toISOString()).run();
+  return listAdminPush(env);
+}
+
+async function deleteAdminPush(request, env) {
+  const { endpoint } = await readJson(request, 4096);
+  await env.DB.prepare('DELETE FROM admin_push WHERE endpoint = ?').bind(String(endpoint || '')).run();
+  return listAdminPush(env);
+}
+
+async function testAdminPush(env) {
+  const sent = await pushToAdmin(env, { title: 'Уведомления работают', body: 'Так будут приходить сообщения мастеров, новые мастера и подписки, которые заканчиваются.', tag: 'test', url: './', kind: 'test' });
+  return json({ ok: true, sent });
+}
+
+// Отправить всем устройствам администратора; подписки, которые служба уведомлений больше
+// не знает (404/410), удаляем. Возвращает, на сколько устройств ушло.
+async function pushToAdmin(env, message) {
+  const { results } = await env.DB.prepare('SELECT endpoint, value FROM admin_push').all();
+  if (!results.length) return 0;
+  const vapid = await vapidKeys(env);
+  const payload = JSON.stringify(message);
+  let sent = 0;
+  for (const row of results) {
+    try {
+      const res = await sendPush(JSON.parse(row.value), payload, vapid, SITE);
+      if (res.status === 404 || res.status === 410) {
+        await env.DB.prepare('DELETE FROM admin_push WHERE endpoint = ?').bind(row.endpoint).run();
+      } else if (!res.ok) {
+        console.error('push admin', res.status, await res.text());
+      } else {
+        sent++;
+      }
+    } catch (e) {
+      console.error('push admin', e && e.stack ? e.stack : e);
+    }
+  }
+  return sent;
+}
+
+// Утренняя сводка (cron): у кого сегодня последний день подписки, у кого — завтра, у кого закончилась вчера.
+async function subscriptionDigest(env) {
+  const today = almatyToday(), tomorrow = L.addDays(today, 1), yesterday = L.addDays(today, -1);
+  const { results } = await env.DB.prepare(`SELECT id, name, paid_until FROM masters
+    WHERE unlimited = 0 AND pass_hash <> '' AND paid_until IN (?, ?, ?) ORDER BY name`).bind(yesterday, today, tomorrow).all();
+  if (!results.length) return 0;
+  const names = day => results.filter(r => r.paid_until === day).map(r => r.name || 'без имени').join(', ');
+  const body = [
+    names(today) && `Сегодня последний день: ${names(today)}.`,
+    names(tomorrow) && `Завтра заканчивается: ${names(tomorrow)}.`,
+    names(yesterday) && `Закончилась вчера, доступ на паузе: ${names(yesterday)}.`,
+  ].filter(Boolean).join(' ');
+  return pushToAdmin(env, { title: 'Подписки мастеров', body, tag: 'subs', url: './?open=subs', kind: 'subs' });
 }
 
 // Расписание мастера для клиентов. Имя из него — и имя мастера в аккаунте.

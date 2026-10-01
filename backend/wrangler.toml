@@ -1,7 +1,11 @@
-# Сервер Nailapp. Разворачивается командой: npx wrangler deploy (из папки backend).
+# Сервер Beautybook (до 2.4.0 — Nailapp). Разворачивается командой: npx wrangler deploy (из папки backend).
 name = "kae-zapis-api"
 main = "src/index.js"
 compatibility_date = "2026-09-01"
+
+# Каждый день в 04:00 UTC = 09:00 по Алматы — сводка по подпискам администратору (scheduled в src/index.js).
+[triggers]
+crons = ["0 4 * * *"]
 
 [observability]
 enabled = true

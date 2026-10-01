@@ -559,6 +559,28 @@ test('копия: закрытое время сохраняется, с нев�
   eq(copy.blocks, CLOSED);
 });
 
+// ---------- Прайс по направлению (2.5.0) ----------
+
+test('прайс по направлению: у каждого направления — свои услуги с длительностью', () => {
+  eq(Object.keys(L.SPECIALTY_SERVICES), L.SPECIALTIES);
+  for (const [key, list] of Object.entries(L.SPECIALTY_SERVICES)) {
+    eq([key, list.length >= 7, new Set(list.map(([name]) => name)).size === list.length], [key, true, true]);
+    eq([key, list.every(([, minutes]) => L.toDuration(minutes) === minutes)], [key, true]);
+  }
+  eq(L.servicesForSpecialty('Барбер')[0], ['Мужская стрижка', 60]);
+  eq(L.servicesForSpecialty('маникюр и педикюр').length, 10);
+});
+
+test('прайс по направлению: своё направление — по ключевым словам, незнакомое — пусто', () => {
+  const first = text => (L.servicesForSpecialty(text)[0] || [''])[0];
+  eq(['Барбер, мужские стрижки', 'Ногтевой сервис', 'Перманентный макияж бровей', 'Лэшмейкер', 'Визажист-стилист', 'Колорист'].map(first),
+    ['Мужская стрижка', 'Маникюр без покрытия', 'Консультация и эскиз', 'Коррекция бровей', 'Дневной макияж', 'Женская стрижка']);
+  eq([L.servicesForSpecialty('Флорист'), L.servicesForSpecialty(''), L.servicesForSpecialty('<b></b>')], [[], [], []]);
+  const copy = L.servicesForSpecialty('Массаж');
+  copy[0][0] = 'изменено';
+  eq(L.SPECIALTY_SERVICES['Массаж'][0][0], 'Классический массаж всего тела'); // список не портится
+});
+
 // ---------- Карточка клиента (1.10.0) ----------
 
 test('Instagram: ник из @ника и из ссылки на профиль', () => {

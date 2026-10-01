@@ -8,7 +8,7 @@ import { API_URL, PUBLIC_URL, IS_LOCAL } from './config.js';
 import { phoneMask } from './phone-input.js';
 
 const APP_NAME = 'Beautybook';
-const APP_VERSION = '2.4.1';
+const APP_VERSION = '2.5.0';
 
 phoneMask();
 
@@ -2309,6 +2309,7 @@ function renderAuth(screen) {
         <label>Ваше имя<input name="name" autocomplete="name" autocapitalize="words" enterkeyhint="next" placeholder="Так вас увидят клиенты"></label>
         ${phoneField(ui.authPhone)}
         ${specialtyField(st.specialty)}
+        <p class="hint">Прайс заполнится услугами вашего направления — останется вписать цены.</p>
         ${kaspiField(st.kaspi || ui.authPhone)}
         ${instagramField(st.instagram)}
         ${placeFields}
@@ -2382,7 +2383,7 @@ function renderAuth(screen) {
   } else {
     html = `
       <section class="auth-hero">
-        <img src="icons/icon-192.png" alt="" width="112" height="112">
+        <img src="icons/bb-192.png" alt="" width="112" height="112">
         <h2>Beautybook</h2>
         <p>Записи, клиенты и финансы для мастеров красоты. Клиенты сами записываются по вашей ссылке.</p>
       </section>
@@ -2480,9 +2481,10 @@ async function submitAuth(form) {
     ui.authPhone = '';
     if (kind === 'register') {
       data.settings = { ...settings(), clientName: name, address, gis, whatsapp: settings().whatsapp || phone, specialty, kaspi, instagram };
+      const seeded = seedPrices(specialty);
       await save();
       render();
-      toast('Аккаунт создан');
+      toast(seeded ? 'Аккаунт создан. В прайсе — услуги вашего направления, впишите цены' : 'Аккаунт создан');
       scheduleSync(0);
       return;
     }
@@ -2493,6 +2495,16 @@ async function submitAuth(form) {
     button.disabled = false;
     button.textContent = label;
   }
+}
+
+// Прайс по направлению (с 2.5.0): пустой прайс заполняется услугами направления мастера,
+// цены — 0, мастер впишет их сам. Прайс, в котором уже есть услуги, не трогаем.
+function seedPrices(specialty) {
+  if (data.prices.length) return false;
+  const list = L.servicesForSpecialty(specialty);
+  if (!list.length) return false;
+  data.prices = list.map(([name, duration]) => ({ id: uid(), name, price: 0, duration }));
+  return true;
 }
 
 // Анкета (направление, номер Kaspi, Instagram): «Дополните анкету» и «Аккаунт».
@@ -2511,9 +2523,10 @@ async function saveProfileForm(form, { specialty, kaspi, instagram, terms }) {
     cloud.account = account;
     await dbSet('cloud', cloud).catch(() => {});
     data.settings = { ...settings(), specialty, kaspi, instagram };
+    const seeded = seedPrices(specialty);
     await save();
     render();
-    toast('Анкета сохранена');
+    toast(seeded ? 'Анкета сохранена. В прайс добавлены услуги вашего направления — впишите цены' : 'Анкета сохранена');
     scheduleSync(0);
   } catch (e) {
     authError(e.message === 'нет связи с облаком' ? 'Нет связи. Проверьте интернет и попробуйте ещё раз' : e.message);
@@ -3144,7 +3157,9 @@ const actions = {
       toast('Подписка продлена — приложение снова работает');
       scheduleSync(0);
     } else {
-      toast('Оплата пока не отмечена — напишите администратору');
+      // Администратору — уведомление: мастер говорит, что оплатил (с 2.5.0).
+      api('POST', '/api/account/paid').catch(() => {});
+      toast('Оплата пока не отмечена — мы напомнили администратору. Когда он отметит оплату, приложение откроется');
     }
   },
   'renew': () => renewSubscription(),
