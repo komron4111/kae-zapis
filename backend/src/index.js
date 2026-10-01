@@ -684,13 +684,18 @@ async function listMasters(env) {
 
 // Нагрузка за сутки (запросы, записанные и прочитанные строки) — Worker сам её не знает. Её записывает
 // проверка сервера (backend/monitor.mjs, по расписанию) в config.usage; здесь — только числа и время.
+// С 2.9.0 сервер свой: проверка присылает диск и память ({used, total} в байтах) — по ним «Сервер» у администратора.
 async function loadUsage(env) {
   const row = await env.DB.prepare("SELECT value FROM config WHERE key = 'usage'").first();
   if (!row) return null;
   try {
     const u = JSON.parse(row.value);
     const n = v => Math.max(0, Math.round(Number(v) || 0));
-    return { at: String(u.at || ''), size: n(u.size), requests: n(u.requests), rowsWritten: n(u.rowsWritten), rowsRead: n(u.rowsRead) };
+    const part = p => (p && n(p.total) > 0 ? { used: Math.min(n(p.used), n(p.total)), total: n(p.total) } : null);
+    const out = { at: String(u.at || ''), size: n(u.size), requests: n(u.requests), rowsWritten: n(u.rowsWritten), rowsRead: n(u.rowsRead) };
+    const disk = part(u.disk), memory = part(u.memory);
+    if (disk && memory) Object.assign(out, { disk, memory });
+    return out;
   } catch (e) {
     return null;
   }
