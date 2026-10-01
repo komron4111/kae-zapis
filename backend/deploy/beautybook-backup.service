@@ -1,0 +1,6 @@
+[Unit]
+Description=Beautybook: копия базы
+
+[Service]
+Type=oneshot
+ExecStart=/opt/beautybook/backend/deploy/backup.sh

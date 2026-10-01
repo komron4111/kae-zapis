@@ -1,6 +1,6 @@
 # Сервер (backend)
 
-Сервер Beautybook (до 2.4.0 — Nailapp) на Cloudflare Workers с базой D1. Он:
+Сервер Beautybook (до 2.4.0 — Nailapp). С 2.9.0 он работает на своём сервере в Казахстане (vpsza500.kz, Алматы, Ubuntu 24.04): Node.js 24 и база SQLite, адрес https://beautybook.kz/api/…. Код тот же, что был на Cloudflare Workers с базой D1 (`src/index.js`), — его запускает прослойка `node/`. Прежний адрес https://kae-zapis-api.kae-zapis.workers.dev остался: он только пересылает запросы на свой сервер (`proxy/`), чтобы работали приложения, установленные со старых адресов. Сервер:
 - хранит аккаунты мастеров: регистрация с анкетой (направление, номер Kaspi), вход, смена и сброс пароля;
 - ведёт подписки (7 бесплатных дней, тариф «Про» на месяц или год) и чат мастера с администратором;
 - присылает уведомления администратору (с 2.5.0): сообщения мастеров, новые мастера, «Я оплатил(а)», утренняя сводка по подпискам;
@@ -54,6 +54,7 @@
   - `PUT /api/admin/contact` — свой WhatsApp;
   - `POST /api/admin/masters/:id/subscription` — подписка мастера: `{action: 'extend', plan: 'month' | 'year'}` (оплата получена: +месяц или +12 месяцев, в период пишутся `plan` и сумма `amount` по `L.TARIFF`), `'undo'` (отменить последнюю оплату), `'unlimited'` с `value` true/false, `'until'` с `value` YYYY-MM-DD;
   - чат: `GET /api/admin/chats` — переписки (последнее сообщение, непрочитанные), `GET /api/admin/chats/:id` — сообщения (сообщения мастера становятся прочитанными), `POST /api/admin/chats/:id` `{text}` — ответ; мастеру уходит уведомление (`kind: 'chat'`, открывает чат);
+  - рассылка мастерам (2.9.0): `POST /api/admin/broadcast` `{kind: 'update'}` — «Вышло обновление Beautybook» всем мастерам с уведомлениями, на языке их телефона (ответ `{masters}`); на своём сервере — и по местному ключу `Authorization: Local <LOCAL_KEY>` только с 127.0.0.1 (`deploy/notify-update.sh`);
   - уведомления администратору: `GET /api/admin/push` — ключ сервера (`key`) и устройства (`devices`), `PUT /api/admin/push` `{subscription, name, lang}` — включить на устройстве, `DELETE /api/admin/push` `{endpoint}` — выключить, `POST /api/admin/push/test` — пробное (`sent` — на сколько устройств ушло);
   - вход по Face ID (WebAuthn): `GET /api/admin/passkeys`, `POST /api/admin/passkey/options` и `POST /api/admin/passkeys` — включить на устройстве, `DELETE /api/admin/passkeys/:id` — убрать. Без кода: `POST /api/admin/passkey/login-options` и `POST /api/admin/passkey/login` → сеанс на 12 часов (`Authorization: Session <сеанс>` вместо кода).
 
@@ -85,20 +86,36 @@
 - Данные прежнего мастера (до 2.0.0) принадлежат аккаунту `legacy` со ссылкой `aray`. Миграция `0004_masters.sql` создала его и привязала к нему всё, что было в базе.
 - Расписание мастера проходит через `L.cleanSchedule` при сохранении и при выдаче клиентам: даты, время и числа — строго своего вида, строки обрезаны, лишние поля отброшены. Иначе мастер мог бы вставить в свою страницу чужой код.
 
+## Свой сервер (с 2.9.0)
+
+| Где | Что |
+|---|---|
+| `node/server.mjs` | Запуск `src/index.js` на Node.js: http на 127.0.0.1:8787 (снаружи — через Caddy), расписание (каждые 5 минут — напоминания мастерам, в 04:00 UTC — сводка администратору), адрес посетителя для лимитов — от Caddy или от прежнего адреса на Cloudflare (с общим ключом) |
+| `node/d1.mjs` | База SQLite с тем же видом, что у D1: `prepare(sql).bind(...).first/all/run`, `batch` — одной транзакцией |
+| `node/migrate.mjs` | Миграции из `migrations/` по таблице `d1_migrations` (той же, что вёл wrangler) |
+| `deploy/install.sh` | Установка на чистую Ubuntu 24.04: обновления, Node.js 24, Caddy (HTTPS сам), служба, ночные копии, файрвол, вход по SSH только по ключу |
+| `deploy/deploy.sh` | Выложить новую версию с компьютера: код, сайт, миграции, перезапуск |
+| `deploy/move-data.sh` | Перенести базу с Cloudflare D1 (01.10.2026 так и перенесли) |
+| `deploy/set-code.sh` | Код администратора — вводит владелец, на экране не виден |
+| `deploy/notify-update.sh` | Уведомление всем мастерам «Вышло обновление» |
+| `proxy/` | Прежний адрес на Cloudflare: только пересылка на свой сервер |
+
+На сервере: код и сайт — `/opt/beautybook` (сайт отдаёт Caddy из `/opt/beautybook/frontend`), база — `/var/lib/beautybook/beautybook.db`, настройки — `/etc/beautybook/beautybook.env`, секреты (код администратора, ключи пересылки и рассылки) — `/etc/beautybook/secrets.env`, копии базы — `/var/backups/beautybook` (каждую ночь в 03:30, 14 дней). Службы: `beautybook`, `caddy`, таймер `beautybook-backup.timer`. Вход — `ssh beautybook` (ключ `~/.ssh/nailapp_server`, хост в `~/.ssh/config`); вход по паролю выключен.
+
 ## Проверка «всё ли в порядке»
 
-`monitor.mjs` читает: открываются ли сервер и сайт, нагрузка на базу против лимитов бесплатного тарифа (предупреждение с 50%, тревога с 80%), мастера, фото, новые ошибки в журнале. Пишет в базу одно — снимок нагрузки за сутки в `config.usage` (`at`, `size`, `requests`, `rowsWritten`, `rowsRead`): его показывают шкалы в разделе «Сервер» у администратора (сам Worker своих суточных цифр не знает). Запуск из папки `backend`: `~/.local/node/bin/node monitor.mjs`. В конце печатает «ИТОГ: OK | WARN | ALERT» и текст уведомления, если есть о чём сообщить (одно и то же — не чаще раза в сутки). История проверок — `../.claude/monitor-log.md` (в git не попадает). Три раза в день его запускает задача Claude «Nailapp: проверка сервера и ссылок» и при проблеме присылает уведомление (текст начинается с «Beautybook:»).
+`monitor.mjs` (с 2.9.0 — для своего сервера, по ssh) читает: открываются ли сервер, прежний адрес с пересылкой и сайт на всех адресах, работают ли службы, сколько занято диска и памяти (предупреждение с 60%, тревога с 80%), когда была последняя ночная копия базы, мастера, фото, новые ошибки в журнале. Пишет в базу одно — снимок состояния сервера в `config.usage` (`at`, `size`, `disk`, `memory`, `load`, `backupAt`): его показывают шкалы в разделе «Сервер» у администратора. Запуск из папки `backend`: `~/.local/node/bin/node monitor.mjs`. В конце печатает «ИТОГ: OK | WARN | ALERT» и текст уведомления, если есть о чём сообщить (одно и то же — не чаще раза в сутки). История проверок — `../.claude/monitor-log.md` (в git не попадает). Три раза в день его запускает задача Claude «Nailapp: проверка сервера и ссылок» и при проблеме присылает уведомление (текст начинается с «Beautybook:»).
 
 ## Журнал ошибок
 
 Таблица `errors` (миграция 0005): сбои сервера (`source = server`, адрес запроса без id и ссылок) и ошибки со страниц (`app`, `okna`, `admin`). Личных данных нет. Хранится 14 дней, не больше 300 записей в час; со страниц — не больше 20 сообщений в час с одного адреса. Посмотреть последние:
 
-`~/.local/node/bin/node ~/.local/node/bin/wrangler d1 execute kae-zapis --remote --command "SELECT at, source, place, message FROM errors ORDER BY id DESC LIMIT 20"`
+`ssh beautybook "sqlite3 /var/lib/beautybook/beautybook.db 'SELECT at, source, place, message FROM errors ORDER BY id DESC LIMIT 20'"`
 
 ## Хранилище и лимиты
 
-- Фото и копии данных лежат в D1 (строка не больше 2 МБ): фото — до 1,9 МБ, копия — до 1,9 МБ, у мастера хранятся 30 последних копий. Лимитов на число фото у мастера пока нет.
-- Бесплатный тариф Cloudflare: 100 000 запросов к серверу в сутки, база до 500 МБ, 100 000 записанных строк и 5 млн прочитанных строк в сутки. Счётчики обнуляются в 00:00 UTC (05:00 по Алматы).
+- Фото и копии данных лежат в базе SQLite на своём сервере: фото — до 1,9 МБ, копия — до 1,9 МБ, у мастера хранятся 30 последних копий. Лимитов на число фото у мастера пока нет. Диск сервера — 50 ГБ.
+- Прежний адрес на Cloudflare (только пересылка) — бесплатный тариф Workers: 100 000 запросов в сутки на все приложения, установленные со старых адресов.
 
 ## Команды
 
@@ -106,10 +123,13 @@
 
 | Что сделать | Команда |
 |---|---|
-| Выложить сервер | `~/.local/node/bin/node ~/.local/node/bin/wrangler deploy` |
-| Обновить базу, если в `migrations/` появился новый файл (до выкладки) | `~/.local/node/bin/node ~/.local/node/bin/wrangler d1 migrations apply kae-zapis --remote` |
-| Задать или сменить код администратора | `~/.local/node/bin/node ~/.local/node/bin/wrangler secret put ADMIN_CODE` |
-| Сменить код доступа (пока не задан `ADMIN_CODE`, он же — код администратора) | `~/.local/node/bin/node ~/.local/node/bin/wrangler secret put ACCESS_CODE` |
+| Выложить сервер и сайт на свой сервер (из корня проекта; новые миграции применятся сами) | `bash backend/deploy/deploy.sh` |
+| Журнал сервера | `ssh beautybook journalctl -u beautybook -n 100` |
+| Перезапустить сервер | `ssh beautybook systemctl restart beautybook` |
+| Задать или сменить код администратора | `ssh -t beautybook /opt/beautybook/backend/deploy/set-code.sh` |
+| Уведомить мастеров о новой версии | `ssh beautybook /opt/beautybook/backend/deploy/notify-update.sh` |
+| Ночные копии базы | `ssh beautybook ls -lh /var/backups/beautybook` |
+| Выложить прежний адрес (пересылка; из папки `proxy`) | `~/.local/node/bin/node ~/.local/node/bin/wrangler deploy` |
 | Тесты | `~/.local/node/bin/node --test "tests/*.test.js"` |
 | Проверка сервера целиком (при запущенном `wrangler dev`) | `~/.local/node/bin/node tests/api.integration.mjs` |
 | Сервер на компьютере (http://127.0.0.1:8787) | `~/.local/node/bin/node ~/.local/node/bin/wrangler dev` |

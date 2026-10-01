@@ -14,7 +14,7 @@ import KK from '../../frontend/kk.js';
 import { generateVapidKeys, sendPush } from './push.js';
 import * as W from './webauthn.js';
 
-const SITE = 'https://beautybook-kz.pages.dev/'; // адрес сайта для подписи уведомлений (VAPID)
+const SITE = 'https://beautybook.kz/'; // адрес сайта для подписи уведомлений (VAPID)
 // Пока у прежнего мастера нет расписания в базе, свободное время берём из прежнего места.
 const GITHUB_OKNA = 'https://raw.githubusercontent.com/komron4111/kae-zapis-okna/main/okna.json';
 const LEGACY = 'legacy';
@@ -105,8 +105,11 @@ async function route(request, env, ctx) {
   if (path.startsWith('/api/admin/')) {
     if (path === '/api/admin/passkey/login-options' && method === 'POST') return passkeyLoginOptions(request, env);
     if (path === '/api/admin/passkey/login' && method === 'POST') return passkeyLogin(request, env);
+    // Рассылка мастерам со своего сервера (deploy/notify-update.sh) — по местному ключу, без кода администратора.
+    if (path === '/api/admin/broadcast' && method === 'POST' && isLocalCall(request, env)) return broadcast(request, env);
     await authAdmin(request, env);
     if (path === '/api/admin/masters' && method === 'GET') return listMasters(env);
+    if (path === '/api/admin/broadcast' && method === 'POST') return broadcast(request, env);
     if (path === '/api/admin/passkeys' && method === 'GET') return listPasskeys(env);
     if (path === '/api/admin/passkey/options' && method === 'POST') return passkeyRegisterOptions(request, env);
     if (path === '/api/admin/passkeys' && method === 'POST') return passkeyRegister(request, env);
@@ -530,7 +533,7 @@ async function authAdmin(request, env) {
 // администратора открывается по Face ID или код-паролю телефона. Сеанс — 12 часов, только в памяти страницы.
 
 // Где открыта страница администратора (заголовок Origin). Ключ Face ID привязан к этому адресу.
-const ADMIN_ORIGINS = ['https://beautybook-kz.pages.dev', 'https://nailapp.pages.dev', 'https://komron4111.github.io'];
+const ADMIN_ORIGINS = ['https://beautybook.kz', 'https://beautybook-kz.pages.dev', 'https://nailapp.pages.dev', 'https://komron4111.github.io'];
 const CHALLENGE_TTL = 5 * 60e3;
 const ADMIN_SESSION = 12 * HOUR;
 
@@ -1112,6 +1115,29 @@ async function remindMaster(env, master, now) {
     if (res.meta.changes) break;
   }
   return pushed;
+}
+
+// ---------- Рассылка мастерам (2.8.1) ----------
+// «Вышло обновление Beautybook — закройте приложение и откройте снова (иногда 2 раза)» — всем мастерам
+// с включёнными уведомлениями, на языке их телефона. Отправляет администратор (раздел «Уведомления»)
+// или, на своём сервере, скрипт deploy/notify-update.sh (местный ключ LOCAL_KEY, только с 127.0.0.1).
+
+const isLocalCall = (request, env) => Boolean(env.LOCAL_KEY) && request.headers.get('Authorization') === `Local ${env.LOCAL_KEY}`
+  && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(request.headers.get('CF-Connecting-IP') || '');
+
+const updateMessage = lang => ({
+  title: tr(lang, 'Вышло обновление Beautybook'),
+  body: tr(lang, 'Закройте приложение (смахните его) и откройте снова — иногда это нужно сделать 2 раза.'),
+  tag: 'update',
+  url: './',
+  kind: 'update',
+});
+
+async function broadcast(request, env) {
+  await readJson(request, 4096); // { kind: 'update' } — пока только эта рассылка
+  const { results } = await env.DB.prepare('SELECT DISTINCT master_id FROM devices WHERE push IS NOT NULL').all();
+  for (const row of results) await pushToMaster(env, row.master_id, updateMessage, { ttl: 2 * 86400 });
+  return json({ ok: true, masters: results.length });
 }
 
 // ---------- Уведомления администратору (2.5.0) ----------

@@ -10,7 +10,7 @@ import * as Install from './install.js';
 import { t, getLang, setLang, otherLangLabel } from './i18n.js';
 
 const APP_NAME = 'Beautybook';
-const APP_VERSION = '2.8.0';
+const APP_VERSION = '2.9.0';
 
 phoneMask();
 
@@ -488,10 +488,28 @@ function requestCard(r, withDate) {
     </button>`;
 }
 
+// Новая версия уже скачана (Service Worker сменился, пока приложение открыто) — предлагаем перезапуск.
+let updateReady = false;
+
 function banners() {
   const out = [];
+  if (updateReady) {
+    out.push(`
+      <div class="banner">
+        <div class="grow">${t('Вышло обновление Beautybook. Нажмите «Обновить» — приложение перезапустится. Если что-то выглядит по-старому, закройте приложение и откройте снова (иногда 2 раза).')}</div>
+        <button class="btn small primary" data-act="reload-app">${t('Обновить')}</button>
+      </div>`);
+  }
   if (storageBroken) {
     out.push(`<div class="banner bad"><div class="grow">${t('Не удалось открыть сохранённые записи. Закройте приложение полностью и откройте снова — изменения сейчас не сохраняются.')}</div></div>`);
+  }
+  // Ночное окно обновлений (2.8.1): мастера знают, почему приложение может ненадолго не открываться.
+  if (!pref('nightNoticeHidden')) {
+    out.push(`
+      <div class="banner">
+        <div class="grow">${t('Обновления Beautybook проходят ночью, с 00:00 до 01:00. В это время приложение может ненадолго не работать — ваши данные сохраняются.')}</div>
+        <button class="icon-btn" data-act="hide-night-notice" aria-label="${t('Скрыть')}">${icon('close')}</button>
+      </div>`);
   }
   if (!pref('installHidden')) {
     out.push(`
@@ -1761,7 +1779,7 @@ function renderSettings() {
           ${chatBadge('menu-badge')}${icon('right')}
         </button>
       </section>` : ''}
-      <p class="version">${t('{app} · версия {version}', { app: APP_NAME, version: APP_VERSION })}</p>
+      <p class="version">${t('{app} · версия {version}', { app: APP_NAME, version: APP_VERSION })}<br>${t('Обновления — ночью, с 00:00 до 01:00')}</p>
       </div></div>`;
     return;
   }
@@ -3217,6 +3235,8 @@ const actions = {
       : t('Потом откройте Beautybook с иконки на экране «Домой» и создайте аккаунт (или войдите) уже там.'),
   }),
   'hide-install': () => { pref('installHidden', '1'); render(); },
+  'hide-night-notice': () => { pref('nightNoticeHidden', '1'); render(); },
+  'reload-app': () => location.reload(),
   'auth': el => {
     // Набранный номер переходит на следующий экран («Забыли пароль?», «Создать»).
     const typed = $('#auth-form input[name=phone]');
@@ -3392,8 +3412,15 @@ Install.onInstallChange(() => {
 
 addEventListener('online', () => scheduleSync(500));
 
+// Есть ли новая версия: iPhone часто не перезапускает приложение, а будит его — проверяем при каждом возвращении.
+function checkForUpdate() {
+  if (!('serviceWorker' in navigator)) return;
+  navigator.serviceWorker.getRegistration().then(reg => reg && reg.update()).catch(() => {});
+}
+
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible' || !data) return;
+  checkForUpdate();
   scheduleSync(800);
   refreshAccount();
   // Приложение могли не закрывать несколько дней: «сегодня» должно сдвинуться.
@@ -3451,9 +3478,19 @@ async function start() {
   if (!storageBroken) dbDel('publish').catch(() => {});
 
   if ('serviceWorker' in navigator) {
+    // Новая версия: Service Worker сменился, пока приложение открыто, — баннер «Вышло обновление».
+    // При самой первой установке смены нет (раньше страницей никто не управлял).
+    const hadController = Boolean(navigator.serviceWorker.controller);
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadController || updateReady) return;
+      updateReady = true;
+      if (sheet.hidden) render();
+      else toast(t('Вышло обновление Beautybook. Нажмите «Обновить» — приложение перезапустится. Если что-то выглядит по-старому, закройте приложение и откройте снова (иногда 2 раза).'));
+    });
     navigator.serviceWorker.register('./sw.js').catch(() => {});
     navigator.serviceWorker.addEventListener('message', e => {
       if (!e.data) return;
+      if (e.data.type === 'check-update') checkForUpdate();
       if (e.data.type === 'open-requests') showRequests();
       if (e.data.type === 'new-request') loadRequests().catch(() => {});
       if (e.data.type === 'new-chat') {

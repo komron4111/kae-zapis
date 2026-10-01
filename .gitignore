@@ -11,6 +11,9 @@ backend/.wrangler/
 # Служебная папка wrangler после выкладки сайта из корня проекта (pages deploy)
 .wrangler/
 backend/.dev.vars
+# Прежний адрес сервера в режиме пересылки (2.9.0): локальный ключ и служебная папка wrangler
+backend/proxy/.dev.vars
+backend/proxy/.wrangler/
 
 # Исследования и отчёты Claude (рынок, конкуренты) — не для публичного репозитория
 research_notes/

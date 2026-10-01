@@ -4,7 +4,8 @@
 // Личных данных нет: только текст ошибки, страница без ?m= и ?z=, файл и строка.
 // Не больше 5 сообщений за открытие страницы; сбои связи не отправляем — это не ошибки сайта.
 (() => {
-  let api = 'https://kae-zapis-api.kae-zapis.workers.dev'; // тот же адрес, что API_URL в config.js
+  // Тот же адрес, что API_URL в config.js: на beautybook.kz — сам сайт, на прежних адресах — Cloudflare.
+  let api = /^(www\.)?beautybook\.kz$/.test(location.hostname) ? location.origin : 'https://kae-zapis-api.kae-zapis.workers.dev';
   try { api = localStorage.getItem('kae:api') || api; } catch (e) { /* приватный режим */ }
   const source = (document.currentScript && document.currentScript.dataset.source) || 'page';
   const sent = new Set();

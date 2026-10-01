@@ -1,0 +1,24 @@
+# Сервер Beautybook (Node.js + SQLite). Настройки — /etc/beautybook/beautybook.env, секреты — secrets.env.
+[Unit]
+Description=Beautybook API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=beautybook
+Group=beautybook
+WorkingDirectory=/opt/beautybook
+EnvironmentFile=/etc/beautybook/beautybook.env
+EnvironmentFile=-/etc/beautybook/secrets.env
+ExecStart=/opt/node/bin/node /opt/beautybook/backend/node/server.mjs
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/beautybook
+MemoryMax=700M
+
+[Install]
+WantedBy=multi-user.target

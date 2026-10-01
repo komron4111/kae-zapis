@@ -1,0 +1,12 @@
+# Прежний адрес сервера после переезда на свой сервер (2.9.0): только пересылает запросы (index.js).
+# Тот же Worker kae-zapis-api, что раньше, но без базы и без расписания — расписание теперь на своём сервере.
+# Вернуть прежний сервер на Cloudflare: wrangler deploy из папки backend (база D1 осталась на месте).
+name = "kae-zapis-api"
+main = "index.js"
+compatibility_date = "2026-09-01"
+
+[vars]
+TARGET = "https://beautybook.kz"
+
+[triggers]
+crons = []

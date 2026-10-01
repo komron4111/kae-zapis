@@ -68,8 +68,8 @@ async function nthPush(n) {
   for (let i = 0; i < 60 && pushed.length < n; i++) await sleep(100);
   return pushed[n - 1] || null;
 }
-async function call(method, path, { body, key, admin } = {}) {
-  const headers = {};
+async function call(method, path, { body, key, admin, headers: extra } = {}) {
+  const headers = { ...(extra || {}) };
   if (key) headers.Authorization = `Bearer ${key}`;
   if (admin) headers.Authorization = `Admin ${L.bytesToB64u(new TextEncoder().encode(admin))}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -404,7 +404,7 @@ if (cron.status !== 404) {
   note = (got = await nthPush(from + 1)) && await decryptPush(got.body, ua2);
   const a1 = remindItem('a1:h', -1000, 2 * 36e5);
   check('напоминание пришло мастеру: «Сегодня в … — запись», клиент и услуга', got && got.path === `/master-${RUN}` && note && note.kind === 'remind'
-    && note.title === `${a1.date === L.masterClock(-300).date ? 'Сегодня' : L.shortDate(a1.date, 'ru')} в ${L.shortTime(a1.time)} — запись`
+    && note.title === `${a1.date === L.masterClock(-300).date ? 'Сегодня' : a1.date === L.addDays(L.masterClock(-300).date, 1) ? 'Завтра' : L.shortDate(a1.date, 'ru')} в ${L.shortTime(a1.time)} — запись`
     && note.body === 'Айгүл · Маникюр' && note.url === `./?open=day&d=${a1.date}`, JSON.stringify(note));
   check('срок жизни напоминания — до начала записи', got && Number(got.headers.ttl) > 3600 && Number(got.headers.ttl) <= 2 * 3600, got && got.headers.ttl);
   await sleep(1000);
@@ -438,6 +438,20 @@ if (cron.status !== 404) {
 } else {
   check('напоминания по расписанию — пропущено: wrangler dev запущен без --test-scheduled', true);
 }
+// ---------- Рассылка мастерам о новой версии (2.8.1) ----------
+// Каждая неудача засчитывается в лимит администратора (5 в час) — проверяем одну: чужой местный ключ.
+r = await call('POST', '/api/admin/broadcast', { headers: { Authorization: 'Local fake-key-0000' }, body: { kind: 'update' } });
+check('рассылка с чужим местным ключом — отказ', r.status === 401 || r.status === 403, String(r.status));
+const bFrom = pushed.length;
+r = await call('POST', '/api/admin/broadcast', { admin: CODE, body: { kind: 'update' } });
+let mine = null;
+for (let i = 0; i < 60 && !mine; i++) {
+  mine = pushed.slice(bFrom).find(p => p.path === `/master-${RUN}`);
+  if (!mine) await sleep(100);
+}
+note = mine && await decryptPush(mine.body, ua2);
+check('рассылка «Вышло обновление» дошла мастеру', r.status === 200 && r.data.masters >= 1 && note && note.kind === 'update'
+  && note.title === 'Вышло обновление Beautybook' && note.url === './', JSON.stringify(note));
 r = await call('DELETE', '/api/admin/push', { admin: CODE, body: { endpoint: adminSub.endpoint } });
 check('уведомления администратору выключены', r.status === 200 && !r.data.devices.some(d => d.endpoint === adminSub.endpoint));
 const count = pushed.length;

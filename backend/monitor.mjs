@@ -1,9 +1,9 @@
-// Проверка Beautybook (до 2.4.0 — Nailapp): всё ли работает и не упираемся ли в бесплатный тариф Cloudflare.
-// Запускает задача Claude по расписанию («Nailapp: проверка сервера»); можно и вручную,
-// из папки backend: ~/.local/node/bin/node monitor.mjs
-// Читает адреса сайта и сервера, нагрузку на базу, мастеров, фото, журнал ошибок. Пишет в базу одно:
-// снимок нагрузки за сутки (config.usage) — его показывают шкалы в разделе «Сервер» у администратора.
-// Печатает отчёт; в конце — «ИТОГ: OK | WARN | ALERT» и, если есть о чём сообщить
+// Проверка Beautybook: всё ли работает и хватает ли серверу места и памяти.
+// С 2.9.0 сервер свой (vpsza500.kz, Алматы): база — SQLite на сервере, её читаем по ssh (хост «beautybook»
+// в ~/.ssh/config). Запускает задача Claude по расписанию («Beautybook: проверка сервера и ссылок»);
+// можно и вручную, из папки backend: ~/.local/node/bin/node monitor.mjs
+// Пишет в базу одно: снимок состояния сервера (config.usage) — его показывают шкалы в разделе «Сервер»
+// у администратора. Печатает отчёт; в конце — «ИТОГ: OK | WARN | ALERT» и, если есть о чём сообщить
 // (а за сутки об этом ещё не сообщали), — «УВЕДОМИТЬ: <текст>».
 // Каждый запуск дописывает строку в ../.claude/monitor-log.md (папка .claude в git не попадает).
 
@@ -11,22 +11,21 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-const HERE = fileURLToPath(new URL('.', import.meta.url));
-const WRANGLER = `${process.env.HOME}/.local/node/bin/wrangler`;
-const API = 'https://kae-zapis-api.kae-zapis.workers.dev';
+const SITE = 'https://beautybook.kz';
+const OLD_API = 'https://kae-zapis-api.kae-zapis.workers.dev'; // прежний адрес: пересылает запросы на свой сервер
+const DB = '/var/lib/beautybook/beautybook.db';
 const CHECKS = [
-  [`${API}/api/okna?m=aray`, 'сервер (ссылка Арай)'],
+  [`${SITE}/api/okna?m=aray`, 'сервер beautybook.kz (ссылка Арай)'],
+  [`${OLD_API}/api/okna?m=aray`, 'прежний адрес сервера (пересылка)'],
+  [`${SITE}/`, 'приложение beautybook.kz'],
+  [`${SITE}/okna/`, 'страница клиентов beautybook.kz'],
   ['https://beautybook-kz.pages.dev/', 'приложение beautybook-kz.pages.dev'],
-  ['https://beautybook-kz.pages.dev/okna/', 'страница клиентов beautybook-kz.pages.dev'],
   ['https://nailapp.pages.dev/', 'приложение nailapp.pages.dev'],
-  ['https://nailapp.pages.dev/okna/', 'страница клиентов nailapp.pages.dev'],
   ['https://komron4111.github.io/kae-zapis/okna/', 'страница клиентов на прежнем адресе'],
 ];
-// Бесплатный тариф: в сутки (обнуляется в 00:00 UTC = 05:00 по Алматы) и размер базы.
-const FREE = { rowsWritten: 100000, rowsRead: 5000000, requests: 100000, size: 500e6 };
-const WARN = 0.5, ALERT = 0.8;
-const MASTERS_SOON = 25, MASTERS_REVIEW = 30; // на 30 мастерах решаем про платный тариф
+const WARN = 0.6, ALERT = 0.8; // доля диска или памяти
 const PHOTOS_PER_MASTER = 100e6;
+const BACKUP_MAX_AGE = 36 * 3600e3;
 const STATE_DIR = fileURLToPath(new URL('../.claude/', import.meta.url));
 const LOG = `${STATE_DIR}monitor-log.md`;
 const STATE = `${STATE_DIR}monitor-state.json`;
@@ -35,15 +34,17 @@ const DAY = 864e5;
 const problems = []; // { level, key, text } — key: одна и та же проблема не чаще раза в сутки
 const problem = (level, key, text) => problems.push({ level, key, text });
 const mb = n => `${(n / 1e6).toFixed(1).replace('.', ',')} МБ`;
+const gb = n => `${(n / 1e9).toFixed(1).replace('.', ',')} ГБ`;
 const num = n => Math.round(n).toLocaleString('ru-RU');
 const pct = (v, max) => Math.round((v / max) * 100);
 
-function wrangler(args) {
-  return execFileSync(process.execPath, [WRANGLER, ...args], { cwd: HERE, env: { ...process.env, CI: '1' }, encoding: 'utf8', maxBuffer: 32e6, timeout: 120000 });
-}
-// JSON начинается со строки, первая буква которой «[» или «{» (до неё wrangler может написать предупреждение).
-const jsonOf = text => JSON.parse(text.slice(text.search(/^[[{]/m)));
-const sql = command => jsonOf(wrangler(['d1', 'execute', 'kae-zapis', '--remote', '--json', '--command', command]))[0].results;
+// Команда на сервере; запрос к базе — через stdin, чтобы кавычки в SQL не ломала оболочка.
+const ssh = (command, input) => execFileSync('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=20', 'beautybook', command],
+  { input, encoding: 'utf8', maxBuffer: 32e6, timeout: 120000 });
+const sql = query => {
+  const out = ssh(`sqlite3 -json ${DB}`, query).trim();
+  return out ? JSON.parse(out) : [];
+};
 
 async function isUp(url) {
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -75,28 +76,34 @@ for (const [url, name] of CHECKS) {
   if (!ok) problem('ALERT', `down:${url}`, `не открывается ${name} (${url})`);
 }
 
-// 2. Нагрузка на базу (за последние сутки) и её размер
-const info = jsonOf(wrangler(['d1', 'info', 'kae-zapis', '--json']));
-// Запрос к серверу — это в среднем 2–3 запроса к базе: оценка сверху, делим на 2.
-const requests = (info.read_queries_24h + info.write_queries_24h) / 2;
-const loads = [
-  ['size', 'размер базы', info.database_size, FREE.size, mb],
-  ['rowsWritten', 'записано строк за сутки', info.rows_written_24h, FREE.rowsWritten, num],
-  ['rowsRead', 'прочитано строк за сутки', info.rows_read_24h, FREE.rowsRead, num],
-  ['requests', 'запросов к серверу за сутки (оценка)', requests, FREE.requests, num],
-];
-for (const [key, name, value, max, fmt] of loads) {
-  const p = pct(value, max);
-  report.push(`  ${name}: ${fmt(value)} из ${fmt(max)} (${p}%)`);
-  if (value >= max * ALERT) problem('ALERT', `load:${key}`, `${name} — ${p}% лимита бесплатного тарифа`);
-  else if (value >= max * WARN) problem('WARN', `load:${key}`, `${name} — ${p}% лимита бесплатного тарифа`);
+// 2. Сервер: службы, диск, память, база, ночные копии
+const srv = JSON.parse(ssh(`printf '{"services":"%s","disk":[%s],"memory":[%s],"load":%s,"db":%s,"backup":%s}' \
+  "$(systemctl is-active beautybook caddy | tr '\\n' ' ')" \
+  "$(df -B1 --output=used,size / | tail -1 | awk '{print $1","$2}')" \
+  "$(free -b | awk '/Mem:/ {print $2-$7","$2}')" \
+  "$(cut -d' ' -f1 /proc/loadavg)" \
+  "$(stat -c %s ${DB})" \
+  "$(find /var/backups/beautybook -name 'beautybook-*.db.gz' -printf '%T@\\n' | sort -n | tail -1 | cut -d. -f1 | grep . || echo 0)"`));
+const [diskUsed, diskTotal] = srv.disk, [memUsed, memTotal] = srv.memory;
+report.push(`  службы: ${srv.services.trim()}`);
+if (!/^active active\s*$/.test(srv.services.trim() + ' ')) problem('ALERT', 'services', `служба сервера не работает: ${srv.services.trim()}`);
+for (const [key, name, used, total] of [['disk', 'диск', diskUsed, diskTotal], ['memory', 'память', memUsed, memTotal]]) {
+  const p = pct(used, total);
+  report.push(`  ${name}: ${gb(used)} из ${gb(total)} (${p}%)`);
+  if (used >= total * ALERT) problem('ALERT', `load:${key}`, `${name} сервера занят на ${p}%`);
+  else if (used >= total * WARN) problem('WARN', `load:${key}`, `${name} сервера занят на ${p}%`);
 }
-// Снимок для страницы администратора: только числа и время (в JSON нет кавычек «'» — строка SQL безопасна).
-const usage = { at: new Date(now).toISOString(), size: info.database_size, requests: Math.round(requests), rowsWritten: info.rows_written_24h, rowsRead: info.rows_read_24h };
+report.push(`  база: ${mb(srv.db)}, нагрузка (1 мин): ${srv.load}`);
+const backupAge = srv.backup ? now - srv.backup * 1000 : Infinity;
+report.push(`  последняя копия базы: ${srv.backup ? new Date(srv.backup * 1000).toLocaleString('ru-RU', { timeZone: 'Asia/Almaty' }) : 'ещё нет'}`);
+if (backupAge > BACKUP_MAX_AGE && now - (state.installedAt || now) > BACKUP_MAX_AGE) problem('WARN', 'backup', 'ночная копия базы не делалась больше полутора суток');
+state.installedAt = state.installedAt || now;
+// Снимок для страницы администратора: только числа и время.
+const usage = { at: new Date(now).toISOString(), size: srv.db, disk: { used: diskUsed, total: diskTotal }, memory: { used: memUsed, total: memTotal }, load: srv.load, backupAt: srv.backup ? new Date(srv.backup * 1000).toISOString() : null };
 try {
   sql(`INSERT OR REPLACE INTO config (key, value) VALUES ('usage', '${JSON.stringify(usage)}')`);
 } catch (e) {
-  report.push(`  снимок нагрузки для администратора не записан: ${String(e.message || e).split('\n')[0]}`);
+  report.push(`  снимок для администратора не записан: ${String(e.message || e).split('\n')[0]}`);
 }
 
 // 3. Мастера, фото, копии, попытки
@@ -108,17 +115,16 @@ const [s] = sql(`SELECT
   (SELECT COUNT(*) FROM photos) AS photos,
   (SELECT COALESCE(SUM(LENGTH(data)), 0) FROM photos) AS photo_bytes,
   (SELECT COUNT(*) FROM backups) AS backups,
-  (SELECT COALESCE(SUM(LENGTH(data)), 0) FROM backups) AS backup_bytes`);
-report.push(`  мастеров: ${s.masters} (с паролем ${s.claimed}, новых за сутки ${s.new24})`);
+  (SELECT COALESCE(SUM(LENGTH(data)), 0) FROM backups) AS backup_bytes,
+  (SELECT COUNT(*) FROM reminders WHERE next_due IS NOT NULL) AS reminders`);
+report.push(`  мастеров: ${s.masters} (с паролем ${s.claimed}, новых за сутки ${s.new24}); ждут напоминаний: ${s.reminders}`);
 report.push(`  фото: ${s.photos} шт., ${mb(s.photo_bytes)}; копии: ${s.backups} шт., ${mb(s.backup_bytes)}`);
-if (s.masters >= MASTERS_REVIEW) problem('WARN', 'masters30', `мастеров уже ${s.masters} — пора решить про платный тариф (5 $/мес)`);
-else if (s.masters >= MASTERS_SOON) problem('WARN', 'masters25', `мастеров уже ${s.masters} — скоро 30, пора решать про платный тариф`);
 
 const [top] = sql(`SELECT m.name AS name, COUNT(*) AS n, SUM(LENGTH(p.data)) AS bytes FROM photos p
   JOIN masters m ON m.id = p.master_id GROUP BY p.master_id ORDER BY bytes DESC LIMIT 1`);
 if (top) {
   report.push(`  больше всех фото: ${top.name} — ${top.n} шт., ${mb(top.bytes)}`);
-  if (top.bytes > PHOTOS_PER_MASTER) problem('WARN', 'photos:top', `у мастера ${top.name} фото на ${mb(top.bytes)} — пора ставить лимит фото или переносить фото в R2`);
+  if (top.bytes > PHOTOS_PER_MASTER) problem('WARN', 'photos:top', `у мастера ${top.name} фото на ${mb(top.bytes)} — пора ставить лимит фото`);
 }
 
 const tries = sql(`SELECT kind, COUNT(*) AS n FROM attempts WHERE at > ${now - DAY} GROUP BY kind`);
@@ -152,8 +158,8 @@ if (errors.length) state.lastErrorId = errors[errors.length - 1].id;
 fs.mkdirSync(STATE_DIR, { recursive: true });
 fs.writeFileSync(STATE, JSON.stringify(state, null, 2));
 const stamp = new Date(now).toLocaleString('ru-RU', { timeZone: 'Asia/Almaty' });
-if (!fs.existsSync(LOG)) fs.writeFileSync(LOG, '# Проверки Beautybook (Nailapp)\n\n| Время (Алматы) | Итог | Мастеров | База | Записано за сутки | Прочитано за сутки | Фото | Новых ошибок (сервер/страницы) |\n|---|---|---|---|---|---|---|---|\n');
-fs.appendFileSync(LOG, `| ${stamp} | ${level} | ${s.masters} | ${mb(info.database_size)} | ${num(info.rows_written_24h)} | ${num(info.rows_read_24h)} | ${s.photos} / ${mb(s.photo_bytes)} | ${server.length}/${pages.length} |\n`);
+if (!fs.existsSync(LOG)) fs.writeFileSync(LOG, '# Проверки Beautybook\n\n');
+fs.appendFileSync(LOG, `| ${stamp} | ${level} | мастеров ${s.masters} | база ${mb(srv.db)} | диск ${pct(diskUsed, diskTotal)}% | память ${pct(memUsed, memTotal)}% | фото ${s.photos} / ${mb(s.photo_bytes)} | ошибок ${server.length}/${pages.length} |\n`);
 
 console.log(`Проверка Beautybook — ${stamp}`);
 console.log(report.join('\n'));

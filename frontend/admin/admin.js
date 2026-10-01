@@ -279,7 +279,10 @@ function summary(id) {
     return `${t('оплатили в этом месяце: {count}', { count: paid })}${off ? ` · ${t('закончилась: {count}', { count: off })}` : ''}`;
   }
   if (id === 'chats') return unreadTotal() ? t('новых сообщений: {count}', { count: unreadTotal() }) : t('вопросы мастеров по оплате и приложению');
-  if (id === 'server') return t('загрузка {level} · база {size} из 500 МБ', { level: t(loadLevel()[1]), size: dbSize ? size(dbSize) : '—' });
+  if (id === 'server') {
+    const values = { level: t(loadLevel()[1]), size: dbSize ? size(dbSize) : '—' };
+    return ownServer() ? t('загрузка {level} · база {size}', values) : t('загрузка {level} · база {size} из 500 МБ', values);
+  }
   if (id === 'contact') return contact ? L.formatPhone(contact) : t('не указан — мастерам некуда писать');
   if (id === 'push') {
     const n = pushInfo ? pushInfo.devices.length : 0;
@@ -357,11 +360,12 @@ function render(anim) {
   if (page === 'face') prepareRegister();
 }
 
-// 1 234 567 байт → «1,2 МБ», 5 400 → «5 КБ».
+// 1 234 567 байт → «1,2 МБ», 5 400 → «5 КБ», 52 000 000 000 → «52,0 ГБ».
 function size(n) {
   n = Number(n) || 0;
   if (n < 1e6) return `${Math.max(n ? 1 : 0, Math.round(n / 1e3))} КБ`;
-  return `${(n / 1e6).toFixed(1).replace('.', ',')} МБ`;
+  if (n < 1e9) return `${(n / 1e6).toFixed(1).replace('.', ',')} МБ`;
+  return `${(n / 1e9).toFixed(1).replace('.', ',')} ГБ`;
 }
 
 const total = st => (st ? st.photoBytes + st.backupBytes + st.otherBytes : 0);
@@ -838,6 +842,11 @@ function pushHtml() {
       </ul>
       ${status}
     </section>
+    <section class="card page-card">
+      <h3 class="card-title">${t('Сообщить мастерам о новой версии')}</h3>
+      <p class="hint">${t('Мастерам с включёнными уведомлениями придёт: «Вышло обновление Beautybook. Закройте приложение (смахните его) и откройте снова — иногда это нужно сделать 2 раза». На языке их телефона.')}</p>
+      <button class="btn secondary block" data-broadcast="update">${icon('bell')} ${t('Отправить мастерам уведомление об обновлении')}</button>
+    </section>
     ${devices.length ? `
     <h3 class="section-title">${t('Устройства с уведомлениями')}</h3>
     <section class="card list">${devices.map(d => `
@@ -923,6 +932,17 @@ async function testPush() {
   }
 }
 
+// Рассылка мастерам (2.8.1): «Вышло обновление Beautybook — закройте и откройте приложение».
+async function sendUpdateNotice() {
+  if (!confirm(t('Отправить всем мастерам уведомление «Вышло обновление Beautybook»?'))) return;
+  try {
+    const { masters: count } = await call('POST', '/api/admin/broadcast', { kind: 'update' });
+    alert(t('Отправлено мастерам: {count}', { count }));
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
 // Куда вести после нажатия на уведомление.
 function openTarget({ page: to, id }) {
   if ((to === 'chat' || to === 'master') && masters.some(m => m.id === id)) go(to, id);
@@ -972,8 +992,17 @@ const FREE = { size: 500e6, requests: 100000, rowsWritten: 100000, rowsRead: 500
 const REVIEW_MASTERS = 30; // на 30 мастерах решаем про платный тариф
 const num = n => Math.round(Number(n) || 0).toLocaleString('ru-RU');
 
+// С 2.9.0 сервер свой: проверка сервера (backend/monitor.mjs) присылает диск и память. До переезда — лимиты Cloudflare.
+const ownServer = () => Boolean(usage && usage.disk && usage.memory);
+
 function loads() {
   const u = usage || {};
+  if (ownServer()) {
+    return [
+      [t('Диск сервера'), u.disk.used, u.disk.total, v => t('{value} из {max}', { value: size(v), max: size(u.disk.total) })],
+      [t('Память сервера'), u.memory.used, u.memory.total, v => t('{value} из {max}', { value: size(v), max: size(u.memory.total) })],
+    ];
+  }
   return [
     [t('База данных'), dbSize || u.size || 0, FREE.size, v => t('{value} из {max}', { value: size(v), max: '500 МБ' })],
     usage && [t('Запросы к серверу за сутки'), u.requests, FREE.requests, v => t('{value} из {max}', { value: num(v), max: num(FREE.requests) })],
@@ -1007,8 +1036,11 @@ function serverHtml() {
     <section class="card page-card">
       <h3 class="card-title">${t('Загрузка:')} <span class="load-level ${tone}">${t(word)}</span></h3>
       ${loads().map(([title, value, max, text]) => loadScale(title, value, max, text)).join('')}
+      ${ownServer() ? `
+      <div class="line"><span>${t('База данных')}</span><b>${dbSize ? size(dbSize) : '—'}</b></div>
+      <p class="hint">${t('Свой сервер в Алматы (vpsza500.kz). Зелёные овалы — запас большой, красные — подходим к пределу.')} ${t('Цифры — по проверке сервера {when}.', { when: esc(when) })} ${t('Копия базы — каждую ночь, хранится 14 дней.')}</p>` : `
       ${loadScale(t('Мастера (при {count} пора решать о платном тарифе)', { count: REVIEW_MASTERS }), masters.length, REVIEW_MASTERS, v => t('{value} из {max}', { value: v, max: REVIEW_MASTERS }))}
-      <p class="hint">${t('Бесплатный тариф Cloudflare: база до 500 МБ, в сутки — 100 000 запросов к серверу и 100 000 записанных строк. Зелёные овалы — запас большой, красные — подходим к пределу.')} ${when ? t('Суточные цифры — по проверке сервера {when}.', { when: esc(when) }) : t('Суточные цифры появятся после ближайшей проверки сервера (9:00, 15:00, 21:00).')} ${t('Если подойдём к пределу, после проверки сервера придёт уведомление.')}</p>
+      <p class="hint">${t('Бесплатный тариф Cloudflare: база до 500 МБ, в сутки — 100 000 запросов к серверу и 100 000 записанных строк. Зелёные овалы — запас большой, красные — подходим к пределу.')} ${when ? t('Суточные цифры — по проверке сервера {when}.', { when: esc(when) }) : t('Суточные цифры появятся после ближайшей проверки сервера (9:00, 15:00, 21:00).')} ${t('Если подойдём к пределу, после проверки сервера придёт уведомление.')}</p>`}
     </section>
     <h3 class="section-title">${t('Место по мастерам')}</h3>
     <section class="card settings-menu">${byStorage.map(m => `
@@ -1147,7 +1179,7 @@ async function resetPassword(id) {
 }
 
 view.addEventListener('click', e => {
-  const target = e.target.closest('[data-go], [data-master], [data-back], [data-reset], [data-unkey], [data-month], [data-sub], [data-sort], [data-chat], [data-copy], [data-pay-plan], [data-push], [data-push-remove], [data-install], #add-face, #leave');
+  const target = e.target.closest('[data-go], [data-master], [data-back], [data-reset], [data-unkey], [data-month], [data-sub], [data-sort], [data-chat], [data-copy], [data-pay-plan], [data-push], [data-push-remove], [data-broadcast], [data-install], #add-face, #leave');
   if (!target) return;
   if ('install' in target.dataset) {
     return Install.install({
@@ -1156,6 +1188,7 @@ view.addEventListener('click', e => {
       after: t('Потом откройте «BB Админ» с иконки на экране «Домой», войдите и включите Face ID и уведомления.'),
     });
   }
+  if (target.dataset.broadcast) return sendUpdateNotice();
   if (target.dataset.push === 'on') return enablePush();
   if (target.dataset.push === 'off') return disablePush();
   if (target.dataset.push === 'test') return testPush();
