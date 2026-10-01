@@ -15,7 +15,7 @@
 // мастера (L.passwordSecret): на сервер уходит только результат.
 
 import * as L from '../logic.js';
-import { API_URL, PUBLIC_URL, IS_LOCAL } from '../config.js';
+import { API_URL, PUBLIC_URL, IS_LOCAL, APP_VERSION } from '../config.js';
 import { phoneMask } from '../phone-input.js';
 import * as Install from '../install.js';
 import { t, getLang, setLang, otherLangLabel } from '../i18n.js';
@@ -1255,9 +1255,12 @@ view.addEventListener('change', e => {
 });
 
 // Язык в шапке: «Қаз» / «Рус» — страница сразу перерисовывается (вход — заново, код не сохраняется).
+// Внизу — версия сайта (2.9.2): по ней видно, дошло ли обновление (страница администратора не кэшируется).
 function drawHeader() {
   const box = $('#appbar-actions');
   if (box) box.innerHTML = `<button class="hbtn lang-btn" data-lang-toggle aria-label="${t('Сменить язык')}">${otherLangLabel()}</button>`;
+  const version = $('#app-version');
+  if (version) version.textContent = t('{app} · версия {version}', { app: 'Beautybook', version: APP_VERSION });
 }
 
 document.addEventListener('click', e => {

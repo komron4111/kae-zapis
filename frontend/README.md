@@ -40,7 +40,7 @@
 
 Выкладываем ночью, с 00:00 до 01:00 по Алматы (так написано мастерам в приложении).
 
-1. Увеличьте `VERSION` в `sw.js` и `APP_VERSION` в `app.js`.
+1. Увеличьте `VERSION` в `sw.js` и `APP_VERSION` в `config.js` (с 2.9.2 — одна версия для приложения и «BB Админ», она видна внизу страницы администратора).
 2. Основной адрес — свой сервер: `bash backend/deploy/deploy.sh` из папки проекта.
 3. Прежние адреса beautybook-kz.pages.dev и nailapp.pages.dev. Из папки проекта (не из `backend`!) выполните обе команды:
    `~/.local/node/bin/node ~/.local/node/bin/wrangler pages deploy frontend --project-name beautybook-kz --branch main`

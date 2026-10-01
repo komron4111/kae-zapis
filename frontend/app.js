@@ -4,13 +4,12 @@
 
 import * as L from './logic.js';
 import { makeZip, readZip } from './zip.js';
-import { API_URL, PUBLIC_URL, IS_LOCAL } from './config.js';
+import { API_URL, PUBLIC_URL, IS_LOCAL, APP_VERSION } from './config.js';
 import { phoneMask } from './phone-input.js';
 import * as Install from './install.js';
 import { t, getLang, setLang, otherLangLabel } from './i18n.js';
 
 const APP_NAME = 'Beautybook';
-const APP_VERSION = '2.9.1';
 
 phoneMask();
 
