@@ -97,7 +97,7 @@ export async function readZip(blob) {
     const localStart = central.getUint32(p + 42, true);
     const name = decoder.decode(new Uint8Array(central.buffer, central.byteOffset + p + 46, nameLength));
     p += 46 + nameLength + extraLength + commentLength;
-    if (method !== 0) throw new Error('Архив пересжат другой программой — восстановите из исходного файла копии');
+    if (method !== 0) throw new Error('Архив изменён другой программой — восстановите из исходного файла копии');
     const local = new DataView(await blob.slice(localStart, localStart + 30).arrayBuffer());
     const dataStart = localStart + 30 + local.getUint16(26, true) + local.getUint16(28, true);
     entries.push({ name, blob: blob.slice(dataStart, dataStart + size) });

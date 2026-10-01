@@ -4,6 +4,9 @@
 // Apple) — кнопка показывает короткую подсказку: «Поделиться» → «На экран „Домой“» → «Добавить»,
 // со стрелкой туда, где эта кнопка у браузера. Во встроенных браузерах Instagram, Telegram и т. п.
 // установить нельзя — подсказка просит открыть ссылку в Safari или Chrome.
+// По-казахски кнопки браузера названы так, как они подписаны на телефоне (чаще всего по-русски).
+
+import { t } from './i18n.js';
 
 let deferred = null; // отложенное предложение браузера установить приложение
 let installed = false;
@@ -75,9 +78,10 @@ function guide() {
       arrow: 'top-right',
       copy: true,
       steps: [
-        `Ссылка открыта внутри ${inApp} — отсюда на экран «Домой» не добавить.`,
-        `Нажмите «•••» или «⋮» вверху справа и выберите «Открыть в ${isIOS ? 'Safari' : 'браузере'}». Или скопируйте ссылку и вставьте её в ${isIOS ? 'Safari' : 'Chrome'}.`,
-        'В браузере нажмите «Установить» ещё раз.',
+        t('Ссылка открыта внутри {app} — отсюда на экран «Домой» не добавить.', { app: inApp }),
+        isIOS ? t('Нажмите «•••» или «⋮» вверху справа и выберите «Открыть в Safari». Или скопируйте ссылку и вставьте её в Safari.')
+          : t('Нажмите «•••» или «⋮» вверху справа и выберите «Открыть в браузере». Или скопируйте ссылку и вставьте её в Chrome.'),
+        t('В браузере нажмите «Установить» ещё раз.'),
       ],
     };
   }
@@ -86,9 +90,9 @@ function guide() {
       arrow: 'top-right',
       copy: true,
       steps: [
-        `Нажмите ${SHARE} «Поделиться» — в Chrome это значок в адресной строке.`,
-        `Выберите ${ADD} «На экран „Домой“». Если такого пункта нет — откройте ссылку в Safari.`,
-        'Нажмите «Добавить».',
+        t('Нажмите {icon} «Поделиться» — в Chrome это значок в адресной строке.', { icon: SHARE }),
+        t('Выберите {icon} «На экран „Домой“». Если такого пункта нет — откройте ссылку в Safari.', { icon: ADD }),
+        t('Нажмите «Добавить».'),
       ],
     };
   }
@@ -97,19 +101,20 @@ function guide() {
     return {
       arrow: isIPad ? 'top-right' : compact ? 'bottom-right' : 'bottom-center',
       steps: [
-        compact ? `Нажмите «•••» внизу справа, затем ${SHARE} «Поделиться».`
-          : `Нажмите ${SHARE} «Поделиться» ${isIPad ? 'вверху справа' : 'внизу экрана'} (если его не видно — «•••»).`,
-        `Пролистайте вниз и выберите ${ADD} «На экран „Домой“».`,
-        'Нажмите «Добавить» вверху справа.',
+        compact ? t('Нажмите «•••» внизу справа, затем {icon} «Поделиться».', { icon: SHARE })
+          : isIPad ? t('Нажмите {icon} «Поделиться» вверху справа (если его не видно — «•••»).', { icon: SHARE })
+          : t('Нажмите {icon} «Поделиться» внизу экрана (если его не видно — «•••»).', { icon: SHARE }),
+        t('Пролистайте вниз и выберите {icon} «На экран „Домой“».', { icon: ADD }),
+        t('Нажмите «Добавить» вверху справа.'),
       ],
     };
   }
   return {
     arrow: 'top-right',
     steps: [
-      'Откройте меню браузера «⋮» вверху справа.',
-      'Выберите «Установить приложение» или «Добавить на главный экран».',
-      'Подтвердите — «Установить». Если вы в Instagram, WhatsApp или Telegram — сначала «Открыть в Chrome».',
+      t('Откройте меню браузера «⋮» вверху справа.'),
+      t('Выберите «Установить приложение» или «Добавить на главный экран».'),
+      t('Нажмите «Установить». Если ссылка открыта в Instagram, WhatsApp или Telegram, сначала выберите «Открыть в Chrome».'),
     ],
   };
 }
@@ -128,16 +133,16 @@ function openGuide({ name = 'Beautybook', icon = '', after = '' } = {}) {
   box.className = `install-guide${g.arrow.startsWith('bottom') ? ' at-top' : ''}`;
   box.setAttribute('role', 'dialog');
   box.setAttribute('aria-modal', 'true');
-  box.setAttribute('aria-label', 'Установка на экран «Домой»');
+  box.setAttribute('aria-label', t('Установка на экран «Домой»'));
   box.innerHTML = `
     <div class="install-card">
-      <button type="button" class="icon-btn install-close" data-install-close aria-label="Закрыть">${CLOSE}</button>
+      <button type="button" class="icon-btn install-close" data-install-close aria-label="${t('Закрыть')}">${CLOSE}</button>
       ${icon ? `<img class="install-icon" src="${esc(icon)}" alt="" width="72" height="72">` : ''}
-      <h2>Установить ${esc(name)} на экран «Домой»</h2>
+      <h2>${t('Установить {name} на экран «Домой»', { name: esc(name) })}</h2>
       <ol class="install-steps">${g.steps.map(step => `<li>${step}</li>`).join('')}</ol>
-      ${g.copy ? '<button type="button" class="btn secondary block" data-install-copy>Скопировать ссылку</button>' : ''}
+      ${g.copy ? `<button type="button" class="btn secondary block" data-install-copy>${t('Скопировать ссылку')}</button>` : ''}
       ${after ? `<p class="hint install-after">${esc(after)}</p>` : ''}
-      <button type="button" class="btn primary block" data-install-close>Понятно</button>
+      <button type="button" class="btn primary block" data-install-close>${t('Понятно')}</button>
     </div>`;
   const arrow = document.createElement('div');
   arrow.className = `install-arrow ${g.arrow}`;
@@ -151,7 +156,7 @@ function openGuide({ name = 'Beautybook', icon = '', after = '' } = {}) {
     const link = location.origin + location.pathname;
     try {
       await navigator.clipboard.writeText(link);
-      copy.textContent = `Скопировано — вставьте в ${isIOS ? 'Safari' : 'Chrome'}`;
+      copy.textContent = isIOS ? t('Скопировано — вставьте в Safari') : t('Скопировано — вставьте в Chrome');
     } catch (err) {
       copy.textContent = link; // выделите и скопируйте вручную
     }

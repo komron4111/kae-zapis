@@ -1,7 +1,7 @@
 // Офлайн-кэш и уведомления: заявки клиентов и сообщения администратора.
 // После любой правки файлов увеличьте VERSION — телефоны скачают
 // новую версию при следующем запуске приложения.
-const VERSION = 'v23';
+const VERSION = 'v24';
 const CACHE = `zapisi-arai-${VERSION}`;
 const FILES = [
   './',
@@ -13,6 +13,8 @@ const FILES = [
   './config.js',
   './phone-input.js',
   './install.js',
+  './i18n.js',
+  './kk.js',
   './theme-init.js',
   './errors.js',
   './manifest.webmanifest',

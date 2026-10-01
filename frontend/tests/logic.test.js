@@ -2,6 +2,7 @@
 // Запуск: открыть tests/ в браузере через локальный сервер (см. frontend/README.md).
 import * as L from '../logic.js';
 import * as Z from '../zip.js';
+import KK from '../kk.js';
 
 const tests = [];
 
@@ -329,13 +330,13 @@ test('копия сохраняется и читается обратно', () 
 
 test('тема оформления в копии: своя сохраняется, неизвестная — пурпурная (исходная)', () => {
   const read = theme => L.readBackup(JSON.stringify({ app: 'kae-zapis', appointments: [], settings: { theme } })).settings.theme;
-  eq([read('lavender'), read('rose'), read('neon'), read(undefined)], ['lavender', 'rose', 'plum', 'plum']);
-  eq(Object.keys(L.THEMES), ['rose', 'plum', 'lavender', 'graphite']);
+  eq([read('lavender'), read('rose'), read('neon'), read('disco'), read(undefined)], ['lavender', 'rose', 'neon', 'plum', 'plum']);
+  eq(Object.keys(L.THEMES), ['neon', 'rose', 'plum', 'lavender', 'graphite']); // розово-чёрная (2.7.0) — первой
 });
 
 test('чужой файл не принимается', () => {
-  throws(() => L.readBackup('не json'), 'Это не файл копии');
-  throws(() => L.readBackup('{"app":"другое","appointments":[]}'), 'Это не файл копии');
+  throws(() => L.readBackup('не json'), 'Это не архив Beautybook');
+  throws(() => L.readBackup('{"app":"другое","appointments":[]}'), 'Это не архив Beautybook');
 });
 
 test('кривые поля в копии приводятся к нужному виду', () => {
@@ -413,7 +414,7 @@ test('проверка заявки клиента', () => {
   const error = patch => L.validateRequest({ ...good, ...patch }, SCHEDULE, CLOCK).error;
   const busy = 'Это время уже занято — выберите другое';
   eq([error({ name: ' ' }), error({ phone: '123' }), error({ services: [] }), error({ services: ['Стрижка'] }), error({ time: '14:00' }), error({ date: '2026-10-02' }), error({ date: 'завтра' })],
-    ['Укажите имя', 'Укажите номер телефона', 'Выберите вид работы', 'Такой услуги нет в прайсе', busy, busy, 'Выберите день и время']);
+    ['Укажите имя', 'Укажите номер телефона', 'Выберите, что будем делать', 'Такой услуги нет в прайсе', busy, busy, 'Выберите день и время']);
   eq(L.validateRequest(good, SCHEDULE, { date: '2026-10-01', minutes: 900 }).status, 409); // 14:30 уже прошло
 });
 
@@ -479,7 +480,7 @@ test('расписание v2: проверка заявки с учётом д�
   eq(L.validateRequest(good, SCHEDULE2, clock).request.duration, 60);
   eq(L.validateRequest({ ...good, time: '12:30' }, SCHEDULE2, clock).ok, true); // снятие маникюра закончилось в 12:20
   const long = L.validateRequest({ ...good, time: '11:00', services: ['Наращивание'] }, SCHEDULE2, clock);
-  eq([long.status, long.error], [409, 'На это время выбранные услуги не поместятся — выберите время раньше или меньше услуг']);
+  eq([long.status, long.error], [409, 'На это время выбранные услуги не поместятся — выберите время пораньше или меньше услуг']);
   eq(L.validateRequest({ ...good, time: '12:00' }, SCHEDULE2, clock).error, 'Это время уже занято — выберите другое');
 });
 
@@ -546,7 +547,7 @@ test('расписание для клиентов: закрытое время 
   const clock = { date: '2026-09-30', minutes: 600 };
   const req = { date: '2026-10-01', name: 'Дана', phone: '8 701 111 22 33', services: ['Педикюр'] };
   eq(L.validateRequest({ ...req, time: '14:30' }, s, clock).error, 'Это время уже занято — выберите другое');
-  eq(L.validateRequest({ ...req, time: '13:30' }, s, clock).error, 'На это время выбранные услуги не поместятся — выберите время раньше или меньше услуг');
+  eq(L.validateRequest({ ...req, time: '13:30' }, s, clock).error, 'На это время выбранные услуги не поместятся — выберите время пораньше или меньше услуг');
   eq(L.validateRequest({ ...req, time: '16:00' }, s, clock).ok, true);
 });
 
@@ -766,6 +767,7 @@ test('расписание для клиентов: тема, Instagram и на�
     settings: { ...L.DEFAULT_SETTINGS, clientName: 'Ерлан', theme: 'graphite', instagram: 'https://www.instagram.com/Erlan.Barber/', specialty: '  Барбер ' } }, new Date(2026, 9, 1), 1);
   eq([s.theme, s.instagram, s.specialty], ['graphite', 'erlan.barber', 'Барбер']);
   eq(L.cleanSchedule(s), s);
+  eq(L.cleanSchedule({ ...s, theme: 'neon' }).theme, 'neon');
   const evil = L.cleanSchedule({ ...s, theme: '"><script>', instagram: 'javascript:alert(1)', specialty: '<b>x</b>'.repeat(20) });
   eq([evil.theme, evil.instagram, evil.specialty], ['plum', '', Array(20).fill('x').join(' ')]);
   eq(['"><img src=x onerror=alert(1)>', 'Барбер '.repeat(10), ' Визажист >> '].map(L.specialtyText),
@@ -819,6 +821,55 @@ test('не архив — понятная ошибка', async () => {
     message = e.message;
   }
   eq(message, 'Это не архив копии');
+});
+
+// ---------- Казахский язык (2.7.0) ----------
+
+test('казахский: дни, месяцы, даты с падежом и годом', () => {
+  eq(L.dayTitle('2026-10-01', 'kk'), 'Бейсенбі, 1 қазан');
+  eq(L.monthTitle('2026-10', 'kk'), 'Қазан 2026');
+  eq(L.shortDate('2026-10-07', 'kk'), '7 қазан');
+  eq(L.weekdaysShort('kk')[0], 'Дс');
+  eq([L.dateOn('2026-10-07', 'kk'), L.dateOn('2026-09-07', 'kk'), L.dateOn('2026-04-07', 'kk'), L.dateOn('2026-07-01', 'kk')],
+    ['7 қазанда', '7 қыркүйекте', '7 сәуірде', '1 шілдеде']);
+  eq([L.dateUntil('2026-10-07', 'kk'), L.dateUntil('2026-09-30', 'kk'), L.dateUntil('2026-10-07', 'ru')],
+    ['7 қазанға дейін', '30 қыркүйекке дейін', 'до 7 октября']);
+  eq([L.fullDate('2026-10-07', 'kk'), L.fullDate('2026-10-07', 'ru')], ['2026 ж. 7 қазан', '7 октября 2026']);
+  eq([L.fullDateUntil('2026-10-31', 'kk'), L.fullDateUntil('2026-10-31', 'ru')], ['2026 ж. 31 қазанға дейін', 'до 31 октября 2026']);
+  eq(L.fullDateOn('2026-10-31', 'kk'), '2026 ж. 31 қазанда');
+  eq([L.dateRange('2026-10-01', '2026-10-31', 'kk'), L.dateRange('2026-10-01', '2026-10-31', 'ru')],
+    ['2026 ж. 1 қазан – 31 қазан', 'с 1 октября по 31 октября 2026']);
+  eq([L.dateSpan('2026-12-15', '2027-01-14', 'kk'), L.dateSpan('2026-12-15', '2027-01-14', 'ru')],
+    ['2026 ж. 15 желтоқсан – 2027 ж. 14 қаңтар', '15 декабря – 14 января 2027']);
+});
+
+test('казахский: время с падежом, длительность, число без смены слова', () => {
+  eq([L.timeTo('16:00', 'kk'), L.timeFrom('14:30', 'kk'), L.timeAt('09:15', 'kk'), L.timeAt('10:40', 'kk'), L.timeFrom('12:10', 'kk'), L.timeTo('18:20', 'kk')],
+    ['16:00-ге дейін', '14:30-дан', '9:15-те', '10:40-та', '12:10-нан', '18:20-ға дейін']);
+  eq([L.timeTo('16:00', 'ru'), L.timeFrom('09:00', 'ru'), L.timeAt('14:30', 'ru')], ['до 16:00', 'с 9:00', 'в 14:30']);
+  eq([L.formatDuration(150, 'kk'), L.formatDuration(150, 'ru'), L.formatDuration(45, 'kk')], ['2 сағ 30 мин', '2 ч 30 мин', '45 мин']);
+  const forms = ['запись', 'записи', 'записей', 'жазылу'];
+  eq([L.plural(1, forms, 'kk'), L.plural(5, forms, 'kk'), L.plural(5, forms, 'ru'), L.plural(22, forms, 'ru')], ['жазылу', 'жазылу', 'записей', 'записи']);
+});
+
+test('казахский: направление и прайс, сообщения клиенту и мастеру', () => {
+  const kk = L.servicesForSpecialty('Шаштараз', 'kk'), ru = L.servicesForSpecialty('Парикмахер', 'ru');
+  eq(kk.length, ru.length);
+  eq(kk[0], ['Әйелдер шаш үлгісі', ru[0][1]]);
+  eq(L.servicesForSpecialty('Шаштараз', 'ru')[0][0], 'Женская стрижка');
+  eq(L.servicesForSpecialty('тырнақ шебері', 'kk')[0][0], 'Жабынсыз маникюр');
+  eq(Object.keys(L.SPECIALTY_SERVICES_KK).every(k => L.SPECIALTY_SERVICES_KK[k].length === L.SPECIALTY_SERVICES[k].length), true);
+  eq([L.specialtyName('Парикмахер', 'kk'), L.specialtyName('Шаштараз', 'ru'), L.specialtyName('Стилист', 'kk')], ['Шаштараз', 'Парикмахер', 'Стилист']);
+  const a = { name: 'Айгүл', date: '2026-10-02', time: '10:00', services: ['Маникюр'], prepaid: 2000 };
+  eq(L.confirmationText(a, 'https://x/okna/?z=1', 'kk'),
+    `Сәлеметсіз бе, Айгүл! Жазылуыңыз расталды: 2 қазан, 10:00 (маникюр). ${L.formatMoney(2000)} алдын ала төлем алынды. Жазылуыңызды мына сілтемеден көре аласыз: https://x/okna/?z=1`);
+  eq(L.requestSummary({ name: 'Айгүл', date: '2026-09-30', time: '14:30', services: ['Маникюр', 'Педикюр'] }, 'kk'), 'Айгүл · 30 қыркүйек, 14:30 · Маникюр + Педикюр');
+});
+
+test('словарь: перевод есть, {подстановки} те же, что в русском', () => {
+  const marks = s => (s.match(/\{\w+\}/g) || []).sort().join();
+  eq(Object.entries(KK).filter(([ru, kk]) => marks(ru) !== marks(kk) || !kk.trim()).map(([ru]) => ru), []);
+  eq(Object.keys(KK).length > 700, true);
 });
 
 // ---------- Итог ----------

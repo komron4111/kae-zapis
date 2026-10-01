@@ -8,6 +8,25 @@ export const MONTHS_GEN = ['января', 'февраля', 'марта', 'ап
 export const WEEKDAYS = ['Воскресенье', 'Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота'];
 export const WEEKDAYS_SHORT = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
 
+// ---------- Язык (2.7.0): русский и казахский ----------
+// Язык выбирает i18n.js (приложение, страница клиентов, администратор): setLang('kk', t).
+// Сервер язык не ставит — у него всё по-русски, а казахский он просит явно (shortDate(d, 'kk')).
+const KK_MONTHS = ['Қаңтар', 'Ақпан', 'Наурыз', 'Сәуір', 'Мамыр', 'Маусым', 'Шілде', 'Тамыз', 'Қыркүйек', 'Қазан', 'Қараша', 'Желтоқсан'];
+const KK_WEEKDAYS = ['Жексенбі', 'Дүйсенбі', 'Сейсенбі', 'Сәрсенбі', 'Бейсенбі', 'Жұма', 'Сенбі'];
+const KK_WEEKDAYS_SHORT = ['Дс', 'Сс', 'Ср', 'Бс', 'Жм', 'Сб', 'Жс'];
+let LANG = 'ru';
+let translate = text => text;
+export function setLang(lang, tr) {
+  LANG = lang === 'kk' ? 'kk' : 'ru';
+  if (tr) translate = tr;
+}
+export const getLang = () => LANG;
+// Название месяца: «Октябрь» / «Қазан».
+export const monthName = (i, lang = LANG) => (lang === 'kk' ? KK_MONTHS : MONTHS)[i];
+// Месяц после числа: «1 октября» / «1 қазан».
+export const dateMonth = (i, lang = LANG) => (lang === 'kk' ? KK_MONTHS[i].toLowerCase() : MONTHS_GEN[i]);
+export const weekdaysShort = (lang = LANG) => (lang === 'kk' ? KK_WEEKDAYS_SHORT : WEEKDAYS_SHORT);
+
 export const DEFAULT_RENT = 0; // своя сумма — в «Настройки» → «Аренда» (до 2.2.1 было 70 000 ₸ Арай)
 
 // Рабочее время: запись можно начать с dayStart до lastStart включительно.
@@ -16,7 +35,8 @@ export const DEFAULT_RENT = 0; // своя сумма — в «Настройк�
 export const DEFAULT_SETTINGS = { dayStart: '09:00', lastStart: '20:00', duration: 150, clientName: '', whatsapp: '', address: '', gis: '', instagram: '', specialty: '', kaspi: '', theme: 'plum' };
 // Темы оформления: id → название в «Настройках». Цвета — в style.css. «Графит» — тёмная,
 // без розового (например, для парикмахеров и барберов). Клиенты видят страницу записи в теме мастера.
-export const THEMES = { rose: 'Розовая', plum: 'Пурпурная', lavender: 'Фиолетовая', graphite: 'Графит' };
+// «Розово-чёрная» (2.7.0) — как фон значка на экране «Домой»: чёрный с розовым неоном; в «Оформлении» — первой, во всю ширину.
+export const THEMES = { neon: 'Розово-чёрная', rose: 'Розовая', plum: 'Пурпурная', lavender: 'Фиолетовая', graphite: 'Графит' };
 
 // Направления мастера — подсказки при регистрации; можно вписать своё.
 export const SPECIALTIES = ['Маникюр и педикюр', 'Парикмахер', 'Барбер', 'Брови и ресницы', 'Визажист', 'Косметолог', 'Массаж', 'Депиляция и шугаринг', 'Тату и перманент'];
@@ -72,27 +92,63 @@ export const SPECIALTY_SERVICES = {
   ],
 };
 
+// По-казахски: направления (те же ключи) и услуги для прайса мастера, выбравшего казахский язык.
+export const SPECIALTIES_KK = {
+  'Маникюр и педикюр': 'Маникюр және педикюр', 'Парикмахер': 'Шаштараз', 'Барбер': 'Барбер', 'Брови и ресницы': 'Қас пен кірпік',
+  'Визажист': 'Визажист', 'Косметолог': 'Косметолог', 'Массаж': 'Массаж', 'Депиляция и шугаринг': 'Депиляция және шугаринг',
+  'Тату и перманент': 'Тату және перманент',
+};
+export const SPECIALTY_SERVICES_KK = {
+  'Маникюр и педикюр': ['Жабынсыз маникюр', 'Гель-лак жабыны бар маникюр', 'Нығайтып, жабын салатын маникюр', 'Тырнақ ұзарту',
+    'Ұзартылған тырнақты түзету', 'Жабынды алу', 'Тырнақ дизайны', 'Жабынсыз педикюр', 'Гель-лак жабыны бар педикюр', 'Жабыны бар маникюр мен педикюр'],
+  'Парикмахер': ['Әйелдер шаш үлгісі', 'Ерлер шаш үлгісі', 'Балалар шаш үлгісі', 'Кекіл қию', 'Шаш сәндеу', 'Шашты бір түске бояу',
+    'Шаш түбін бояу', 'Мелирлеу', 'Күрделі бояу (балаяж, шатуш)', 'Тондау', 'Кератинмен түзулеу', 'Кешкі шаш үлгісі'],
+  'Барбер': ['Ерлер шаш үлгісі', 'Машинкамен қию', 'Шаш үлгісі және сақал', 'Сақалды сәндеу', 'Корольдік қырыну', 'Балалар шаш үлгісі',
+    'Ақ шашты бояу (камуфляж)', 'Әке мен бала'],
+  'Брови и ресницы': ['Қас түзету', 'Қас түзету және бояу', 'Қасты ламинациялау', 'Кірпік ұзарту (классика)', 'Кірпік ұзарту (2D–3D)',
+    'Ұзартылған кірпікті түзету', 'Кірпікті алу', 'Кірпікті ламинациялау', 'Кірпікті бояу'],
+  'Визажист': ['Күндізгі макияж', 'Кешкі макияж', 'Той макияжы', 'Той макияжын алдын ала жасап көру', 'Макияж және шаш үлгісі',
+    'Жедел макияж', 'Өзіңізге макияж жасауды үйрену'],
+  'Косметолог': ['Кеңес', 'Бетті аралас тазалау', 'Бетті ультрадыбыспен тазалау', 'Пилинг', 'Тері түріне қарай күтім', 'Бет массажы',
+    'Альгинат маскасы', 'Карбокситерапия', 'Биоревитализация', 'Мезотерапия'],
+  'Массаж': ['Бүкіл денеге классикалық массаж', 'Арқа массажы', 'Мойын мен жауырын массажы', 'Антицеллюлит массажы', 'Лимфодренаж массажы',
+    'Босаңсытатын массаж', 'Спорттық массаж', 'Бет массажы', 'Аяқ массажы', 'Балалар массажы'],
+  'Депиляция и шугаринг': ['Қолтық шугарингі', 'Сирақ шугарингі', 'Аяқты толық шугаринг', 'Қол шугарингі', 'Классикалық бикини',
+    'Терең бикини', 'Бет шугарингі', 'Кешен: терең бикини және қолтық', 'Аяқты балауызбен депиляциялау'],
+  'Тату и перманент': ['Кеңес және эскиз', 'Қастың перманентті макияжы', 'Еріннің перманентті макияжы', 'Кірпікаралық сызық',
+    'Перманентті түзету', 'Перманентті ремувермен кетіру', 'Шағын тату', 'Тату (орташа көлем)'],
+};
+
+// Направление на языке страницы: из списка — переводим (в обе стороны), своё — как вписал мастер.
+export function specialtyName(value, lang = LANG) {
+  const text = specialtyText(value);
+  if (lang === 'kk') return SPECIALTIES_KK[text] || text;
+  return Object.keys(SPECIALTIES_KK).find(k => SPECIALTIES_KK[k] === text) || text;
+}
+
 // Своё направление (вписано словами) — по ключевым словам; берётся первое подходящее
 // в этом порядке: «перманентный макияж бровей» — перманент, «барбер, мужские стрижки» — барбер.
 const SPECIALTY_KEYS = [
   ['Тату и перманент', /тату|перман|tattoo/],
-  ['Барбер', /барбер|barber|бород/],
-  ['Маникюр и педикюр', /маник|педик|ногт|nail/],
-  ['Брови и ресницы', /бров|ресниц|лэш|lash|brow/],
+  ['Барбер', /барбер|barber|бород|сақал/],
+  ['Маникюр и педикюр', /маник|педик|ногт|тырнақ|nail/],
+  ['Брови и ресницы', /бров|ресниц|қас|кірпік|лэш|lash|brow/],
   ['Визажист', /визаж|макияж|make ?up/],
   ['Косметолог', /космет|эстетист|чистк/],
   ['Массаж', /массаж|massage/],
-  ['Депиляция и шугаринг', /депил|шугар|эпил|воск|sugar/],
-  ['Парикмахер', /парикмах|стилист|колорист|волос|стриж|hair/],
+  ['Депиляция и шугаринг', /депил|шугар|эпил|воск|балауыз|sugar/],
+  ['Парикмахер', /парикмах|шаштараз|стилист|колорист|волос|шаш|стриж|hair/],
 ];
 
 // Услуги для прайса по направлению: [[название, минуты], …]; не узнали направление — пусто.
-export function servicesForSpecialty(value) {
+// lang = 'kk' — названия по-казахски (длительность та же).
+export function servicesForSpecialty(value, lang = LANG) {
   const text = specialtyText(value).toLowerCase();
   if (!text) return [];
-  const key = Object.keys(SPECIALTY_SERVICES).find(k => k.toLowerCase() === text)
+  const key = Object.keys(SPECIALTY_SERVICES).find(k => k.toLowerCase() === text || SPECIALTIES_KK[k].toLowerCase() === text)
     || (SPECIALTY_KEYS.find(([, re]) => re.test(text)) || [])[0];
-  return key ? SPECIALTY_SERVICES[key].map(([name, minutes]) => [name, minutes]) : [];
+  if (!key) return [];
+  return SPECIALTY_SERVICES[key].map(([name, minutes], i) => [lang === 'kk' ? SPECIALTY_SERVICES_KK[key][i] : name, minutes]);
 }
 
 // Тариф «Про» (единственный): месяц или год. Первые TRIAL_DAYS дней после регистрации — бесплатно.
@@ -106,7 +162,7 @@ export const HORIZON_DAYS = 30;
 // booked — записана (получена только предоплата), paid — оплачено полностью,
 // cancelled — отменена (предоплата остаётся у мастера, если её не вернули).
 export const STATUSES = ['booked', 'paid', 'cancelled'];
-export const STATUS_LABELS = { booked: 'Записана', paid: 'Оплачено', cancelled: 'Отменена' };
+export const STATUS_LABELS = { booked: 'Записана', paid: 'Оплачена', cancelled: 'Отменена' };
 
 // ---------- Даты ----------
 // Только местное время: toISOString() сдвинул бы дату (Казахстан — UTC+5).
@@ -132,20 +188,49 @@ export function addMonths(ym, delta) {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
 }
 
-export function monthTitle(ym) {
+export function monthTitle(ym, lang = LANG) {
   const [y, m] = ym.split('-').map(Number);
-  return `${MONTHS[m - 1]} ${y}`;
+  return `${monthName(m - 1, lang)} ${y}`;
 }
 
-export function dayTitle(dateStr) {
+// «Четверг, 1 октября» / «Бейсенбі, 1 қазан».
+export function dayTitle(dateStr, lang = LANG) {
   const d = parseYmd(dateStr);
-  return `${WEEKDAYS[d.getDay()]}, ${d.getDate()} ${MONTHS_GEN[d.getMonth()]}`;
+  return `${(lang === 'kk' ? KK_WEEKDAYS : WEEKDAYS)[d.getDay()]}, ${d.getDate()} ${dateMonth(d.getMonth(), lang)}`;
 }
 
-export function shortDate(dateStr) {
+export function shortDate(dateStr, lang = LANG) {
   const d = parseYmd(dateStr);
-  return `${d.getDate()} ${MONTHS_GEN[d.getMonth()]}`;
+  return `${d.getDate()} ${dateMonth(d.getMonth(), lang)}`;
 }
+
+// Дата с падежом по-казахски: «7 қазанда» (когда) и «7 қазанға дейін» (до какого дня);
+// по-русски — «7 октября» и «до 7 октября».
+const KK_AT = ['да', 'да', 'да', 'де', 'да', 'да', 'де', 'да', 'те', 'да', 'да', 'да'];
+const KK_TO = ['ға', 'ға', 'ға', 'ге', 'ға', 'ға', 'ге', 'ға', 'ке', 'ға', 'ға', 'ға'];
+export function dateOn(dateStr, lang = LANG) {
+  const d = parseYmd(dateStr);
+  return lang === 'kk' ? `${d.getDate()} ${dateMonth(d.getMonth(), 'kk')}${KK_AT[d.getMonth()]}` : shortDate(dateStr, lang);
+}
+export function dateUntil(dateStr, lang = LANG) {
+  const d = parseYmd(dateStr);
+  return lang === 'kk' ? `${d.getDate()} ${dateMonth(d.getMonth(), 'kk')}${KK_TO[d.getMonth()]} дейін` : `до ${shortDate(dateStr, lang)}`;
+}
+
+// С годом: «7 октября 2026» / «2026 ж. 7 қазан» (по-казахски год впереди); с падежом — «2026 ж. 7 қазанда»,
+// «2026 ж. 7 қазанға дейін» (по-русски — «7 октября 2026», «до 7 октября 2026»).
+const withYear = (dateStr, text, lang) => (lang === 'kk' ? `${dateStr.slice(0, 4)} ж. ${text}` : `${text} ${dateStr.slice(0, 4)}`);
+export const fullDate = (dateStr, lang = LANG) => withYear(dateStr, shortDate(dateStr, lang), lang);
+export const fullDateOn = (dateStr, lang = LANG) => withYear(dateStr, dateOn(dateStr, lang), lang);
+export const fullDateUntil = (dateStr, lang = LANG) => withYear(dateStr, dateUntil(dateStr, lang), lang);
+
+// Срок: «1 октября – 31 октября 2026» / «2026 ж. 1 қазан – 31 қазан» (год один раз, если он общий).
+export function dateSpan(from, until, lang = LANG) {
+  if (lang === 'kk' && from.slice(0, 4) === until.slice(0, 4)) return withYear(until, `${shortDate(from, 'kk')} – ${shortDate(until, 'kk')}`, 'kk');
+  return `${lang === 'kk' ? fullDate(from, 'kk') : shortDate(from, lang)} – ${fullDate(until, lang)}`;
+}
+// То же словами по-русски: «с 1 октября по 31 октября 2026».
+export const dateRange = (from, until, lang = LANG) => (lang === 'kk' ? dateSpan(from, until, 'kk') : `с ${shortDate(from, lang)} по ${fullDate(until, lang)}`);
 
 export function addDays(dateStr, n) {
   const d = parseYmd(dateStr);
@@ -164,8 +249,10 @@ export function monthGrid(ym) {
   return out;
 }
 
-// plural(5, ['запись', 'записи', 'записей']) → 'записей'
-export function plural(n, forms) {
+// plural(5, ['запись', 'записи', 'записей', 'жазылу']) → 'записей'. По-казахски слово после числа
+// не меняется — четвёртое слово (или перевод первого): «5 жазылу».
+export function plural(n, forms, lang = LANG) {
+  if (lang === 'kk') return forms[3] || translate(forms[0]);
   const n10 = n % 10, n100 = n % 100;
   if (n10 === 1 && n100 !== 11) return forms[0];
   if (n10 >= 2 && n10 <= 4 && (n100 < 12 || n100 > 14)) return forms[1];
@@ -272,10 +359,28 @@ export function shortTime(hhmm) {
   return String(hhmm).replace(/^0(\d)/, '$1');
 }
 
-// 150 → '2 ч 30 мин'
-export function formatDuration(min) {
+// Время с падежом по-казахски — окончание по последнему слову числа («нөл», «отыз», «бес»…):
+// timeTo — «16:00-ге дейін» / «до 16:00», timeFrom — «9:00-ден» / «с 9:00», timeAt — «14:30-да» / «в 14:30».
+const KK_DIGIT = ['нөл', 'бір', 'екі', 'үш', 'төрт', 'бес', 'алты', 'жеті', 'сегіз', 'тоғыз'];
+const KK_TENS = ['нөл', 'он', 'жиырма', 'отыз', 'қырық', 'елу'];
+const KK_CASES = { // слово: [барыс «до», шығыс «с», жатыс «в»]
+  'нөл': ['ге', 'ден', 'де'], 'бір': ['ге', 'ден', 'де'], 'екі': ['ге', 'ден', 'де'], 'үш': ['ке', 'тен', 'те'], 'төрт': ['ке', 'тен', 'те'],
+  'бес': ['ке', 'тен', 'те'], 'алты': ['ға', 'дан', 'да'], 'жеті': ['ге', 'ден', 'де'], 'сегіз': ['ге', 'ден', 'де'], 'тоғыз': ['ға', 'дан', 'да'],
+  'он': ['ға', 'нан', 'да'], 'жиырма': ['ға', 'дан', 'да'], 'отыз': ['ға', 'дан', 'да'], 'қырық': ['қа', 'тан', 'та'], 'елу': ['ге', 'ден', 'де'],
+};
+function kkTime(hhmm, c) {
+  const min = Number(String(hhmm).slice(-2)) || 0;
+  const word = min % 10 ? KK_DIGIT[min % 10] : KK_TENS[min / 10];
+  return `${shortTime(hhmm)}-${KK_CASES[word][c]}`;
+}
+export const timeTo = (hhmm, lang = LANG) => (lang === 'kk' ? `${kkTime(hhmm, 0)} дейін` : `до ${shortTime(hhmm)}`);
+export const timeFrom = (hhmm, lang = LANG) => (lang === 'kk' ? kkTime(hhmm, 1) : `с ${shortTime(hhmm)}`);
+export const timeAt = (hhmm, lang = LANG) => (lang === 'kk' ? kkTime(hhmm, 2) : `в ${shortTime(hhmm)}`);
+
+// 150 → '2 ч 30 мин' / '2 сағ 30 мин'
+export function formatDuration(min, lang = LANG) {
   const h = Math.floor(min / 60), m = min % 60;
-  return [h ? `${h} ч` : '', m ? `${m} мин` : ''].filter(Boolean).join(' ');
+  return [h ? `${h} ${lang === 'kk' ? 'сағ' : 'ч'}` : '', m ? `${m} мин` : ''].filter(Boolean).join(' ');
 }
 
 // ---------- Закрытые дни и закрытое время ----------
@@ -608,7 +713,7 @@ export function validateRequest(body, schedule, clock) {
   if (digits.length < 10 || digits.length > 15) return fail('Укажите номер телефона');
   const known = (schedule.services || []).map(x => x.name);
   const services = [...new Set((Array.isArray(b.services) ? b.services : []).map(x => String(x).trim()).filter(Boolean))];
-  if (!services.length) return fail('Выберите вид работы');
+  if (!services.length) return fail('Выберите, что будем делать');
   if (services.length > 10 || services.some(x => (known.length ? !known.includes(x) : x.length > 60))) return fail('Такой услуги нет в прайсе');
   if (!DATE_RE.test(b.date) || !TIME_RE.test(b.time)) return fail('Выберите день и время');
   const day = (schedule.days || []).find(d => d.date === b.date);
@@ -620,7 +725,7 @@ export function validateRequest(body, schedule, clock) {
   if (!day || day.off || past || !scheduleTimes(schedule, day, duration, after).includes(b.time)) {
     // Время свободно, но выбранные услуги не успеют закончиться до следующей записи.
     const fitsShort = v2 && !past && scheduleTimes(schedule, day, shortestService(schedule.services, settings), after).includes(b.time);
-    return fail(fitsShort ? 'На это время выбранные услуги не поместятся — выберите время раньше или меньше услуг' : 'Это время уже занято — выберите другое', 409);
+    return fail(fitsShort ? 'На это время выбранные услуги не поместятся — выберите время пораньше или меньше услуг' : 'Это время уже занято — выберите другое', 409);
   }
   const comment = String(b.comment || '').trim().slice(0, 300);
   return { ok: true, request: { date: b.date, time: b.time, name, phone: formatPhone(digits), services, comment, duration } };
@@ -658,17 +763,22 @@ export function normalizeBooking(b) {
   };
 }
 
-// Сообщение клиенту в WhatsApp после подтверждения записи.
-export function confirmationText(a, link) {
+// Сообщение клиенту в WhatsApp после подтверждения записи — на языке приложения мастера.
+export function confirmationText(a, link, lang = LANG) {
   const what = servicesLabel(servicesOf(a)).toLowerCase();
-  let text = `Здравствуйте${a.name ? ', ' + a.name : ''}! Ваша запись подтверждена: ${shortDate(a.date)} в ${shortTime(a.time)}${what ? ` (${what})` : ''}.`;
+  if (lang === 'kk') {
+    let kk = `Сәлеметсіз бе${a.name ? ', ' + a.name : ''}! Жазылуыңыз расталды: ${shortDate(a.date, 'kk')}, ${shortTime(a.time)}${what ? ` (${what})` : ''}.`;
+    if (a.prepaid) kk += ` ${formatMoney(a.prepaid)} алдын ала төлем алынды.`;
+    return `${kk} Жазылуыңызды мына сілтемеден көре аласыз: ${link}`;
+  }
+  let text = `Здравствуйте${a.name ? ', ' + a.name : ''}! Ваша запись подтверждена: ${shortDate(a.date, 'ru')} в ${shortTime(a.time)}${what ? ` (${what})` : ''}.`;
   if (a.prepaid) text += ` Предоплата ${formatMoney(a.prepaid)} получена.`;
   return `${text} Ваша запись: ${link}`;
 }
 
-// «Айгуль · 30 сентября в 14:30 · Маникюр + Педикюр» — для уведомления мастеру.
-export function requestSummary(r) {
-  return `${r.name} · ${shortDate(r.date)} в ${shortTime(r.time)} · ${servicesLabel(r.services)}`;
+// «Айгуль · 30 сентября в 14:30 · Маникюр + Педикюр» — для уведомления мастеру (lang — язык его телефона).
+export function requestSummary(r, lang = LANG) {
+  return `${r.name} · ${shortDate(r.date, lang)}${lang === 'kk' ? ',' : ' в'} ${shortTime(r.time)} · ${servicesLabel(r.services)}`;
 }
 
 // ---------- base64url (ключи уведомлений и устройства) ----------
@@ -942,7 +1052,7 @@ export function readBackup(text) {
   let obj = null;
   try { obj = JSON.parse(text); } catch (e) { /* не JSON */ }
   if (!obj || obj.app !== BACKUP_APP || !Array.isArray(obj.appointments)) {
-    throw new Error('Это не файл копии Beautybook');
+    throw new Error('Это не архив Beautybook');
   }
   const str = v => (v == null ? '' : String(v));
   const list = v => (Array.isArray(v) ? v : []);

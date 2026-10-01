@@ -364,6 +364,26 @@ if (cron.status === 404) {
     && note.url === './?open=subs', JSON.stringify(note));
 }
 await subCall(aId, { action: 'until', value: L.subscriptionEnd(todayKz) });
+// Язык уведомлений (2.7.0): у подписки с lang 'kk' — по-казахски, по словарю сайта.
+r = await call('PUT', '/api/admin/push', { admin: CODE, body: { subscription: adminSub, name: 'Тестовый телефон', lang: 'kk' } });
+const kkFrom = pushed.length;
+await call('POST', '/api/admin/push/test', { admin: CODE });
+note = (got = await nthPush(kkFrom + 1)) && await decryptPush(got.body, ua);
+check('уведомление администратору по-казахски (lang kk)', r.status === 200 && note && note.title === 'Хабарландырулар жұмыс істейді', JSON.stringify(note));
+const ua2 = await pushKeys();
+const masterSub = { endpoint: `http://localhost:${PUSH_PORT}/master-${RUN}`, keys: { p256dh: L.bytesToB64u(ua2.publicRaw), auth: L.bytesToB64u(ua2.auth) } };
+r = await call('PUT', '/api/push', { key: A.key, body: { ...masterSub, lang: 'kk' } });
+check('мастер включил уведомления на казахском', r.status === 200, JSON.stringify(r.data));
+const mFrom = pushed.length;
+r = await call('POST', `/api/admin/chats/${aId}`, { admin: CODE, body: { text: 'Сәлем!' } });
+note = (got = await nthPush(mFrom + 1)) && await decryptPush(got.body, ua2);
+check('сообщение администратора — мастеру по-казахски', r.status === 201 && got.path === `/master-${RUN}` && note && note.title === 'Әкімшіден хабарлама'
+  && note.body === 'Сәлем!' && note.kind === 'chat', JSON.stringify(note));
+r = await call('PUT', '/api/push', { key: A.key, body: masterSub });
+const ruFrom = pushed.length;
+await call('POST', `/api/admin/chats/${aId}`, { admin: CODE, body: { text: 'Привет!' } });
+note = (got = await nthPush(ruFrom + 1)) && await decryptPush(got.body, ua2);
+check('без lang — по-русски, как раньше', note && note.title === 'Сообщение от администратора', JSON.stringify(note));
 r = await call('DELETE', '/api/admin/push', { admin: CODE, body: { endpoint: adminSub.endpoint } });
 check('уведомления администратору выключены', r.status === 200 && !r.data.devices.some(d => d.endpoint === adminSub.endpoint));
 const count = pushed.length;

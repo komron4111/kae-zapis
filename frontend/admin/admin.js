@@ -18,6 +18,7 @@ import * as L from '../logic.js';
 import { API_URL, PUBLIC_URL, IS_LOCAL } from '../config.js';
 import { phoneMask } from '../phone-input.js';
 import * as Install from '../install.js';
+import { t, getLang, setLang, otherLangLabel } from '../i18n.js';
 
 phoneMask();
 
@@ -46,7 +47,7 @@ const ICONS = {
 
 // «Установить на экран „Домой“» (2.6.0): страница администратора ставится как приложение «BB Админ».
 const installButton = cls => `
-  <button type="button" class="btn ${cls} block" data-install data-install-ui${Install.canInstall() ? '' : ' hidden'}>${icon('download')} Установить «BB Админ» на экран «Домой»</button>`;
+  <button type="button" class="btn ${cls} block" data-install data-install-ui${Install.canInstall() ? '' : ' hidden'}>${icon('download')} ${t('Установить «BB Админ» на экран «Домой»')}</button>`;
 const icon = name => `<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
 
 let code = '';
@@ -97,10 +98,11 @@ async function request(method, path, body, auth) {
   try {
     res = await fetch(API + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), cache: 'no-store' });
   } catch (e) {
-    throw new Error('Нет связи. Проверьте интернет');
+    throw new Error(t('Нет связи. Проверьте интернет'));
   }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `Ошибка ${res.status}`);
+  // Сервер отвечает по-русски, перевод — по словарю (kk.js).
+  if (!res.ok) throw new Error(data.error ? t(data.error) : t('Ошибка {status}', { status: res.status }));
   return data;
 }
 
@@ -109,7 +111,7 @@ const call = (method, path, body) => request(method, path, body,
 
 function formatDate(iso) {
   const d = new Date(iso);
-  return isNaN(d) ? '' : `${d.getDate()} ${L.MONTHS_GEN[d.getMonth()]} ${d.getFullYear()}`;
+  return isNaN(d) ? '' : L.fullDate(L.ymd(d));
 }
 
 const bytes = b64u => L.b64uToBytes(b64u);
@@ -130,13 +132,13 @@ function renderLogin(error = '', auto = false) {
   page = '';
   stopChat();
   view.innerHTML = `
-    <h2 class="page-title">Администратор</h2>
+    <h2 class="page-title">${t('Администратор')}</h2>
     <form class="card page-card" id="code-form" novalidate>
-      <p class="hint">Здесь видны все мастера Beautybook: подписки, записи, чат с мастерами, сброс забытого пароля.</p>
-      <label>Код администратора<input type="password" name="code" autocomplete="current-password"></label>
+      <p class="hint">${t('Здесь видны все мастера Beautybook: подписки, записи, чат с мастерами, сброс забытого пароля.')}</p>
+      <label>${t('Код администратора')}<input type="password" name="code" autocomplete="current-password"></label>
       ${error ? `<p class="warn-text">${esc(error)}</p>` : ''}
-      <button type="submit" class="btn primary block">Войти</button>
-      <button type="button" class="btn small ghost face-small" id="face-login" hidden>${icon('lock')} Войти по Face ID</button>
+      <button type="submit" class="btn primary block">${t('Войти')}</button>
+      <button type="button" class="btn small ghost face-small" id="face-login" hidden>${icon('lock')} ${t('Войти по Face ID')}</button>
       <p class="warn-text" id="face-error" hidden></p>
     </form>
     ${installButton('secondary')}`;
@@ -176,7 +178,7 @@ function faceError(text) {
 async function faceLogin(auto = false) {
   const options = loginOptions;
   if (!options || Date.now() - options.at > FRESH) {
-    faceError('Страница долго была открыта — нажмите «Войти по Face ID» ещё раз');
+    faceError(t('Страница долго была открыта — нажмите «Войти по Face ID» ещё раз'));
     prepareFaceLogin();
     return;
   }
@@ -195,7 +197,7 @@ async function faceLogin(auto = false) {
   } catch (e) {
     prepareFaceLogin();
     if (auto) return; // сам спросить не дали или отменили — есть кнопка и код
-    return faceError(e.name === 'NotAllowedError' ? 'Вход по Face ID отменён или не прошёл — нажмите ещё раз или войдите по коду' : `Face ID не сработал: ${e.message}`);
+    return faceError(e.name === 'NotAllowedError' ? t('Вход по Face ID отменён или не прошёл — нажмите ещё раз или войдите по коду') : t('Face ID не сработал: {error}', { error: e.message }));
   }
   try {
     const res = await request('POST', '/api/admin/passkey/login', {
@@ -266,22 +268,24 @@ const SECTIONS = {
 
 const unreadTotal = () => masters.reduce((n, m) => n + (m.unread || 0), 0);
 
+const DEVICE_FORMS = ['устройство', 'устройства', 'устройств', 'құрылғы'];
+
 function summary(id) {
-  if (id === 'masters') return `${masters.length} · анкеты, записи по месяцам, сортировка`;
+  if (id === 'masters') return `${masters.length} · ${t('анкеты, записи по месяцам, сортировка')}`;
   if (id === 'subs') {
     const ym = L.monthOf(today);
     const paid = masters.filter(m => paidIn(m, ym).length).length;
     const off = masters.filter(m => !sub(m).unlimited && !L.subscriptionActive(sub(m), today)).length;
-    return `оплатили в этом месяце: ${paid}${off ? ` · закончилась: ${off}` : ''}`;
+    return `${t('оплатили в этом месяце: {count}', { count: paid })}${off ? ` · ${t('закончилась: {count}', { count: off })}` : ''}`;
   }
-  if (id === 'chats') return unreadTotal() ? `новых сообщений: ${unreadTotal()}` : 'вопросы мастеров по оплате и приложению';
-  if (id === 'server') return `загрузка ${loadLevel()[1]} · база ${dbSize ? size(dbSize) : '—'} из 500 МБ`;
-  if (id === 'contact') return contact ? L.formatPhone(contact) : 'не указан — мастерам некуда писать';
+  if (id === 'chats') return unreadTotal() ? t('новых сообщений: {count}', { count: unreadTotal() }) : t('вопросы мастеров по оплате и приложению');
+  if (id === 'server') return t('загрузка {level} · база {size} из 500 МБ', { level: t(loadLevel()[1]), size: dbSize ? size(dbSize) : '—' });
+  if (id === 'contact') return contact ? L.formatPhone(contact) : t('не указан — мастерам некуда писать');
   if (id === 'push') {
     const n = pushInfo ? pushInfo.devices.length : 0;
-    return pushHere() ? 'включены на этом устройстве' : n ? `включены: ${n} ${L.plural(n, ['устройство', 'устройства', 'устройств'])}` : 'выключены';
+    return pushHere() ? t('включены на этом устройстве') : n ? t('включены: {count}', { count: `${n} ${L.plural(n, DEVICE_FORMS)}` }) : t('выключены');
   }
-  if (id === 'face') return passkeys.length ? `включён: ${passkeys.length} ${L.plural(passkeys.length, ['устройство', 'устройства', 'устройств'])}` : 'выключен';
+  if (id === 'face') return passkeys.length ? t('включён: {count}', { count: `${passkeys.length} ${L.plural(passkeys.length, DEVICE_FORMS)}` }) : t('выключен');
   return '';
 }
 
@@ -311,16 +315,16 @@ function render(anim) {
   if (!page) {
     view.innerHTML = `
       <div class="slide-clip"><div class="settings-home${enter}">
-        <h2 class="page-title">Администратор</h2>
+        <h2 class="page-title">${t('Администратор')}</h2>
         <section class="card settings-menu">${Object.entries(SECTIONS).map(([id, [ic, title]]) => `
           <button class="menu-row" data-go="${id}">
             <span class="menu-ico">${icon(ic)}</span>
-            <span class="grow"><b>${title}</b><small>${esc(summary(id))}</small></span>
+            <span class="grow"><b>${t(title)}</b><small>${esc(summary(id))}</small></span>
             ${id === 'chats' && unreadTotal() ? `<i class="menu-badge">${unreadTotal()}</i>` : ''}${icon('right')}
           </button>`).join('')}
         </section>
         ${installButton('secondary')}
-        <button class="btn ghost block" id="leave">Выйти</button>
+        <button class="btn ghost block" id="leave">${t('Выйти')}</button>
       </div></div>`;
     return;
   }
@@ -329,8 +333,8 @@ function render(anim) {
     page = 'masters';
     return render();
   }
-  const title = m ? esc(m.name || 'Без имени') : SECTIONS[page][1];
-  const backTitle = page === 'chat' ? 'Назад' : m ? 'Мастера' : 'Администратор';
+  const title = m ? esc(m.name || t('Без имени')) : t(SECTIONS[page][1]);
+  const backTitle = page === 'chat' ? t('Назад') : m ? t('Мастера') : t('Администратор');
   view.innerHTML = `
     <div class="slide-clip"><div class="settings-page${enter}">
       <button class="back-link" data-back>${icon('left')} ${backTitle}</button>
@@ -368,24 +372,24 @@ function clientLink(m) {
 
 // ---------- Мастера ----------
 
-const DAY_FORMS = ['день', 'дня', 'дней'];
-const RECORD_FORMS = ['запись', 'записи', 'записей'];
+const DAY_FORMS = ['день', 'дня', 'дней', 'күн'];
+const RECORD_FORMS = ['запись', 'записи', 'записей', 'жазылу'];
 const MASTER_SORTS = { created: 'Новые', total: 'Записи', link: 'По ссылке', clients: 'Клиенты' };
 const SUB_SORTS = { created: 'По регистрации', left: 'По остатку подписки' };
 const EMPTY_STAT = { total: 0, link: 0, manual: 0, clients: 0, sent: 0, confirmed: 0 };
 const statOf = (m, ym) => ({ ...EMPTY_STAT, ...((m.stats || {})[ym] || {}) });
-const monthShort = ym => `${L.MONTHS[Number(ym.slice(5)) - 1].slice(0, 3).toLowerCase()} ${ym.slice(2, 4)}`;
+const monthShort = ym => `${L.monthName(Number(ym.slice(5)) - 1).slice(0, 3).toLowerCase()} ${ym.slice(2, 4)}`;
 
 const sortChips = (kind, options, current) => `
-  <div class="chips sort-chips" role="group" aria-label="Сортировка">${Object.entries(options).map(([id, title]) => `
-    <button type="button" class="chip small${id === current ? ' on' : ''}" data-sort="${kind}:${id}" aria-pressed="${id === current}">${title}</button>`).join('')}
+  <div class="chips sort-chips" role="group" aria-label="${t('Сортировка')}">${Object.entries(options).map(([id, title]) => `
+    <button type="button" class="chip small${id === current ? ' on' : ''}" data-sort="${kind}:${id}" aria-pressed="${id === current}">${t(title)}</button>`).join('')}
   </div>`;
 
 const monthNav = (kind, ym) => `
   <div class="month-nav">
-    <button class="icon-btn" data-month="-1" data-kind="${kind}" aria-label="Предыдущий месяц">${icon('left')}</button>
+    <button class="icon-btn" data-month="-1" data-kind="${kind}" aria-label="${t('Предыдущий месяц')}">${icon('left')}</button>
     <b>${L.monthTitle(ym)}</b>
-    <button class="icon-btn" data-month="1" data-kind="${kind}" aria-label="Следующий месяц">${icon('right')}</button>
+    <button class="icon-btn" data-month="1" data-kind="${kind}" aria-label="${t('Следующий месяц')}">${icon('right')}</button>
   </div>`;
 
 // Поиск по имени, направлению, ссылке, адресу или цифрам номера (от 3 цифр).
@@ -401,23 +405,23 @@ function rows() {
   list.sort(key ? (a, b) => key(b) - key(a) || newest(a, b) : newest);
   return list.map(m => {
     const st = statOf(m, statMonth);
-    const about = [m.specialty, m.phone || 'номер не указан', shortAccess(m)].filter(Boolean).join(' · ');
-    const nums = `${monthShort(statMonth)}: ${st.total} ${L.plural(st.total, RECORD_FORMS)}, по ссылке ${st.link} · клиентов ${m.clients || 0}`;
+    const about = [L.specialtyName(m.specialty), m.phone || t('номер не указан'), shortAccess(m)].filter(Boolean).join(' · ');
+    const nums = t('{month}: {records}, по ссылке {link} · клиентов {clients}', { month: monthShort(statMonth), records: `${st.total} ${L.plural(st.total, RECORD_FORMS)}`, link: st.link, clients: m.clients || 0 });
     return `
     <button class="menu-row" data-master="${esc(m.id)}">
-      <span class="grow"><b>${esc(m.name || 'Без имени')}</b><small>${esc(about)}</small><small>${esc(nums)}</small></span>
-      ${m.unread ? `<i class="menu-badge" aria-label="Новых сообщений: ${m.unread}">${m.unread}</i>` : ''}${icon('right')}
+      <span class="grow"><b>${esc(m.name || t('Без имени'))}</b><small>${esc(about)}</small><small>${esc(nums)}</small></span>
+      ${m.unread ? `<i class="menu-badge" aria-label="${t('Новых сообщений: {count}', { count: m.unread })}">${m.unread}</i>` : ''}${icon('right')}
     </button>`;
-  }).join('') || '<p class="hint list-empty">Никого не нашли</p>';
+  }).join('') || `<p class="hint list-empty">${t('Никого не нашли')}</p>`;
 }
 
 function mastersHtml() {
   return `
-    <input type="search" id="q" class="search" placeholder="Имя, направление, номер или адрес" aria-label="Поиск мастера" value="${esc(query)}">
+    <input type="search" id="q" class="search" placeholder="${t('Имя, направление, номер или адрес')}" aria-label="${t('Поиск мастера')}" value="${esc(query)}">
     ${sortChips('master', MASTER_SORTS, masterSort)}
     ${monthNav('stat', statMonth)}
     <section class="card settings-menu" id="masters">${rows()}</section>
-    <p class="hint">Записи — принятые за месяц (без отменённых), «по ссылке» — из них пришедшие заявкой со страницы клиентов. Клиенты — все клиенты в базе мастера. Числа присылает приложение мастера при синхронизации.</p>`;
+    <p class="hint">${t('Записи — принятые за месяц (без отменённых); «по ссылке» — те из них, что пришли заявкой со страницы записи. Клиенты — все клиенты в базе мастера. Числа присылает приложение мастера, когда сохраняет данные в облако.')}</p>`;
 }
 
 // Записи мастера по месяцам за год: принятые, заявки по ссылке (отправлено клиентами / принято), внесённые вручную.
@@ -428,16 +432,16 @@ function statsCard(m) {
     const st = statOf(m, ym);
     if (ym !== now && !st.total && !st.sent) return '';
     return `
-        <tr><td>${esc(monthShort(ym))}</td><td>${st.total}</td><td>${st.sent}${st.link ? `<small>принято ${st.link}</small>` : ''}</td><td>${st.manual}</td></tr>`;
+        <tr><td>${esc(monthShort(ym))}</td><td>${st.total}</td><td>${st.sent}${st.link ? `<small>${t('принято {count}', { count: st.link })}</small>` : ''}</td><td>${st.manual}</td></tr>`;
   }).join('');
   return `
     <section class="card page-card">
-      <h3 class="card-title">Записи по месяцам</h3>
+      <h3 class="card-title">${t('Записи по месяцам')}</h3>
       <table class="stats-table">
-        <thead><tr><th>Месяц</th><th>Записей</th><th>Заявок по ссылке</th><th>Внёс сам</th></tr></thead>
+        <thead><tr><th>${t('Месяц')}</th><th>${t('Записей')}</th><th>${t('Заявок по ссылке')}</th><th>${t('Внёс сам')}</th></tr></thead>
         <tbody>${lines}</tbody>
       </table>
-      <p class="hint">Записей — принятые в этом месяце (без отменённых). Заявок по ссылке — сколько клиенты отправили со страницы записи; «принято» — сколько из них стали записями. Внёс сам — записи, которые мастер добавил в приложении. Откуда пришла запись, приложение помечает с версии 2.4.0 (октябрь 2026): более ранние записи считаются внесёнными самим мастером.</p>
+      <p class="hint">${t('«Записей» — принятые за месяц (без отменённых). «Заявок по ссылке» — сколько заявок клиенты отправили со страницы записи; «принято» — сколько из них стали записями. «Внёс сам» — записи, которые мастер добавил в приложении. Откуда пришла запись, приложение помечает с версии 2.4.0 (октябрь 2026): более ранние записи считаются внесёнными самим мастером.')}</p>
     </section>`;
 }
 
@@ -446,69 +450,71 @@ function masterHtml(m) {
   const gis = L.gisLink(m.gis);
   const link = clientLink(m);
   if (resetNote && resetNote.id === m.id) {
-    const text = `Здравствуйте, ${m.name}! Ваш временный пароль для входа в Beautybook: ${resetNote.temp}. Войдите по своему номеру ${m.phone} и смените пароль: «Настройки» → «Аккаунт» → «Сменить пароль».`;
+    const text = t('Здравствуйте, {name}! Ваш временный пароль для входа в Beautybook: {password}. Войдите по своему номеру {phone} и смените пароль: «Настройки» → «Аккаунт» → «Сменить пароль».', { name: m.name, password: resetNote.temp, phone: m.phone });
     return `
       <section class="card page-card">
-        <h3 class="card-title">Пароль сброшен</h3>
-        <p>Временный пароль для <b>${esc(m.name)}</b> (${esc(m.phone)}):</p>
+        <h3 class="card-title">${t('Пароль сброшен')}</h3>
+        <p>${t('Мастер: <b>{name}</b> ({phone}). Временный пароль:', { name: esc(m.name), phone: esc(m.phone) })}</p>
         <p class="temp-password">${esc(resetNote.temp)}</p>
-        <p class="hint">Отправьте его мастеру. После входа мастер сменит пароль в «Настройки» → «Аккаунт». Второй раз этот пароль здесь не покажется.</p>
-        <a class="btn primary block" href="https://wa.me/${L.phoneDigits(m.phone)}?text=${encodeURIComponent(text)}" target="_blank" rel="noopener">Отправить в WhatsApp</a>
+        <p class="hint">${t('Отправьте его мастеру. После входа мастер сменит пароль: «Настройки» → «Аккаунт» → «Сменить пароль». Больше этот пароль здесь не появится.')}</p>
+        <a class="btn primary block" href="https://wa.me/${L.phoneDigits(m.phone)}?text=${encodeURIComponent(text)}" target="_blank" rel="noopener">${t('Отправить в WhatsApp')}</a>
       </section>`;
   }
   return `
     <section class="card page-card">
-      <div class="line"><span>Направление</span><b>${esc(m.specialty || 'не указано')}</b></div>
-      <div class="line"><span>Телефон</span><b>${esc(m.phone || 'не указан')}</b></div>
-      <div class="line"><span>Kaspi для счёта</span><b>${m.kaspi ? `${esc(m.kaspi)} <button class="icon-btn copy-btn" data-copy="${esc(L.phoneDigits(m.kaspi).slice(-10))}" aria-label="Скопировать номер Kaspi">${icon('copy')}</button>` : 'не указан'}</b></div>
-      <div class="line"><span>Клиентов в базе</span><b>${m.clients || 0}</b></div>
-      <div class="line"><span>Зарегистрирован</span><b>${esc(formatDate(m.created))}</b></div>
-      <div class="line"><span>Аккаунт</span><b>${m.claimed ? 'оформлен' : 'не оформлен'}</b></div>
-      <div class="line"><span>Приложение</span><b>${m.devices ? 'подключено' : 'сейчас не в приложении'}</b></div>
-      <div class="line"><span>Адрес</span><b>${esc(m.address || 'не указан')}</b></div>
+      <div class="line"><span>${t('Направление')}</span><b>${esc(L.specialtyName(m.specialty) || t('не указано'))}</b></div>
+      <div class="line"><span>${t('Телефон')}</span><b>${esc(m.phone || t('не указан'))}</b></div>
+      <div class="line"><span>${t('Kaspi для счёта')}</span><b>${m.kaspi ? `${esc(m.kaspi)} <button class="icon-btn copy-btn" data-copy="${esc(L.phoneDigits(m.kaspi).slice(-10))}" aria-label="${t('Скопировать номер Kaspi')}">${icon('copy')}</button>` : t('не указан')}</b></div>
+      <div class="line"><span>${t('Клиентов в базе')}</span><b>${m.clients || 0}</b></div>
+      <div class="line"><span>${t('Зарегистрирован')}</span><b>${esc(formatDate(m.created))}</b></div>
+      <div class="line"><span>${t('Аккаунт')}</span><b>${m.claimed ? t('оформлен') : t('не оформлен')}</b></div>
+      <div class="line"><span>${t('Приложение')}</span><b>${m.devices ? t('подключено') : t('вход не выполнен')}</b></div>
+      <div class="line"><span>${t('Адрес')}</span><b>${esc(m.address || t('не указан'))}</b></div>
       <div class="btn-row">
-        ${gis ? `<a class="btn small secondary" href="${esc(gis)}" target="_blank" rel="noopener">Открыть в 2ГИС</a>` : ''}
+        ${gis ? `<a class="btn small secondary" href="${esc(gis)}" target="_blank" rel="noopener">${t('Открыть в 2ГИС')}</a>` : ''}
         ${m.instagram ? `<a class="btn small secondary" href="https://www.instagram.com/${esc(m.instagram)}/" target="_blank" rel="noopener">${icon('instagram')} @${esc(m.instagram)}</a>` : ''}
-        <button class="btn small secondary" data-chat="${esc(m.id)}">${icon('chat')} Написать${m.unread ? ` · ${m.unread}` : ''}</button>
+        <button class="btn small secondary" data-chat="${esc(m.id)}">${icon('chat')} ${t('Написать')}${m.unread ? ` · ${m.unread}` : ''}</button>
       </div>
     </section>
     ${statsCard(m)}
     <section class="card page-card">
-      <h3 class="card-title">Ссылка для клиентов</h3>
+      <h3 class="card-title">${t('Ссылка для клиентов')}</h3>
       <div class="link-box">${esc(link)}</div>
-      <a class="btn small secondary" href="${esc(link)}" target="_blank" rel="noopener">Открыть</a>
+      <a class="btn small secondary" href="${esc(link)}" target="_blank" rel="noopener">${t('Открыть')}</a>
     </section>
     ${subscriptionCard(m)}
     <section class="card page-card">
-      <h3 class="card-title">Данные на сервере — ${size(total(st))}</h3>
-      <div class="line"><span>Фото, ${st.photos} шт.</span><b>${size(st.photoBytes)}</b></div>
-      <div class="line"><span>Копии данных, ${st.backups} шт.</span><b>${size(st.backupBytes)}</b></div>
-      <div class="line"><span>Прочее (расписание, записи клиентов)</span><b>${size(st.otherBytes)}</b></div>
+      <h3 class="card-title">${t('Данные на сервере — {size}', { size: size(total(st)) })}</h3>
+      <div class="line"><span>${t('Фото, {count} шт.', { count: st.photos })}</span><b>${size(st.photoBytes)}</b></div>
+      <div class="line"><span>${t('Копии данных, {count} шт.', { count: st.backups })}</span><b>${size(st.backupBytes)}</b></div>
+      <div class="line"><span>${t('Прочее (расписание, записи клиентов)')}</span><b>${size(st.otherBytes)}</b></div>
     </section>
-    ${m.phone ? `<button class="btn secondary block" data-reset="${esc(m.id)}">Сбросить пароль</button>` : ''}`;
+    ${m.phone ? `<button class="btn secondary block" data-reset="${esc(m.id)}">${t('Сбросить пароль')}</button>` : ''}`;
 }
 
 // ---------- Подписки ----------
 
 const sub = m => m.subscription || { until: null, unlimited: false, periods: [] };
-const fullDate = d => `${L.shortDate(d)} ${d.slice(0, 4)}`;
+// Даты с годом на языке страницы: «7 октября 2026» / «2026 ж. 7 қазан» (logic.js).
+const { fullDate, fullDateOn, fullDateUntil } = L;
 const almatyDate = iso => L.masterClock(-300, Date.parse(iso)).date; // когда отмечено — по Алматы
-const PLAN_NAMES = { month: 'месяц', year: 'год' };
+const PLAN_FOR = { month: 'за месяц', year: 'за год' };
+const planFor = plan => (PLAN_FOR[plan] ? t(PLAN_FOR[plan]) : plan);
 
 function accessText(m) {
   const s = sub(m);
-  if (s.unlimited) return 'бессрочно';
-  if (!s.until) return 'подписки нет';
+  if (s.unlimited) return t('бессрочно');
+  if (!s.until) return t('подписки нет');
   const left = L.subscriptionDaysLeft(s, today);
-  if (left < 0) return `закончилась ${fullDate(s.until)} — доступ приостановлен`;
-  return `доступ до ${fullDate(s.until)}${left <= 7 ? ` · осталось ${left} ${L.plural(left, DAY_FORMS)}` : ''}`;
+  if (left < 0) return t('закончилась {date} — доступ приостановлен', { date: fullDateOn(s.until) });
+  return `${t('доступ {until}', { until: fullDateUntil(s.until) })}${left <= 7 ? ` · ${t('осталось {count}', { count: `${left} ${L.plural(left, DAY_FORMS)}` })}` : ''}`;
 }
 
 function shortAccess(m) {
   const s = sub(m);
-  if (s.unlimited) return 'бессрочно';
+  if (s.unlimited) return t('бессрочно');
   if (!s.until) return '';
-  return L.subscriptionActive(s, today) ? `до ${L.shortDate(s.until)}` : 'подписка закончилась';
+  return L.subscriptionActive(s, today) ? L.dateUntil(s.until) : t('подписка закончилась');
 }
 
 // Оплаты, отмеченные в месяце ym, и дни доступа, которые на него приходятся.
@@ -530,22 +536,23 @@ const daysLeft = m => (sub(m).unlimited ? Infinity : sub(m).until ? L.subscripti
 
 function subScale(m) {
   const left = daysLeft(m);
-  if (left === Infinity) return `<div class="sub-scale">${pills(10, 'Доступ бессрочный')}<small>бессрочно</small></div>`;
-  if (left < 0) return `<div class="sub-scale">${pills(0, 'Подписка закончилась')}<small>закончилась</small></div>`;
+  if (left === Infinity) return `<div class="sub-scale">${pills(10, t('Доступ бессрочный'))}<small>${t('бессрочно')}</small></div>`;
+  if (left < 0) return `<div class="sub-scale">${pills(0, t('Подписка закончилась'))}<small>${t('закончилась')}</small></div>`;
   const days = left + 1; // дней доступа, считая сегодняшний
-  return `<div class="sub-scale">${pills(Math.min(10, Math.ceil(days / 3)), `Доступ до ${fullDate(sub(m).until)}`)}<small>до ${esc(sub(m).until.slice(0, 4) === today.slice(0, 4) ? L.shortDate(sub(m).until) : fullDate(sub(m).until))}</small></div>`;
+  const until = sub(m).until;
+  return `<div class="sub-scale">${pills(Math.min(10, Math.ceil(days / 3)), t('Доступ {until}', { until: fullDateUntil(until) }))}<small>${esc(until.slice(0, 4) === today.slice(0, 4) ? L.dateUntil(until) : fullDateUntil(until))}</small></div>`;
 }
 
 // Галочку поставили — выбрать срок оплаты (тариф «Про»: месяц или год).
 function planChoice(m) {
   const option = plan => {
-    const t = L.TARIFF[plan], next = L.nextPeriod(sub(m).until, today, t.months);
-    return `<button type="button" class="btn small ${plan === 'month' ? 'primary' : 'secondary'}" data-pay-plan="${plan}" data-id="${esc(m.id)}">${t.title} · ${L.formatMoney(t.price)} → до ${esc(fullDate(next.end))}</button>`;
+    const tariff = L.TARIFF[plan], next = L.nextPeriod(sub(m).until, today, tariff.months);
+    return `<button type="button" class="btn small ${plan === 'month' ? 'primary' : 'secondary'}" data-pay-plan="${plan}" data-id="${esc(m.id)}">${t(tariff.title)} · ${L.formatMoney(tariff.price)} → ${esc(fullDateUntil(next.end))}</button>`;
   };
   return `
         <div class="plan-choice">
-          <small>Оплата получена — за какой срок?</small>
-          <div class="btn-row">${option('month')}${option('year')}<button type="button" class="btn small ghost" data-pay-plan="">Отмена</button></div>
+          <small>${t('Оплата получена — за какой срок?')}</small>
+          <div class="btn-row">${option('month')}${option('year')}<button type="button" class="btn small ghost" data-pay-plan="">${t('Отмена')}</button></div>
         </div>`;
 }
 
@@ -558,19 +565,19 @@ function subsHtml() {
   const list = masters.filter(m => almatyDate(m.created) <= last).sort((a, b) => a.created.localeCompare(b.created));
   if (subSort === 'left') list.sort((a, b) => daysLeft(a) - daysLeft(b) || a.created.localeCompare(b.created));
   const paidCount = list.filter(m => paidIn(m, subMonth).length).length;
-  const income = list.reduce((sum, m) => sum + paidIn(m, subMonth).reduce((t, p) => t + (p.amount || 0), 0), 0);
+  const income = list.reduce((sum, m) => sum + paidIn(m, subMonth).reduce((acc, p) => acc + (p.amount || 0), 0), 0);
   const rows = list.map(m => {
     const s = sub(m);
     const paid = paidIn(m, subMonth);
     const cov = coverage(m, subMonth);
-    const status = s.unlimited ? 'бессрочно' : current ? accessText(m) : cov ? `доступ с ${L.shortDate(cov.from)} по ${fullDate(cov.to)}` : 'без доступа';
-    const note = paid.length ? `оплата ${paid.map(p => `${L.shortDate(almatyDate(p.marked))}${p.plan ? ` за ${PLAN_NAMES[p.plan] || p.plan}` : ''}`).join(', ')}` : '';
+    const status = s.unlimited ? t('бессрочно') : current ? accessText(m) : cov ? t('доступ {range}', { range: L.dateRange(cov.from, cov.to) }) : t('без доступа');
+    const note = paid.length ? t('оплата {list}', { list: paid.map(p => `${L.shortDate(almatyDate(p.marked))}${p.plan ? ` ${planFor(p.plan)}` : ''}`).join(', ') }) : '';
     const off = !s.unlimited && current && !L.subscriptionActive(s, today);
     return `
       <div class="sub-row${off ? ' off' : ''}">
-        <input type="checkbox" class="sub-check" data-pay="${esc(m.id)}" aria-label="Оплата от ${esc(m.name)} получена" ${paid.length ? 'checked' : ''} ${current && !s.unlimited ? '' : 'disabled'}>
+        <input type="checkbox" class="sub-check" data-pay="${esc(m.id)}" aria-label="${t('{name}: оплата получена', { name: esc(m.name) })}" ${paid.length ? 'checked' : ''} ${current && !s.unlimited ? '' : 'disabled'}>
         <div class="grow sub-main">
-          <button class="sub-info" data-master="${esc(m.id)}"><b>${esc(m.name || 'Без имени')}</b><small>${esc([status, note].filter(Boolean).join(' · '))}</small></button>
+          <button class="sub-info" data-master="${esc(m.id)}"><b>${esc(m.name || t('Без имени'))}</b><small>${esc([status, note].filter(Boolean).join(' · '))}</small></button>
           ${current ? subScale(m) : ''}
           ${current && paying === m.id ? planChoice(m) : ''}
         </div>
@@ -579,37 +586,38 @@ function subsHtml() {
   return `
     ${monthNav('sub', subMonth)}
     ${sortChips('sub', SUB_SORTS, subSort)}
-    <p class="hint">Оплатили${current ? ' в этом месяце' : ''}: ${paidCount} из ${list.length}${income ? ` · получено ${L.formatMoney(income)}` : ''}.</p>
-    <section class="card list">${rows || '<p class="hint list-empty">В этом месяце мастеров ещё не было</p>'}</section>
-    <p class="hint">Галочка — «оплата получена»: выберите срок — месяц (${L.formatMoney(L.TARIFF.month.price)}) или год (${L.formatMoney(L.TARIFF.year.price)}). Доступ продлится от конца текущего периода, а если он уже закончился — с сегодняшнего дня. Отметили по ошибке — снимите галочку. Шкала под мастером — сколько осталось до конца подписки: каждый овал — 3 дня, красные — конец близко. Отмечать можно в текущем месяце. Нажмите на мастера — там все его периоды, бессрочный доступ и дата окончания.</p>`;
+    <p class="hint">${t(current ? 'Оплатили в этом месяце: {count} из {total}' : 'Оплатили: {count} из {total}', { count: paidCount, total: list.length })}${income ? ` · ${t('получено {sum}', { sum: L.formatMoney(income) })}` : ''}.</p>
+    <section class="card list">${rows || `<p class="hint list-empty">${t('В этом месяце мастеров ещё не было')}</p>`}</section>
+    <p class="hint">${t('Галочка означает «оплата получена»: поставьте её и выберите срок — месяц ({month}) или год ({year}). Доступ продлится от конца текущего периода, а если он уже закончился — с сегодняшнего дня. Отметили по ошибке — снимите галочку. Отмечать можно только в текущем месяце. Шкала под мастером показывает, сколько осталось до конца подписки: каждый овал — 3 дня, красные — конец близко. Нажмите на мастера — в карточке все его периоды, бессрочный доступ и дата окончания.', { month: L.formatMoney(L.TARIFF.month.price), year: L.formatMoney(L.TARIFF.year.price) })}</p>`;
 }
 
 // Подписка в карточке мастера: сейчас, все периоды, продлить, отменить, дата, бессрочно.
 function subscriptionCard(m) {
   const s = sub(m);
   const kinds = { trial: 'пробный период', manual: 'изменено вручную' };
-  const paidText = p => `оплата ${L.shortDate(almatyDate(p.marked))}${p.plan ? ` за ${PLAN_NAMES[p.plan] || p.plan}` : ''}${p.amount ? `, ${L.formatMoney(p.amount)}` : ''}`;
+  const paidText = p => `${t('оплата {list}', { list: L.shortDate(almatyDate(p.marked)) })}${p.plan ? ` ${planFor(p.plan)}` : ''}${p.amount ? `, ${L.formatMoney(p.amount)}` : ''}`;
   const periods = [...s.periods].reverse().map(p => `
-    <div class="line"><span>${esc(L.shortDate(p.from))} – ${esc(fullDate(p.to))}</span><b>${esc(p.kind === 'paid' ? paidText(p) : kinds[p.kind] || p.kind)}</b></div>`).join('');
+    <div class="line"><span>${esc(L.dateSpan(p.from, p.to))}</span><b>${esc(p.kind === 'paid' ? paidText(p) : kinds[p.kind] ? t(kinds[p.kind]) : p.kind)}</b></div>`).join('');
   const hasPaid = s.periods.some(p => p.kind === 'paid');
   const extend = plan => {
-    const t = L.TARIFF[plan], next = L.nextPeriod(s.until, today, t.months);
-    return `<button class="btn ${plan === 'month' ? 'primary' : 'secondary'} block" data-sub="extend-${plan}">Оплата за ${PLAN_NAMES[plan]} (${L.formatMoney(t.price)}) — до ${esc(fullDate(next.end))}</button>`;
+    const tariff = L.TARIFF[plan], next = L.nextPeriod(s.until, today, tariff.months);
+    const label = plan === 'year' ? 'Оплата за год ({price}) — {until}' : 'Оплата за месяц ({price}) — {until}';
+    return `<button class="btn ${plan === 'month' ? 'primary' : 'secondary'} block" data-sub="extend-${plan}">${t(label, { price: L.formatMoney(tariff.price), until: esc(fullDateUntil(next.end)) })}</button>`;
   };
   return `
     <section class="card page-card">
-      <h3 class="card-title">Подписка</h3>
-      <div class="line"><span>Сейчас</span><b>${esc(accessText(m))}</b></div>
+      <h3 class="card-title">${t('Подписка')}</h3>
+      <div class="line"><span>${t('Сейчас')}</span><b>${esc(accessText(m))}</b></div>
       ${subScale(m)}
       ${periods}
       ${s.unlimited ? '' : extend('month') + extend('year')}
-      ${hasPaid && !s.unlimited ? '<button class="btn ghost block" data-sub="undo">Отменить последнюю оплату</button>' : ''}
+      ${hasPaid && !s.unlimited ? `<button class="btn ghost block" data-sub="undo">${t('Отменить последнюю оплату')}</button>` : ''}
       ${s.unlimited ? '' : `
       <form id="until-form" class="until-form" novalidate>
-        <label>Доступ до<input type="date" name="until" value="${esc(s.until || '')}"></label>
-        <button type="submit" class="btn small secondary">Сохранить</button>
+        <label>${t('Доступ до')}<input type="date" name="until" value="${esc(s.until || '')}"></label>
+        <button type="submit" class="btn small secondary">${t('Сохранить')}</button>
       </form>`}
-      <button class="btn ghost block" data-sub="unlimited">${s.unlimited ? 'Отключить бессрочный доступ' : 'Сделать доступ бессрочным'}</button>
+      <button class="btn ghost block" data-sub="unlimited">${s.unlimited ? t('Отключить бессрочный доступ') : t('Сделать доступ бессрочным')}</button>
     </section>`;
 }
 
@@ -626,10 +634,11 @@ async function changeSubscription(id, body) {
 // в «Подписках» подтверждение — выбор срока после галочки.
 async function extendSubscription(id, plan, ask = true) {
   const m = masters.find(x => x.id === id);
-  const t = L.TARIFF[plan];
-  if (!m || !t) return;
-  const next = L.nextPeriod(sub(m).until, today, t.months);
-  if (ask && !confirm(`Оплата от ${m.name} за ${PLAN_NAMES[plan]} (${L.formatMoney(t.price)}) получена? Доступ продлится до ${fullDate(next.end)}.`)) return;
+  const tariff = L.TARIFF[plan];
+  if (!m || !tariff) return;
+  const next = L.nextPeriod(sub(m).until, today, tariff.months);
+  const question = plan === 'year' ? '{name}: оплата за год ({price}) получена? Доступ продлится {until}.' : '{name}: оплата за месяц ({price}) получена? Доступ продлится {until}.';
+  if (ask && !confirm(t(question, { name: m.name, price: L.formatMoney(tariff.price), until: fullDateUntil(next.end) }))) return;
   paying = '';
   return changeSubscription(id, { action: 'extend', plan });
 }
@@ -637,7 +646,7 @@ async function extendSubscription(id, plan, ask = true) {
 // Сняли галочку — отменить последнюю отмеченную оплату.
 async function undoPayment(id) {
   const m = masters.find(x => x.id === id);
-  if (!m || !confirm(`Снять отметку об оплате от ${m.name}? Последняя отмеченная оплата отменится.`)) return;
+  if (!m || !confirm(t('{name}: снять отметку об оплате? Последняя отмеченная оплата отменится.', { name: m.name }))) return;
   return changeSubscription(id, { action: 'undo' });
 }
 
@@ -650,7 +659,8 @@ function subscriptionAction(action) {
   if (action === 'undo') return undoPayment(m.id);
   if (action === 'unlimited') {
     const on = !s.unlimited;
-    if (!confirm(on ? `Сделать доступ ${m.name} бессрочным? Подписка больше не будет заканчиваться.` : `Отключить бессрочный доступ ${m.name}? Доступ будет до ${s.until ? fullDate(s.until) : 'сегодня'}.`)) return;
+    if (!confirm(on ? t('{name}: сделать доступ бессрочным? Подписка больше не будет заканчиваться.', { name: m.name })
+      : t('{name}: отключить бессрочный доступ? Доступ будет {until}.', { name: m.name, until: s.until ? fullDateUntil(s.until) : t('до сегодня') }))) return;
     return changeSubscription(m.id, { action: 'unlimited', value: on });
   }
 }
@@ -660,8 +670,8 @@ async function saveUntil(e) {
   const m = masters.find(x => x.id === masterId);
   const value = e.target.elements.until.value;
   if (!m || !value) return;
-  const note = value < today ? ' Доступ сразу приостановится.' : '';
-  if (!confirm(`Доступ ${m.name} — до ${fullDate(value)}?${note}`)) return;
+  const note = value < today ? ` ${t('Доступ сразу приостановится.')}` : '';
+  if (!confirm(`${t('{name}: доступ {until}?', { name: m.name, until: fullDateUntil(value) })}${note}`)) return;
   return changeSubscription(m.id, { action: 'until', value });
 }
 
@@ -671,17 +681,17 @@ async function saveUntil(e) {
 
 function chatsHtml() {
   return `
-    <p class="hint">Вопросы мастеров по оплате, подписке и работе приложения. Ваш ответ придёт мастеру уведомлением. Написать первым можно из карточки мастера — кнопка «Написать».</p>
+    <p class="hint">${t('Вопросы мастеров по оплате, подписке и работе приложения. Ваш ответ придёт мастеру уведомлением. Написать первым можно из карточки мастера — кнопка «Написать».')}</p>
     <section class="card settings-menu" id="chats">${chatRows()}</section>`;
 }
 
 function chatRows() {
-  if (!chats) return '<p class="hint list-empty">Загружаем…</p>';
+  if (!chats) return `<p class="hint list-empty">${t('Загружаем…')}</p>`;
   return chats.map(c => `
     <button class="menu-row" data-chat="${esc(c.masterId)}">
-      <span class="grow"><b>${esc(c.name || 'Без имени')}</b><small>${esc(`${c.last.author === 'admin' ? 'Вы: ' : ''}${c.last.text}`)}</small></span>
-      ${c.unread ? `<i class="menu-badge" aria-label="Новых сообщений: ${c.unread}">${c.unread}</i>` : ''}${icon('right')}
-    </button>`).join('') || '<p class="hint list-empty">Сообщений пока нет</p>';
+      <span class="grow"><b>${esc(c.name || t('Без имени'))}</b><small>${esc(`${c.last.author === 'admin' ? t('Вы: ') : ''}${c.last.text}`)}</small></span>
+      ${c.unread ? `<i class="menu-badge" aria-label="${t('Новых сообщений: {count}', { count: c.unread })}">${c.unread}</i>` : ''}${icon('right')}
+    </button>`).join('') || `<p class="hint list-empty">${t('Сообщений пока нет')}</p>`;
 }
 
 async function loadChats() {
@@ -700,18 +710,20 @@ async function loadChats() {
   if (box) box.innerHTML = chatRows();
 }
 
+// Время по Алматы (UTC+5): «1 октября в 14:30» / «1 қазан, 14:30».
 function formatTime(iso) {
-  const d = new Date(iso);
-  if (isNaN(d)) return '';
-  return d.toLocaleString('ru-RU', { timeZone: 'Asia/Almaty', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
+  const ms = Date.parse(iso);
+  if (isNaN(ms)) return '';
+  const { date, minutes } = L.masterClock(-300, ms);
+  return t('{date} в {time}', { date: L.shortDate(date), time: `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}` });
 }
 
 function bubbles() {
-  if (!messages.length) return '<p class="hint chat-empty">Сообщений пока нет — напишите мастеру первым.</p>';
+  if (!messages.length) return `<p class="hint chat-empty">${t('Сообщений пока нет — напишите мастеру первым.')}</p>`;
   return messages.map(x => `
     <div class="bubble ${x.author === 'admin' ? 'mine' : 'theirs'}">
       <p>${esc(x.text).replace(/\n/g, '<br>')}</p>
-      <small>${esc(formatTime(x.created))}${x.author === 'admin' && x.seen ? ' · прочитано' : ''}</small>
+      <small>${esc(formatTime(x.created))}${x.author === 'admin' && x.seen ? ` · ${t('прочитано')}` : ''}</small>
     </div>`).join('');
 }
 
@@ -719,8 +731,8 @@ function chatHtml() {
   return `
     <div class="chat" id="chat-list">${bubbles()}</div>
     <form id="chat-form" class="chat-form" novalidate>
-      <textarea name="text" rows="2" maxlength="2000" placeholder="Сообщение мастеру" aria-label="Сообщение"></textarea>
-      <button type="submit" class="btn primary">Отправить</button>
+      <textarea name="text" rows="2" maxlength="2000" placeholder="${t('Сообщение мастеру')}" aria-label="${t('Сообщение')}"></textarea>
+      <button type="submit" class="btn primary">${t('Отправить')}</button>
     </form>`;
 }
 
@@ -749,7 +761,7 @@ async function loadMessages(first = false) {
 
 function startChat() {
   messages = [];
-  $('#chat-list').innerHTML = '<p class="hint chat-empty">Загружаем сообщения…</p>';
+  $('#chat-list').innerHTML = `<p class="hint chat-empty">${t('Загружаем сообщения…')}</p>`;
   const form = $('#chat-form');
   form.addEventListener('submit', async e => {
     e.preventDefault();
@@ -808,37 +820,37 @@ function pushHtml() {
   const devices = (pushInfo && pushInfo.devices) || [];
   const blocker = pushBlocker();
   const status = blocker === 'home'
-    ? '<p class="status warn">На iPhone уведомления приходят, когда страница открыта с экрана «Домой»: в Safari нажмите «Поделиться» → «На экран „Домой“», откройте «BB Админ» с иконки и включите уведомления здесь.</p>'
-    : blocker === 'browser' ? '<p class="status warn">Этот браузер не умеет получать уведомления.</p>'
-    : blocker === 'denied' ? '<p class="status bad">Уведомления запрещены в настройках телефона: Настройки → Уведомления → BB Админ.</p>'
-    : pushHere() ? `<p class="status ok">${icon('check')} Включены на этом устройстве</p>
-      <button class="btn secondary block" data-push="test">Прислать пробное уведомление</button>
-      <button class="btn ghost block" data-push="off">Выключить на этом устройстве</button>`
-    : '<button class="btn primary block" data-push="on">Включить уведомления на этом устройстве</button>';
+    ? `<p class="status warn">${t('На iPhone уведомления приходят, только если «BB Админ» установлен на экран «Домой»: в Safari нажмите «Поделиться» → «На экран „Домой“», откройте «BB Админ» с иконки и включите уведомления здесь.')}</p>`
+    : blocker === 'browser' ? `<p class="status warn">${t('Этот браузер не умеет получать уведомления.')}</p>`
+    : blocker === 'denied' ? `<p class="status bad">${t('Уведомления запрещены в настройках телефона: «Настройки» → «Уведомления» → «BB Админ».')}</p>`
+    : pushHere() ? `<p class="status ok">${icon('check')} ${t('Включены на этом устройстве')}</p>
+      <button class="btn secondary block" data-push="test">${t('Прислать пробное уведомление')}</button>
+      <button class="btn ghost block" data-push="off">${t('Выключить на этом устройстве')}</button>`
+    : `<button class="btn primary block" data-push="on">${t('Включить уведомления на этом устройстве')}</button>`;
   return `
     <section class="card page-card">
-      <p class="hint">Уведомления приходят на телефон, даже когда страница закрыта:</p>
+      <p class="hint">${t('Уведомления приходят на телефон, даже когда страница закрыта:')}</p>
       <ul class="terms-list">
-        <li>мастер написал в чат;</li>
-        <li>зарегистрировался новый мастер;</li>
-        <li>мастер нажал «Я оплатил(а)» — проверьте Kaspi и отметьте оплату;</li>
-        <li>каждое утро в 9:00 — у кого подписка кончается сегодня или завтра и у кого закончилась вчера.</li>
+        <li>${t('мастер написал в чат;')}</li>
+        <li>${t('зарегистрировался новый мастер;')}</li>
+        <li>${t('мастер нажал «Я оплатил(а)» — проверьте Kaspi и отметьте оплату;')}</li>
+        <li>${t('каждое утро в 9:00 — у кого подписка заканчивается сегодня или завтра и у кого закончилась вчера.')}</li>
       </ul>
       ${status}
     </section>
     ${devices.length ? `
-    <h3 class="section-title">Устройства с уведомлениями</h3>
+    <h3 class="section-title">${t('Устройства с уведомлениями')}</h3>
     <section class="card list">${devices.map(d => `
       <div class="admin-master">
-        <div class="grow"><b>${esc(d.name || 'Устройство')}${d.endpoint === myEndpoint ? ' · это устройство' : ''}</b><small>включены ${esc(formatDate(d.created))}</small></div>
-        <button class="btn small ghost" data-push-remove="${esc(d.endpoint)}">Убрать</button>
+        <div class="grow"><b>${esc(d.name || t('Устройство'))}${d.endpoint === myEndpoint ? ` · ${t('это устройство')}` : ''}</b><small>${t('включены {date}', { date: esc(formatDate(d.created)) })}</small></div>
+        <button class="btn small ghost" data-push-remove="${esc(d.endpoint)}">${t('Убрать')}</button>
       </div>`).join('')}
     </section>` : ''}`;
 }
 
 async function swRegistration() {
   const reg = await swReady;
-  if (!reg) throw new Error('не удалось подключить уведомления — перезагрузите страницу');
+  if (!reg) throw new Error(t('не удалось подключить уведомления — перезагрузите страницу'));
   const worker = reg.active || reg.waiting || reg.installing;
   if (!reg.active && worker) {
     await new Promise(resolve => worker.addEventListener('statechange', () => worker.state === 'activated' && resolve()));
@@ -855,7 +867,7 @@ async function enablePush() {
   } catch (e) { /* ниже — понятное сообщение */ }
   if (permission !== 'granted') {
     render();
-    return alert('Уведомления не разрешены. Их можно включить: Настройки → Уведомления → BB Админ');
+    return alert(t('Уведомления не разрешены. Включить их можно так: «Настройки» → «Уведомления» → «BB Админ»'));
   }
   try {
     const reg = await swRegistration();
@@ -867,11 +879,12 @@ async function enablePush() {
       sub = null;
     }
     if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: L.b64uToBytes(pushInfo.key) });
-    pushInfo = await call('PUT', '/api/admin/push', { subscription: sub.toJSON(), name: deviceName() });
+    // lang — на каком языке присылать уведомления этому устройству (с 2.7.0).
+    pushInfo = await call('PUT', '/api/admin/push', { subscription: sub.toJSON(), name: deviceName(), lang: getLang() });
     myEndpoint = sub.endpoint;
     render();
   } catch (e) {
-    alert(`Не удалось включить уведомления: ${e.message}`);
+    alert(t('Не удалось включить уведомления: {error}', { error: e.message }));
   }
 }
 
@@ -892,7 +905,7 @@ async function disablePush() {
 
 async function removePushDevice(endpoint) {
   const d = ((pushInfo && pushInfo.devices) || []).find(x => x.endpoint === endpoint);
-  if (!d || !confirm(`Не присылать уведомления на «${d.name || 'устройство'}»?`)) return;
+  if (!d || !confirm(t('Не присылать уведомления на «{name}»?', { name: d.name || t('устройство') }))) return;
   try {
     pushInfo = await call('DELETE', '/api/admin/push', { endpoint });
     render();
@@ -904,7 +917,7 @@ async function removePushDevice(endpoint) {
 async function testPush() {
   try {
     const { sent } = await call('POST', '/api/admin/push/test', {});
-    alert(sent ? `Отправлено (устройств: ${sent}) — уведомление придёт через несколько секунд` : 'Не отправилось: служба уведомлений не приняла подписку. Выключите и включите уведомления заново');
+    alert(sent ? t('Отправлено (устройств: {count}) — уведомление придёт через несколько секунд', { count: sent }) : t('Не отправилось: служба уведомлений не приняла подписку. Выключите и включите уведомления заново'));
   } catch (e) {
     alert(e.message);
   }
@@ -962,10 +975,10 @@ const num = n => Math.round(Number(n) || 0).toLocaleString('ru-RU');
 function loads() {
   const u = usage || {};
   return [
-    ['База данных', dbSize || u.size || 0, FREE.size, v => `${size(v)} из 500 МБ`],
-    usage && ['Запросы к серверу за сутки', u.requests, FREE.requests, v => `${num(v)} из ${num(FREE.requests)}`],
-    usage && ['Записано строк в базу за сутки', u.rowsWritten, FREE.rowsWritten, v => `${num(v)} из ${num(FREE.rowsWritten)}`],
-    usage && ['Прочитано строк за сутки', u.rowsRead, FREE.rowsRead, v => `${num(v)} из ${num(FREE.rowsRead)}`],
+    [t('База данных'), dbSize || u.size || 0, FREE.size, v => t('{value} из {max}', { value: size(v), max: '500 МБ' })],
+    usage && [t('Запросы к серверу за сутки'), u.requests, FREE.requests, v => t('{value} из {max}', { value: num(v), max: num(FREE.requests) })],
+    usage && [t('Записано строк в базу за сутки'), u.rowsWritten, FREE.rowsWritten, v => t('{value} из {max}', { value: num(v), max: num(FREE.rowsWritten) })],
+    usage && [t('Прочитано строк за сутки'), u.rowsRead, FREE.rowsRead, v => t('{value} из {max}', { value: num(v), max: num(FREE.rowsRead) })],
   ].filter(Boolean);
 }
 
@@ -992,18 +1005,18 @@ function serverHtml() {
   const byStorage = [...masters].sort((a, b) => total(b.storage) - total(a.storage));
   return `
     <section class="card page-card">
-      <h3 class="card-title">Загрузка: <span class="load-level ${tone}">${word}</span></h3>
+      <h3 class="card-title">${t('Загрузка:')} <span class="load-level ${tone}">${t(word)}</span></h3>
       ${loads().map(([title, value, max, text]) => loadScale(title, value, max, text)).join('')}
-      ${loadScale(`Мастера (на ${REVIEW_MASTERS} решаем про платный тариф)`, masters.length, REVIEW_MASTERS, v => `${v} из ${REVIEW_MASTERS}`)}
-      <p class="hint">Бесплатный тариф Cloudflare: база до 500 МБ, в сутки — 100 000 запросов к серверу и 100 000 записей в базу. Зелёные овалы — запас большой, красные — подходим к пределу. ${when ? `Суточные цифры — по проверке сервера ${esc(when)}.` : 'Суточные цифры появятся после ближайшей проверки сервера (9:00, 15:00, 21:00).'} Если подойдём к пределу, придёт уведомление проверки.</p>
+      ${loadScale(t('Мастера (при {count} пора решать о платном тарифе)', { count: REVIEW_MASTERS }), masters.length, REVIEW_MASTERS, v => t('{value} из {max}', { value: v, max: REVIEW_MASTERS }))}
+      <p class="hint">${t('Бесплатный тариф Cloudflare: база до 500 МБ, в сутки — 100 000 запросов к серверу и 100 000 записанных строк. Зелёные овалы — запас большой, красные — подходим к пределу.')} ${when ? t('Суточные цифры — по проверке сервера {when}.', { when: esc(when) }) : t('Суточные цифры появятся после ближайшей проверки сервера (9:00, 15:00, 21:00).')} ${t('Если подойдём к пределу, после проверки сервера придёт уведомление.')}</p>
     </section>
-    <h3 class="section-title">Место по мастерам</h3>
+    <h3 class="section-title">${t('Место по мастерам')}</h3>
     <section class="card settings-menu">${byStorage.map(m => `
       <button class="menu-row" data-master="${esc(m.id)}">
-        <span class="grow"><b>${esc(m.name || 'Без имени')}</b><small>фото ${m.storage ? m.storage.photos : 0} шт. · копии ${m.storage ? m.storage.backups : 0}</small></span>
+        <span class="grow"><b>${esc(m.name || t('Без имени'))}</b><small>${t('фото {photos} шт. · копии {backups}', { photos: m.storage ? m.storage.photos : 0, backups: m.storage ? m.storage.backups : 0 })}</small></span>
         <b>${size(total(m.storage))}</b>
         ${icon('right')}
-      </button>`).join('') || '<p class="hint list-empty">Мастеров пока нет</p>'}
+      </button>`).join('') || `<p class="hint list-empty">${t('Мастеров пока нет')}</p>`}
     </section>`;
 }
 
@@ -1012,10 +1025,10 @@ function serverHtml() {
 function contactHtml() {
   return `
     <section class="card page-card">
-      <p class="hint">Мастер, который забыл пароль, нажмёт «Забыли пароль?» и напишет вам сюда.</p>
+      <p class="hint">${t('Мастер, который забыл пароль, нажмёт «Забыли пароль?» и напишет вам в WhatsApp на этот номер.')}</p>
       <form id="contact-form" novalidate>
-        <label>WhatsApp администратора<input type="tel" name="whatsapp" value="${esc(L.phoneFieldStart(contact))}"></label>
-        <button type="submit" class="btn secondary block">Сохранить</button>
+        <label>${t('WhatsApp администратора')}<input type="tel" name="whatsapp" value="${esc(L.phoneFieldStart(contact))}"></label>
+        <button type="submit" class="btn secondary block">${t('Сохранить')}</button>
       </form>
     </section>`;
 }
@@ -1025,7 +1038,7 @@ async function saveContact(e) {
   const whatsapp = L.phoneFromField(e.target.elements.whatsapp.value);
   try {
     contact = (await call('PUT', '/api/admin/contact', { whatsapp })).whatsapp;
-    alert(contact ? 'Сохранено: мастера будут писать на этот номер' : 'Номер убран');
+    alert(contact ? t('Сохранено: мастера будут писать на этот номер') : t('Номер убран'));
   } catch (err) {
     alert(err.message);
   }
@@ -1037,16 +1050,16 @@ function faceHtml() {
   const keys = passkeys.map(k => `
     <div class="admin-master">
       <div class="grow">
-        <b>${esc(k.name || 'Устройство')}</b>
-        <small>${esc(k.site)} · ${k.used ? `последний вход ${esc(formatDate(k.used))}` : 'ещё не входили'}</small>
+        <b>${esc(k.name || t('Устройство'))}</b>
+        <small>${esc(k.site)} · ${k.used ? t('последний вход {date}', { date: esc(formatDate(k.used)) }) : t('ещё не входили')}</small>
       </div>
-      <button class="btn small ghost" data-unkey="${esc(k.id)}">Убрать</button>
+      <button class="btn small ghost" data-unkey="${esc(k.id)}">${t('Убрать')}</button>
     </div>`).join('');
   return `
     <section class="card page-card">
-      <p class="hint">Чтобы не вводить код каждый раз, включите на этом устройстве вход по Face ID (или Touch ID, или код-паролю телефона). Ключ хранится в «Связке ключей» Apple и появится на других ваших устройствах Apple; сервер знает только его открытую часть.</p>
+      <p class="hint">${t('Чтобы не вводить код каждый раз, включите на этом устройстве вход по Face ID (или Touch ID, или код-паролю телефона). Ключ хранится в «Связке ключей» Apple и появится на других ваших устройствах Apple; сервер знает только его открытую часть.')}</p>
       ${keys ? `<div class="list">${keys}</div>` : ''}
-      ${canFace ? '<button class="btn secondary block" id="add-face">Включить вход по Face ID на этом устройстве</button>' : '<p class="hint">Этот браузер не умеет входить по Face ID.</p>'}
+      ${canFace ? `<button class="btn secondary block" id="add-face">${t('Включить вход по Face ID на этом устройстве')}</button>` : `<p class="hint">${t('Этот браузер не умеет входить по Face ID.')}</p>`}
     </section>`;
 }
 
@@ -1061,7 +1074,7 @@ async function prepareRegister() {
 async function addFace() {
   const options = registerOptions;
   if (!options || Date.now() - options.at > FRESH) {
-    alert('Страница долго была открыта — нажмите кнопку ещё раз');
+    alert(t('Страница долго была открыта — нажмите кнопку ещё раз'));
     prepareRegister();
     return;
   }
@@ -1081,8 +1094,8 @@ async function addFace() {
     });
   } catch (e) {
     prepareRegister();
-    if (e.name === 'InvalidStateError') return alert('На этом устройстве вход по Face ID уже включён');
-    return alert(e.name === 'NotAllowedError' ? 'Не включено: Face ID отменён или не прошёл' : `Не получилось: ${e.message}`);
+    if (e.name === 'InvalidStateError') return alert(t('На этом устройстве вход по Face ID уже включён'));
+    return alert(e.name === 'NotAllowedError' ? t('Не включено: Face ID отменён или не прошёл') : t('Не получилось: {error}', { error: e.message }));
   }
   try {
     await call('POST', '/api/admin/passkeys', {
@@ -1095,13 +1108,13 @@ async function addFace() {
     prepareRegister();
     return alert(e.message);
   }
-  alert('Готово: в следующий раз войдите по Face ID');
+  alert(t('Готово: в следующий раз войдите по Face ID'));
   load();
 }
 
 async function removeFace(id) {
   const k = passkeys.find(x => x.id === id);
-  if (!k || !confirm(`Убрать вход по Face ID для «${k.name || 'устройства'}»? На этом устройстве снова понадобится код администратора. В «Связке ключей» ключ можно удалить и вручную: Настройки → Пароли.`)) return;
+  if (!k || !confirm(t('Убрать вход по Face ID для «{name}»? На нём снова понадобится код администратора. В «Связке ключей» ключ можно удалить и вручную: «Настройки» → «Пароли».', { name: k.name || t('устройства') }))) return;
   try {
     await call('DELETE', `/api/admin/passkeys/${encodeURIComponent(id)}`);
   } catch (e) {
@@ -1120,7 +1133,7 @@ function tempPassword() {
 
 async function resetPassword(id) {
   const m = masters.find(x => x.id === id);
-  if (!m || !confirm(`Сбросить пароль мастеру ${m.name} (${m.phone})? Мастер выйдет из приложения и войдёт с временным паролем.`)) return;
+  if (!m || !confirm(t('{name} ({phone}): сбросить пароль? Мастер выйдет из приложения и войдёт с временным паролем.', { name: m.name, phone: m.phone }))) return;
   const temp = tempPassword();
   try {
     await call('POST', `/api/admin/masters/${encodeURIComponent(id)}/password`, { secret: await L.passwordSecret(m.phone, temp) });
@@ -1140,7 +1153,7 @@ view.addEventListener('click', e => {
     return Install.install({
       name: '«BB Админ»',
       icon: '../icons/bb-admin-192.png',
-      after: 'Потом откройте «BB Админ» с иконки на экране «Домой», войдите и включите Face ID и уведомления.',
+      after: t('Потом откройте «BB Админ» с иконки на экране «Домой», войдите и включите Face ID и уведомления.'),
     });
   }
   if (target.dataset.push === 'on') return enablePush();
@@ -1189,7 +1202,7 @@ async function copyText(button, text) {
   try {
     await navigator.clipboard.writeText(text);
   } catch (e) {
-    return alert(`Скопируйте вручную: ${text}`);
+    return alert(t('Скопируйте вручную: {text}', { text }));
   }
   button.innerHTML = icon('check');
   setTimeout(() => { button.innerHTML = icon('copy'); }, 1500);
@@ -1208,4 +1221,30 @@ view.addEventListener('change', e => {
   }
 });
 
+// Язык в шапке: «Қаз» / «Рус» — страница сразу перерисовывается (вход — заново, код не сохраняется).
+function drawHeader() {
+  const box = $('#appbar-actions');
+  if (box) box.innerHTML = `<button class="hbtn lang-btn" data-lang-toggle aria-label="${t('Сменить язык')}">${otherLangLabel()}</button>`;
+}
+
+document.addEventListener('click', e => {
+  if (!e.target.closest('[data-lang-toggle]')) return;
+  setLang(getLang() === 'kk' ? 'ru' : 'kk');
+  drawHeader();
+  if (!code && !session) return renderLogin();
+  render();
+  if (pushHere()) updatePushLang();
+});
+
+// Сменили язык — уведомления на это устройство тоже приходят на новом.
+async function updatePushLang() {
+  try {
+    const reg = await swReady;
+    const sub = reg && reg.pushManager ? await reg.pushManager.getSubscription() : null;
+    const d = sub && pushInfo && pushInfo.devices.find(x => x.endpoint === sub.endpoint);
+    if (d) pushInfo = await call('PUT', '/api/admin/push', { subscription: sub.toJSON(), name: d.name, lang: getLang() });
+  } catch (e) { /* не страшно: язык запомнится при следующем включении уведомлений */ }
+}
+
+drawHeader();
 renderLogin('', true);

@@ -5,6 +5,7 @@
 import * as L from '../logic.js';
 import { API_URL } from '../config.js';
 import { phoneMask } from '../phone-input.js';
+import { t, getLang, setLang, otherLangLabel } from '../i18n.js';
 
 phoneMask();
 
@@ -27,7 +28,7 @@ function placeHtml(master) {
   return `
     <div class="okna-place">
       ${text ? `<p>${pinIcon}<span>${esc(text)}</span></p>` : ''}
-      ${link ? `<a class="btn small secondary" href="${esc(link)}" target="_blank" rel="noopener">Открыть в 2ГИС</a>` : ''}
+      ${link ? `<a class="btn small secondary" href="${esc(link)}" target="_blank" rel="noopener">${t('Открыть в 2ГИС')}</a>` : ''}
       ${insta ? `<a class="btn small secondary" href="https://www.instagram.com/${esc(insta)}/" target="_blank" rel="noopener">${instagramIcon} Instagram</a>` : ''}
     </div>`;
 }
@@ -121,21 +122,38 @@ function whatsappLink(text) {
   return `https://wa.me/${L.phoneDigits(schedule.whatsapp)}${text ? `?text=${encodeURIComponent(text)}` : ''}`;
 }
 
+// Что сейчас на экране — чтобы перерисовать его на другом языке (кнопка «Қаз» / «Рус» в шапке).
+let redraw = () => {};
+const show = draw => {
+  redraw = draw;
+  draw();
+};
+const message = (text, extra = '') => show(() => {
+  view.innerHTML = `<div class="empty"><p>${t(text)}</p>${extra ? extra() : ''}</div>`;
+});
+const reloadButton = () => `<button class="btn secondary small" data-reload>${t('Обновить')}</button>`;
+
+function drawHeader() {
+  const box = $('#appbar-actions');
+  if (box) box.innerHTML = `<button class="hbtn lang-btn" data-lang-toggle aria-label="${t('Сменить язык')}">${otherLangLabel()}</button>`;
+}
+
 function render() {
+  redraw = render;
   const s = schedule;
-  const name = s.name || 'Мастер';
-  document.title = `Запись — ${name}`;
+  const name = s.name || t('Мастер');
+  document.title = t('Запись — {name}', { name });
   applyTheme(s.theme, MASTER || s.slug);
   // Шапка — как в приложении (логотип и Beautybook, в okna/index.html), имя и направление мастера — в заголовке.
-  const title = `<h2 class="okna-title">Запись к мастеру ${esc(name)}${s.specialty ? `<small>${esc(s.specialty)}</small>` : ''}</h2>`;
+  const title = `<h2 class="okna-title">${t('Запись к мастеру: {name}', { name: esc(name) })}${s.specialty ? `<small>${esc(L.specialtyName(s.specialty))}</small>` : ''}</h2>`;
   // Подписка мастера на Beautybook закончилась: онлайн-запись на паузе, записаться — через WhatsApp.
   if (s.paused) {
     view.innerHTML = `
       ${title}
       ${placeHtml(s)}
       <section class="card page-card">
-        <p>Онлайн-запись к этому мастеру временно недоступна.</p>
-        ${s.whatsapp ? `<a class="btn primary block" href="${esc(whatsappLink('Здравствуйте! Хочу записаться к вам.'))}" target="_blank" rel="noopener">Написать мастеру в WhatsApp</a>` : '<p class="hint">Свяжитесь с мастером, чтобы записаться.</p>'}
+        <p>${t('Онлайн-запись к этому мастеру временно недоступна.')}</p>
+        ${s.whatsapp ? `<a class="btn primary block" href="${esc(whatsappLink(t('Здравствуйте! Хочу записаться к вам.')))}" target="_blank" rel="noopener">${t('Написать мастеру в WhatsApp')}</a>` : `<p class="hint">${t('Свяжитесь с мастером, чтобы записаться.')}</p>`}
       </section>`;
     return;
   }
@@ -149,7 +167,7 @@ function render() {
     times: L.scheduleTimes(s, d, need, d.date === clock.date ? clock.minutes : -1),
   })).filter(d => d.date > clock.date || d.off || d.times.length); // сегодня без времени — не показываем
   if (!days.length) {
-    view.innerHTML = `${title}<div class="empty"><p>Свободное время скоро появится. Загляните позже.</p></div>`;
+    view.innerHTML = `${title}<div class="empty"><p>${t('Свободное время скоро появится. Загляните позже.')}</p></div>`;
     return;
   }
 
@@ -159,7 +177,7 @@ function render() {
   const updated = new Date(s.updated);
   const stale = Date.now() - updated > 3 * 864e5;
   const rows = days.map(d => {
-    const summary = d.off ? 'нет записи' : d.times.length ? L.formatRanges(L.toRanges(d.times)) : 'всё занято';
+    const summary = d.off ? t('запись закрыта') : d.times.length ? L.formatRanges(L.toRanges(d.times)) : t('всё занято');
     if (!d.times.length) {
       return `
         <section class="card okna-day none">
@@ -167,23 +185,23 @@ function render() {
         </section>`;
     }
     const open = d.date === openDay;
-    const chips = d.times.map(t => (s.booking
-      ? `<button type="button" class="chip" data-date="${esc(d.date)}" data-time="${esc(t)}">${esc(L.shortTime(t))}</button>`
+    const chips = d.times.map(time => (s.booking
+      ? `<button type="button" class="chip" data-date="${esc(d.date)}" data-time="${esc(time)}">${esc(L.shortTime(time))}</button>`
       : s.whatsapp
-        ? `<a class="chip" href="${esc(whatsappLink(`Здравствуйте! Хочу записаться ${L.shortDate(d.date)} в ${L.shortTime(t)}.`))}" target="_blank" rel="noopener">${esc(L.shortTime(t))}</a>`
-        : `<span class="chip">${esc(L.shortTime(t))}</span>`)).join('');
+        ? `<a class="chip" href="${esc(whatsappLink(t('Здравствуйте! Хочу записаться к вам: {date}, {time}.', { date: L.shortDate(d.date), time: L.shortTime(time) })))}" target="_blank" rel="noopener">${esc(L.shortTime(time))}</a>`
+        : `<span class="chip">${esc(L.shortTime(time))}</span>`)).join('');
     return `
       <section class="card okna-day${open ? ' open' : ''}" data-day="${esc(d.date)}">
         <button class="okna-head" aria-expanded="${open}">
-          <span><b>${L.dayTitle(d.date)}</b><small>свободно: ${esc(summary)}</small></span>${chevron}
+          <span><b>${L.dayTitle(d.date)}</b><small>${t('свободно: {ranges}', { ranges: esc(summary) })}</small></span>${chevron}
         </button>
         <div class="chips okna-times"${open ? '' : ' hidden'}>${chips}</div>
       </section>`;
   }).join('');
 
   const intro = s.booking
-    ? 'Выберите день и время начала — затем имя, телефон и услуги.'
-    : s.whatsapp ? 'Выберите день и время начала — откроется WhatsApp, чтобы записаться.' : 'Чтобы записаться, напишите мастеру.';
+    ? t('Выберите день и время начала, затем укажите имя, телефон и услуги.')
+    : s.whatsapp ? t('Выберите день и время начала — откроется WhatsApp, чтобы записаться.') : t('Чтобы записаться, напишите мастеру.');
   // Записи, оставленные до аккаунтов (без m), — у прежнего мастера.
   const mine = myBookings().filter(b => b.date >= clock.date && (b.m ? b.m === s.slug : Boolean(s.legacy)));
   view.innerHTML = `
@@ -191,17 +209,17 @@ function render() {
     ${placeHtml(s)}
     ${mine.length ? `
     <section class="my-bookings">
-      <h2 class="section-title">Мои записи</h2>
+      <h2 class="section-title">${t('Мои записи')}</h2>
       ${mine.map(b => {
         const [tone, label] = MINE_STATUS[b.status] || [];
-        return `<a class="card my-booking" href="${esc(bookingUrl(b.token))}"><b>${L.dayTitle(b.date)}, ${esc(L.shortTime(b.time))}</b><small>${esc(L.servicesLabel(b.services || []))}</small>${label ? `<span class="badge ${tone}">${label}</span>` : ''}</a>`;
+        return `<a class="card my-booking" href="${esc(bookingUrl(b.token))}"><b>${L.dayTitle(b.date)}, ${esc(L.shortTime(b.time))}</b><small>${esc(L.servicesLabel(b.services || []))}</small>${label ? `<span class="badge ${tone}">${t(label)}</span>` : ''}</a>`;
       }).join('')}
     </section>` : ''}
-    <p class="okna-intro">${intro} ${s.v >= 2 ? 'Сколько займёт запись, покажем после выбора услуг.' : `Одна запись занимает до ${L.formatDuration(s.duration || 150)}.`}
-      ${s.whatsapp ? `<br><a href="${esc(whatsappLink(''))}" target="_blank" rel="noopener">Написать мастеру в WhatsApp</a>` : ''}</p>
-    ${stale ? '<div class="banner warn"><div class="grow">Расписание давно не обновлялось — уточните время у мастера.</div></div>' : ''}
+    <p class="okna-intro">${intro} ${s.v >= 2 ? t('Сколько займёт запись, покажем после выбора услуг.') : t('Одна запись занимает до {duration}.', { duration: L.formatDuration(s.duration || 150) })}
+      ${s.whatsapp ? `<br><a href="${esc(whatsappLink(''))}" target="_blank" rel="noopener">${t('Написать мастеру в WhatsApp')}</a>` : ''}</p>
+    ${stale ? `<div class="banner warn"><div class="grow">${t('Расписание давно не обновлялось — уточните время у мастера.')}</div></div>` : ''}
     ${rows}
-    <p class="okna-foot">Обновлено ${updated.getDate()} ${L.MONTHS_GEN[updated.getMonth()]} в ${updated.getHours()}:${String(updated.getMinutes()).padStart(2, '0')}</p>`;
+    <p class="okna-foot">${t('Обновлено {date} в {time}', { date: `${updated.getDate()} ${L.dateMonth(updated.getMonth())}`, time: `${updated.getHours()}:${String(updated.getMinutes()).padStart(2, '0')}` })}</p>`;
 }
 
 // ---------- Заявка ----------
@@ -209,33 +227,34 @@ function render() {
 function openForm(date, time) {
   const me = remembered();
   const services = schedule.services || [];
+  sheet.setAttribute('aria-label', t('Заявка на запись'));
   sheet.innerHTML = `
     <header class="sheet-head">
-      <button type="button" class="icon-btn" data-close aria-label="Закрыть">${closeIcon}</button>
-      <h2>Запись</h2>
+      <button type="button" class="icon-btn" data-close aria-label="${t('Закрыть')}">${closeIcon}</button>
+      <h2>${t('Запись')}</h2>
       <span></span>
     </header>
     <form id="request-form" class="sheet-body" novalidate autocomplete="on">
       <p class="lead"><b>${L.dayTitle(date)}, ${esc(L.shortTime(time))}</b></p>
-      <label>Ваше имя<input name="name" autocomplete="name" autocapitalize="words" enterkeyhint="next" value="${esc(me.name)}" placeholder="Например, Айгуль"></label>
-      <label>Телефон (WhatsApp)<input name="phone" type="tel" autocomplete="tel" enterkeyhint="done" value="${esc(L.phoneFieldStart(me.phone))}"></label>
+      <label>${t('Ваше имя')}<input name="name" autocomplete="name" autocapitalize="words" enterkeyhint="next" value="${esc(me.name)}" placeholder="${t('Например, Айгуль')}"></label>
+      <label>${t('Телефон (WhatsApp)')}<input name="phone" type="tel" autocomplete="tel" enterkeyhint="done" value="${esc(L.phoneFieldStart(me.phone))}"></label>
       ${services.length ? `
       <fieldset>
-        <legend>Что будем делать — можно несколько</legend>
+        <legend>${t('Что будем делать — можно несколько')}</legend>
         <div class="chips">${services.map(p => `
           <button type="button" class="chip" data-service="${esc(p.name)}" data-price="${L.toMoney(p.price)}">
             ${esc(p.name)}${p.price ? `<small>${L.formatAmount(p.price)} ₸</small>` : ''}
           </button>`).join('')}
         </div>
       </fieldset>` : `
-      <label>Что будем делать<input name="service" maxlength="60" enterkeyhint="next" placeholder="Например, стрижка"></label>`}
+      <label>${t('Что будем делать')}<input name="service" maxlength="60" enterkeyhint="next" placeholder="${t('Например, стрижка')}"></label>`}
       <div class="summary" id="total" hidden></div>
       <p id="fit-warn" class="warn-text" hidden></p>
-      <label>Комментарий (необязательно)<input name="comment" enterkeyhint="done" maxlength="300" placeholder="Пожелания мастеру"></label>
+      <label>${t('Комментарий (необязательно)')}<input name="comment" enterkeyhint="done" maxlength="300" placeholder="${t('Пожелания мастеру')}"></label>
       <input name="website" class="trap" tabindex="-1" autocomplete="off" aria-hidden="true">
       <p id="form-error" class="warn-text" hidden></p>
-      <button type="submit" class="btn primary block">Отправить заявку</button>
-      <p class="hint form-note">Мастер получит заявку и напишет вам в WhatsApp, чтобы подтвердить запись.</p>
+      <button type="submit" class="btn primary block">${t('Отправить заявку')}</button>
+      <p class="hint form-note">${t('Мастер получит заявку и напишет вам в WhatsApp, чтобы подтвердить запись.')}</p>
     </form>`;
   sheet.hidden = false;
   document.documentElement.classList.add('locked');
@@ -254,17 +273,17 @@ function openForm(date, time) {
     const clock = L.masterClock(schedule.tzOffset || 0);
     return L.scheduleTimes(schedule, day, minutesOf(names), date === clock.date ? clock.minutes : -1).includes(time);
   };
-  const tooLong = `На ${L.shortTime(time)} эти услуги не поместятся — до следующей записи не хватит времени. Выберите время раньше или меньше услуг.`;
+  const tooLong = t('На {time} эти услуги не поместятся — до следующей записи не хватит времени. Выберите время пораньше или меньше услуг.', { time: L.shortTime(time) });
   form.addEventListener('click', e => {
     const chip = e.target.closest('.chip[data-service]');
     if (!chip) return;
     chip.classList.toggle('on');
     const names = chosen();
-    const sum = [...form.querySelectorAll('.chip.on')].reduce((t, c) => t + Number(c.dataset.price), 0);
+    const sum = [...form.querySelectorAll('.chip.on')].reduce((total, c) => total + Number(c.dataset.price), 0);
     const minutes = timed && names.length ? minutesOf(names) : 0;
     const box = $('#total');
     box.hidden = !sum && !minutes;
-    box.innerHTML = `<span>${sum ? 'Примерная стоимость' : 'Время'}${minutes ? `<small>займёт около ${L.formatDuration(minutes)}</small>` : ''}</span><b>${sum ? L.formatMoney(sum) : ''}</b>`;
+    box.innerHTML = `<span>${sum ? t('Примерная стоимость') : t('Время')}${minutes ? `<small>${t('займёт около {duration}', { duration: L.formatDuration(minutes) })}</small>` : ''}</span><b>${sum ? L.formatMoney(sum) : ''}</b>`;
     const warn = $('#fit-warn');
     warn.hidden = fits(names);
     warn.textContent = tooLong;
@@ -275,13 +294,13 @@ function openForm(date, time) {
     const body = { date, time, name: v('name').trim(), phone: v('phone'), services: chosen(), comment: v('comment').trim(), website: v('website') };
     const error = !body.name ? 'Укажите имя'
       : L.phoneFieldDigits(body.phone).length < 10 ? 'Укажите номер телефона полностью'
-      : !body.services.length ? (services.length ? 'Выберите вид работы' : 'Напишите, что будем делать')
+      : !body.services.length ? (services.length ? 'Выберите, что будем делать' : 'Напишите, что будем делать')
       : !fits(body.services) ? tooLong
       : '';
     if (error) return showError(error);
     const button = form.querySelector('button[type=submit]');
     button.disabled = true;
-    button.textContent = 'Отправляем…';
+    button.textContent = t('Отправляем…');
     let res, answer = {};
     try {
       res = await fetch(withMaster(`${API}/api/requests`), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -290,10 +309,10 @@ function openForm(date, time) {
       res = null;
     }
     button.disabled = false;
-    button.textContent = 'Отправить заявку';
+    button.textContent = t('Отправить заявку');
     if (!res) return showError('Нет интернета. Проверьте связь и попробуйте ещё раз');
     if (!res.ok) {
-      showError(answer.error || 'Не удалось отправить заявку');
+      showError(answer.error || 'Не удалось отправить заявку'); // сервер отвечает по-русски — перевод по словарю
       if (res.status === 409) refresh();
       return;
     }
@@ -306,7 +325,7 @@ function openForm(date, time) {
 
 function showError(message) {
   const box = $('#form-error');
-  box.textContent = message;
+  box.textContent = t(message);
   box.hidden = false;
   box.scrollIntoView({ block: 'center', behavior: 'smooth' });
 }
@@ -315,11 +334,11 @@ function showDone(date, time, services, token) {
   sheet.querySelector('.sheet-body').outerHTML = `
     <div class="sheet-body okna-done">
       <p class="done-mark">✓</p>
-      <h2>Заявка отправлена</h2>
+      <h2>${t('Заявка отправлена')}</h2>
       <p>${L.dayTitle(date)}, ${esc(L.shortTime(time))}<br>${esc(L.servicesLabel(services))}</p>
-      <p class="hint">${esc(schedule.name || 'Мастер')} напишет вам в WhatsApp, чтобы подтвердить запись.${token ? ' По ссылке «Моя запись» видно, подтверждена ли она.' : ''}</p>
-      ${token ? `<a class="btn secondary block" href="${bookingUrl(token)}">Моя запись</a>` : ''}
-      <button type="button" class="btn primary block" data-close>Готово</button>
+      <p class="hint">${t('{name} напишет вам в WhatsApp, чтобы подтвердить запись.', { name: esc(schedule.name || t('Мастер')) })}${token ? ` ${t('По ссылке «Моя запись» видно, подтверждена ли она.')}` : ''}</p>
+      ${token ? `<a class="btn secondary block" href="${bookingUrl(token)}">${t('Моя запись')}</a>` : ''}
+      <button type="button" class="btn primary block" data-close>${t('Готово')}</button>
     </div>`;
 }
 
@@ -352,40 +371,40 @@ async function loadBooking(token) {
 }
 
 function renderBooking(b) {
-  const master = (b.master && b.master.name) || 'Мастер';
-  document.title = `Моя запись — ${master}`;
+  redraw = () => renderBooking(b);
+  const master = (b.master && b.master.name) || t('Мастер');
+  document.title = t('Моя запись — {name}', { name: master });
   applyTheme(b.master && b.master.theme, b.master && b.master.slug);
   const [tone, label] = BOOKING_STATUS[b.status] || BOOKING_STATUS.pending;
   const due = Math.max((b.total || 0) - (b.prepaid || 0), 0);
   const active = b.status === 'pending' || b.status === 'confirmed';
   const whatsapp = L.phoneDigits(b.master && b.master.whatsapp);
   view.innerHTML = `
-    <h2 class="okna-title">Моя запись<small>мастер ${esc(master)}</small></h2>
-    <p class="status ${tone} booking-status">${label}</p>
+    <h2 class="okna-title">${t('Моя запись')}<small>${t('мастер {name}', { name: esc(master) })}</small></h2>
+    <p class="status ${tone} booking-status">${t(label)}</p>
     <section class="card booking-card${active ? '' : ' past'}">
       <p class="lead"><b>${L.dayTitle(b.date)}, ${esc(L.shortTime(b.time))}</b></p>
       <p>${esc(L.servicesLabel(b.services || []))}</p>
       ${b.total ? `
-      <div class="line"><span>${b.status === 'pending' ? 'Примерная стоимость' : 'Стоимость'}</span><b>${L.formatMoney(b.total)}</b></div>
-      ${b.prepaid ? `<div class="line"><span>Предоплата</span><b>${L.formatMoney(b.prepaid)}</b></div>` : ''}
-      ${b.status === 'confirmed' && b.prepaid ? `<div class="line"><span>Останется оплатить</span><b>${L.formatMoney(due)}</b></div>` : ''}` : ''}
+      <div class="line"><span>${b.status === 'pending' ? t('Примерная стоимость') : t('Стоимость')}</span><b>${L.formatMoney(b.total)}</b></div>
+      ${b.prepaid ? `<div class="line"><span>${t('Предоплата')}</span><b>${L.formatMoney(b.prepaid)}</b></div>` : ''}
+      ${b.status === 'confirmed' && b.prepaid ? `<div class="line"><span>${t('Останется оплатить')}</span><b>${L.formatMoney(due)}</b></div>` : ''}` : ''}
     </section>
     ${placeHtml(b.master || {})}
-    ${b.status === 'pending' ? `<p class="hint">${esc(master)} напишет вам в WhatsApp, чтобы подтвердить запись. Эта страница обновится сама.</p>` : ''}
-    ${b.status === 'declined' ? '<p class="hint">Выберите другое время или напишите мастеру.</p>' : ''}
-    ${whatsapp ? `<a class="btn secondary block" href="https://wa.me/${whatsapp}" target="_blank" rel="noopener">Написать мастеру в WhatsApp</a>` : ''}
-    <a class="btn ${active ? 'ghost' : 'primary'} block" href="${esc(withMaster(location.pathname, b.master && b.master.slug))}">${active ? 'Свободное время' : 'Выбрать другое время'}</a>
-    <p class="okna-foot">Сохраните эту страницу — по ней всегда видна ваша запись.</p>`;
+    ${b.status === 'pending' ? `<p class="hint">${t('{name} напишет вам в WhatsApp, чтобы подтвердить запись. Эта страница обновится сама.', { name: esc(master) })}</p>` : ''}
+    ${b.status === 'declined' ? `<p class="hint">${t('Выберите другое время или напишите мастеру.')}</p>` : ''}
+    ${whatsapp ? `<a class="btn secondary block" href="https://wa.me/${whatsapp}" target="_blank" rel="noopener">${t('Написать мастеру в WhatsApp')}</a>` : ''}
+    <a class="btn ${active ? 'ghost' : 'primary'} block" href="${esc(withMaster(location.pathname, b.master && b.master.slug))}">${active ? t('Свободное время') : t('Выбрать другое время')}</a>
+    <p class="okna-foot">${t('Сохраните эту страницу — на ней всегда видна ваша запись.')}</p>`;
 }
 
 async function startBooking(token) {
   const b = await loadBooking(token);
-  if (!b) {
-    view.innerHTML = '<div class="empty"><p>Не удалось загрузить запись. Проверьте интернет.</p><button class="btn secondary small" data-reload>Обновить</button></div>';
-    return;
-  }
+  if (!b) return message('Не удалось загрузить запись. Проверьте интернет.', reloadButton);
   if (b.missing) {
-    view.innerHTML = `<h2 class="okna-title">Моя запись</h2><div class="empty"><p>Запись не найдена. Возможно, ссылка устарела.</p><a class="btn secondary small" href="${esc(location.pathname)}">Свободное время</a></div>`;
+    show(() => {
+      view.innerHTML = `<h2 class="okna-title">${t('Моя запись')}</h2><div class="empty"><p>${t('Запись не найдена. Возможно, ссылка устарела.')}</p><a class="btn secondary small" href="${esc(location.pathname)}">${t('Свободное время')}</a></div>`;
+    });
     return;
   }
   renderBooking(b);
@@ -452,24 +471,16 @@ async function refresh() {
 
 async function start() {
   if (history.state && history.state.form) history.replaceState(null, '');
+  drawHeader();
   const token = new URLSearchParams(location.search).get('z');
+  message(token ? 'Загружаем запись…' : 'Загружаем свободное время…');
   if (token) {
     startBooking(token);
     return;
   }
   schedule = await load();
-  if (schedule && schedule.missing) {
-    view.innerHTML = '<div class="empty"><p>Мастер не найден. Проверьте ссылку — её можно попросить у мастера.</p></div>';
-    return;
-  }
-  if (!schedule || schedule.kind !== 'okna') {
-    view.innerHTML = `
-      <div class="empty">
-        <p>Не удалось загрузить свободное время. Проверьте интернет.</p>
-        <button class="btn secondary small" data-reload>Обновить</button>
-      </div>`;
-    return;
-  }
+  if (schedule && schedule.missing) return message('Мастер не найден. Проверьте ссылку — её можно попросить у мастера.');
+  if (!schedule || schedule.kind !== 'okna') return message('Не удалось загрузить свободное время. Проверьте интернет.', reloadButton);
   render();
   refreshMine();
   // Пока страница открыта, время могли занять — обновляем раз в минуту (свёрнутую — когда к ней вернутся).
@@ -478,9 +489,15 @@ async function start() {
   document.addEventListener('visibilitychange', update);
 }
 
-// Кнопки «Обновить» на экранах ошибок (встроенный onclick запрещён политикой безопасности страницы).
+// Кнопки «Обновить» на экранах ошибок (встроенный onclick запрещён политикой безопасности страницы)
+// и язык в шапке: страница сразу перерисовывается на другом языке.
 document.addEventListener('click', e => {
   if (e.target.closest('[data-reload]')) location.reload();
+  if (e.target.closest('[data-lang-toggle]')) {
+    setLang(getLang() === 'kk' ? 'ru' : 'kk');
+    drawHeader();
+    redraw();
+  }
 });
 
 start();

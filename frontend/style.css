@@ -1,6 +1,6 @@
 /* Beautybook — оформление. Цвета — переменные.
-   Четыре темы: пурпурная (исходная), розовая, фиолетовая и графит (2.4.0, для барберов
-   и парикмахеров, кому не по душе розовые тона) — html[data-theme].
+   Пять тем: пурпурная (исходная), розово-чёрная (2.7.0, как фон значка; у «BB Админ» — всегда),
+   розовая, фиолетовая и графит (2.4.0, для барберов и парикмахеров, кому не по душе розовые тона) — html[data-theme].
    У каждой светлый и тёмный режим. Режим — html[data-mode]: в приложении исходно
    светлый, меняется кнопкой в шапке; без него (страница для клиентов) — как в телефоне. */
 
@@ -22,6 +22,13 @@
   --l-accent: #7858B8; --l-accent-soft: #EEE8F9; --l-bar1: #9C82D8; --l-bar2: #7056B8;
   --d-bg: #110F17; --d-card: #1C1924; --d-field: #16141D; --d-text: #EEEAF6; --d-muted: #9D96AE; --d-line: #2E2A3B;
   --d-accent: #A992EA; --d-accent-ink: #1C1433; --d-accent-soft: #2C2645; --d-bar1: #44356E; --d-bar2: #2A2046;
+}
+/* Розово-чёрная: полосы чёрные с розовым светом из углов (см. ниже), акцент — розовый неон значка. */
+[data-theme="neon"] {
+  --l-bg: #FFF4F9; --l-text: #1E1219; --l-muted: #7B6170; --l-line: #F3D7E5;
+  --l-accent: #D81B6A; --l-accent-soft: #FFE1EE; --l-bar1: #C2185B; --l-bar2: #0C080B;
+  --d-bg: #0C080B; --d-card: #1A1016; --d-field: #140C11; --d-text: #FCEFF6; --d-muted: #B897A9; --d-line: #3A2130;
+  --d-accent: #FF4F9B; --d-accent-ink: #1C0611; --d-accent-soft: #3D1428; --d-bar1: #7A1347; --d-bar2: #0C080B;
 }
 [data-theme="graphite"] {
   --l-bg: #F3F4F6; --l-text: #1D2127; --l-muted: #646D78; --l-line: #DDE1E6;
@@ -160,7 +167,15 @@ p + p { margin-top: 8px; }
   min-height: 56px;
   padding: calc(env(safe-area-inset-top) + 8px) var(--gutter) 8px;
 }
-.appbar h1 { font-size: 22px; font-weight: 700; letter-spacing: -.01em; text-shadow: 0 1px 2px rgba(40, 0, 25, .25); }
+/* Название — неоновой вывеской, как логотип (2.7.0): светлые буквы с розовым свечением, во всех темах. */
+.appbar h1 {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: .01em;
+  white-space: nowrap;
+  color: #FFF6FB;
+  text-shadow: 0 0 1px rgba(255, 255, 255, .9), 0 0 4px rgba(255, 255, 255, .45), 0 0 8px rgba(255, 30, 150, .95), 0 0 16px rgba(255, 30, 150, .75), 0 0 26px rgba(255, 30, 150, .45);
+}
 .brand { display: flex; align-items: center; gap: 8px; min-width: 0; }
 /* Неоновый рисунок: белые линии с розовым свечением, фон прозрачный. */
 .brand img { width: 42px; height: 42px; flex: none; margin: -4px -2px -4px -6px; filter: drop-shadow(0 0 1px rgba(255, 255, 255, .9)) drop-shadow(0 0 5px rgba(255, 30, 150, .95)); }
@@ -176,6 +191,42 @@ p + p { margin-top: 8px; }
   font-weight: 600;
 }
 .hbtn.round { display: inline-grid; place-items: center; width: 38px; height: 38px; padding: 0; }
+/* Язык (2.7.0): «Қаз» / «Рус» — того же размера, что кнопка режима. */
+.hbtn.lang-btn { min-width: 38px; height: 38px; padding: 0 8px; font-size: 13px; letter-spacing: .02em; }
+/* Узкий телефон (iPhone SE, mini): логотип, «Сегодня», язык и режим помещаются в одну строку. */
+@media (max-width: 389px) {
+  .appbar { gap: 8px; }
+  .appbar-actions { gap: 6px; }
+  .appbar h1 { font-size: 20px; }
+  .hbtn { padding: 7px 11px; }
+}
+@media (max-width: 370px) { /* Android 360 px */
+  .appbar-actions { gap: 4px; }
+  .appbar h1 { font-size: 19px; }
+  .hbtn { padding: 7px 9px; }
+}
+@media (max-width: 340px) { /* самые узкие телефоны */
+  .appbar h1 { font-size: 17px; }
+  .brand img { width: 36px; height: 36px; }
+}
+
+/* Розово-чёрная тема: полосы — как фон значка (чёрный, розовый свет из левого верхнего и правого нижнего угла),
+   кромка — розовый неон; кнопка «+», главные кнопки и выбранная вкладка светятся. В светлом и тёмном режиме одинаково. */
+[data-theme="neon"] .appbar, [data-theme="neon"] .sheet-head, [data-theme="neon"] .tabbar {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, .09) 0%, rgba(255, 255, 255, 0) 62%),
+    radial-gradient(70% 220% at 0% 0%, rgba(255, 64, 150, .62), rgba(255, 64, 150, 0) 72%),
+    radial-gradient(55% 200% at 100% 100%, rgba(190, 30, 105, .5), rgba(190, 30, 105, 0) 72%),
+    rgba(12, 8, 11, .9);
+  border-color: rgba(255, 62, 160, .5);
+  box-shadow: 0 6px 22px -10px rgba(255, 43, 147, .55);
+}
+[data-theme="neon"] .tabbar { box-shadow: 0 -6px 22px -10px rgba(255, 43, 147, .5); }
+[data-theme="neon"] .hbtn { background: rgba(255, 64, 150, .22); }
+[data-theme="neon"] .tabbar button.active { color: #FFE3F1; }
+[data-theme="neon"] .tabbar button.active .ico { filter: drop-shadow(0 0 1px rgba(255, 255, 255, .8)) drop-shadow(0 0 5px rgba(255, 64, 150, .95)); }
+[data-theme="neon"] .fab { box-shadow: 0 0 18px rgba(255, 43, 147, .6), 0 8px 22px -6px rgba(255, 43, 147, .65); }
+[data-theme="neon"] .btn.primary { box-shadow: 0 0 16px -4px rgba(255, 43, 147, .7); }
 
 main { max-width: 560px; margin: 0 auto; padding: 12px 16px 96px; }
 
@@ -694,6 +745,7 @@ a.profile-row { color: var(--accent); font-weight: 600; }
   font-weight: 600;
 }
 .theme-pick.on { border-color: var(--accent); color: var(--accent); }
+.theme-pick[data-value="neon"] { grid-column: 1 / -1; } /* розово-чёрная — первой, во всю ширину */
 .theme-pick .swatch {
   width: 100%;
   height: 34px;
@@ -701,6 +753,13 @@ a.profile-row { color: var(--accent); font-weight: 600; }
   background:
     linear-gradient(180deg, rgba(255, 255, 255, .3), rgba(255, 255, 255, 0) 65%),
     linear-gradient(135deg, var(--l-bar1), var(--l-bar2));
+}
+.theme-pick .swatch[data-theme="neon"] {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, .16), rgba(255, 255, 255, 0) 65%),
+    radial-gradient(60% 190% at 0% 0%, rgba(255, 64, 150, .95), rgba(255, 64, 150, 0) 72%),
+    radial-gradient(45% 170% at 100% 100%, rgba(190, 30, 105, .8), rgba(190, 30, 105, 0) 72%),
+    #0C080B;
 }
 
 /* ---------- Уведомление ---------- */
