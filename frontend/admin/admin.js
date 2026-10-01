@@ -281,7 +281,9 @@ function summary(id) {
   if (id === 'chats') return unreadTotal() ? t('новых сообщений: {count}', { count: unreadTotal() }) : t('вопросы мастеров по оплате и приложению');
   if (id === 'server') {
     const values = { level: t(loadLevel()[1]), size: dbSize ? size(dbSize) : '—' };
-    return ownServer() ? t('загрузка {level} · база {size}', values) : t('загрузка {level} · база {size} из 500 МБ', values);
+    // Свой сервер (2.9.3): на главном экране — сколько места на диске занято и сколько всего.
+    if (ownServer()) return t('занято {used} из {total} · загрузка {level}', { ...values, used: size(usage.disk.used), total: size(usage.disk.total) });
+    return t('загрузка {level} · база {size} из 500 МБ', values);
   }
   if (id === 'contact') return contact ? L.formatPhone(contact) : t('не указан — мастерам некуда писать');
   if (id === 'push') {
