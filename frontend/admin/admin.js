@@ -17,6 +17,7 @@
 import * as L from '../logic.js';
 import { API_URL, PUBLIC_URL, IS_LOCAL } from '../config.js';
 import { phoneMask } from '../phone-input.js';
+import * as Install from '../install.js';
 
 phoneMask();
 
@@ -40,7 +41,12 @@ const ICONS = {
   check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
   instagram: '<rect x="3.5" y="3.5" width="17" height="17" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.2" cy="6.8" r=".4"/>',
   bell: '<path d="M6 16v-5a6 6 0 0 1 12 0v5l2 2H4z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>',
+  download: '<path d="M12 4v11M7 10l5 5 5-5"/><path d="M5 19.5h14"/>',
 };
+
+// «Установить на экран „Домой“» (2.6.0): страница администратора ставится как приложение «BB Админ».
+const installButton = cls => `
+  <button type="button" class="btn ${cls} block" data-install data-install-ui${Install.canInstall() ? '' : ' hidden'}>${icon('download')} Установить «BB Админ» на экран «Домой»</button>`;
 const icon = name => `<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
 
 let code = '';
@@ -132,7 +138,8 @@ function renderLogin(error = '', auto = false) {
       <button type="submit" class="btn primary block">Войти</button>
       <button type="button" class="btn small ghost face-small" id="face-login" hidden>${icon('lock')} Войти по Face ID</button>
       <p class="warn-text" id="face-error" hidden></p>
-    </form>`;
+    </form>
+    ${installButton('secondary')}`;
   $('#code-form').addEventListener('submit', e => {
     e.preventDefault();
     code = e.target.elements.code.value.trim();
@@ -312,6 +319,7 @@ function render(anim) {
             ${id === 'chats' && unreadTotal() ? `<i class="menu-badge">${unreadTotal()}</i>` : ''}${icon('right')}
           </button>`).join('')}
         </section>
+        ${installButton('secondary')}
         <button class="btn ghost block" id="leave">Выйти</button>
       </div></div>`;
     return;
@@ -776,8 +784,7 @@ function stopChat() {
 // На iPhone уведомления приходят странице, открытой с экрана «Домой» (iOS 16.4+), и разрешение
 // спрашивается только сразу по нажатию — поэтому ключ сервера страница берёт заранее (load).
 
-const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
-const standalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const { isIOS, isStandalone: standalone } = Install;
 const pushHere = () => Boolean(myEndpoint && pushInfo && pushInfo.devices.some(d => d.endpoint === myEndpoint));
 
 // Почему уведомления здесь не включить: '' — можно.
@@ -926,6 +933,11 @@ if ('serviceWorker' in navigator) {
     }
   });
 }
+
+// Браузер предложил установку или страницу установили — показать или убрать кнопки «Установить».
+Install.onInstallChange(() => {
+  document.querySelectorAll('[data-install-ui]').forEach(el => { el.hidden = !Install.canInstall(); });
+});
 
 // Число на иконке «BB Админ» убираем, когда страницу открыли.
 const clearBadge = () => {
@@ -1122,8 +1134,15 @@ async function resetPassword(id) {
 }
 
 view.addEventListener('click', e => {
-  const target = e.target.closest('[data-go], [data-master], [data-back], [data-reset], [data-unkey], [data-month], [data-sub], [data-sort], [data-chat], [data-copy], [data-pay-plan], [data-push], [data-push-remove], #add-face, #leave');
+  const target = e.target.closest('[data-go], [data-master], [data-back], [data-reset], [data-unkey], [data-month], [data-sub], [data-sort], [data-chat], [data-copy], [data-pay-plan], [data-push], [data-push-remove], [data-install], #add-face, #leave');
   if (!target) return;
+  if ('install' in target.dataset) {
+    return Install.install({
+      name: '«BB Админ»',
+      icon: '../icons/bb-admin-192.png',
+      after: 'Потом откройте «BB Админ» с иконки на экране «Домой», войдите и включите Face ID и уведомления.',
+    });
+  }
   if (target.dataset.push === 'on') return enablePush();
   if (target.dataset.push === 'off') return disablePush();
   if (target.dataset.push === 'test') return testPush();

@@ -6,9 +6,10 @@ import * as L from './logic.js';
 import { makeZip, readZip } from './zip.js';
 import { API_URL, PUBLIC_URL, IS_LOCAL } from './config.js';
 import { phoneMask } from './phone-input.js';
+import * as Install from './install.js';
 
 const APP_NAME = 'Beautybook';
-const APP_VERSION = '2.5.0';
+const APP_VERSION = '2.6.0';
 
 phoneMask();
 
@@ -58,6 +59,7 @@ const ICONS = {
   palette: '<path d="M12 3a9 9 0 1 0 0 18c1 0 1.6-.7 1.6-1.5s-.8-1.3-.8-2.3c0-1 .8-1.7 1.8-1.7H17a4 4 0 0 0 4-4C21 6.7 17 3 12 3z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10.5" cy="7.2" r="1"/><circle cx="15" cy="7.5" r="1"/>',
   archive: '<rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9M10 13h4"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6l1.4 1.4M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4L6 18M18 6l1.4-1.4"/>',
+  download: '<path d="M12 4v11M7 10l5 5 5-5"/><path d="M5 19.5h14"/>',
 };
 const icon = name => `<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
 
@@ -192,9 +194,7 @@ function busyList() {
 const ui = { tab: 'records', month: L.monthOf(today()), day: today(), finMonth: L.monthOf(today()), seenToday: today(), clientQuery: '', monthAnim: null, finAnim: null, settingsPage: null, settingsAnim: null, auth: null, authNote: '', authPhone: '', rentYear: Number(today().slice(0, 4)), rentAnim: null };
 const view = $('#view'), fab = $('#fab'), sheet = $('#sheet'), viewer = $('#viewer');
 
-const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
-const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-let installEvent = null;
+const { isStandalone, isIOS } = Install;
 
 // Вверху каждого раздела — логотип и название приложения (они в index.html),
 // справа — кнопки раздела и переключатель светлого и тёмного режима.
@@ -486,15 +486,11 @@ function banners() {
   if (storageBroken) {
     out.push('<div class="banner bad"><div class="grow">Не удалось открыть сохранённые записи. Закройте приложение полностью и откройте снова — изменения сейчас не сохраняются.</div></div>');
   }
-  const touch = matchMedia('(pointer: coarse)').matches;
-  if (!isStandalone() && !pref('installHidden') && (installEvent || (isIOS && touch))) {
-    const text = installEvent
-      ? 'Установите приложение на главный экран — оно будет открываться как обычное.'
-      : `Установите приложение: нажмите ${icon('share')} «Поделиться» в Safari, затем «На экран „Домой“».`;
+  if (!pref('installHidden')) {
     out.push(`
-      <div class="banner">
-        <div class="grow">${text}</div>
-        ${installEvent ? '<button class="btn small primary" data-act="install">Установить</button>' : ''}
+      <div class="banner" data-install-ui${Install.canInstall() ? '' : ' hidden'}>
+        <div class="grow">Установите Beautybook на экран «Домой» — приложение будет открываться с иконки, работать без интернета и присылать уведомления о заявках.</div>
+        <button class="btn small primary" data-act="install">Установить</button>
         <button class="icon-btn" data-act="hide-install" aria-label="Скрыть">${icon('close')}</button>
       </div>`);
   }
@@ -1724,6 +1720,13 @@ function renderSettings() {
           ${icon('right')}
         </button>`).join('')}
       </section>
+      <section class="card settings-menu" data-install-ui${Install.canInstall() ? '' : ' hidden'}>
+        <button class="menu-row" data-act="install">
+          <span class="menu-ico">${icon('download')}</span>
+          <span class="grow"><b>Установить на экран «Домой»</b><small>Открывать с иконки, как обычное приложение</small></span>
+          ${icon('right')}
+        </button>
+      </section>
       ${cloud.key ? `<section class="card settings-menu">
         <button class="menu-row" data-act="open-chat">
           <span class="menu-ico">${icon('chat')}</span>
@@ -2388,7 +2391,11 @@ function renderAuth(screen) {
         <p>Записи, клиенты и финансы для мастеров красоты. Клиенты сами записываются по вашей ссылке.</p>
       </section>
       ${note}
-      <button class="btn primary block" data-act="auth" data-screen="register">Создать аккаунт</button>
+      <section class="card page-card install-offer" data-install-ui${Install.canInstall() ? '' : ' hidden'}>
+        <button class="btn primary block" data-act="install"><span>${icon('download')} Установить на экран «Домой»</span></button>
+        <p class="hint">Приложение будет открываться с иконки, как обычное, и присылать уведомления о заявках.${isIOS ? ' На iPhone лучше сначала установить, а аккаунт создать уже в приложении с иконки.' : ''}</p>
+      </section>
+      <button class="btn ${Install.canInstall() ? 'secondary' : 'primary'} block" data-act="auth" data-screen="register">Создать аккаунт</button>
       <button class="btn secondary block" data-act="auth" data-screen="login">Войти</button>`;
   }
   view.innerHTML = `<div class="auth-page">${html}</div>`;
@@ -3125,13 +3132,14 @@ const actions = {
     render();
     toast('Отметка снята');
   },
-  'install': async () => {
-    if (!installEvent) return;
-    installEvent.prompt();
-    await installEvent.userChoice;
-    installEvent = null;
-    render();
-  },
+  'install': () => Install.install({
+    name: APP_NAME,
+    icon: 'icons/bb-192.png',
+    // На iPhone у приложения с экрана «Домой» свои данные: войти нужно ещё раз (записи вернутся из облака).
+    after: !isIOS ? 'Потом открывайте Beautybook с иконки на экране «Домой».'
+      : cloud.key ? 'Потом откройте Beautybook с иконки на экране «Домой» и войдите по номеру и паролю — записи вернутся из облака.'
+      : 'Потом откройте Beautybook с иконки на экране «Домой» и создайте аккаунт (или войдите) уже там.',
+  }),
   'hide-install': () => { pref('installHidden', '1'); render(); },
   'auth': el => {
     // Набранный номер переходит на следующий экран («Забыли пароль?», «Создать»).
@@ -3285,15 +3293,9 @@ document.addEventListener('keydown', e => {
   }
 });
 
-addEventListener('beforeinstallprompt', e => {
-  e.preventDefault();
-  installEvent = e;
-  if (data && ui.tab === 'records') render();
-});
-
-addEventListener('appinstalled', () => {
-  installEvent = null;
-  if (data) render();
+// Браузер предложил установку или приложение установили — показать или убрать кнопки «Установить».
+Install.onInstallChange(() => {
+  document.querySelectorAll('[data-install-ui]').forEach(el => { el.hidden = !Install.canInstall(); });
 });
 
 addEventListener('online', () => scheduleSync(500));
