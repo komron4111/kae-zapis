@@ -1,7 +1,7 @@
 {
   "name": "Beautybook",
   "short_name": "Beautybook",
-  "description": "Записи клиентов, прайс и финансы мастера красоты",
+  "description": "Записи клиентов, прайс, финансы и онлайн-запись по ссылке для мастеров красоты: маникюр, парикмахеры, барберы, брови и ресницы, визаж, косметология, массаж.",
   "lang": "ru",
   "dir": "ltr",
   "start_url": "./",
@@ -10,9 +10,64 @@
   "orientation": "portrait",
   "background_color": "#0C080B",
   "theme_color": "#933C8B",
+  "categories": [
+    "business",
+    "productivity",
+    "lifestyle"
+  ],
   "icons": [
-    { "src": "icons/bb-192.png", "sizes": "192x192", "type": "image/png" },
-    { "src": "icons/bb-512.png", "sizes": "512x512", "type": "image/png" },
-    { "src": "icons/bb-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+    {
+      "src": "icons/bb-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "icons/bb-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    },
+    {
+      "src": "icons/bb-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "screenshots/records.jpg",
+      "sizes": "750x1624",
+      "type": "image/jpeg",
+      "form_factor": "narrow",
+      "label": "Записи: календарь месяца и записи дня"
+    },
+    {
+      "src": "screenshots/booking-page.jpg",
+      "sizes": "750x1624",
+      "type": "image/jpeg",
+      "form_factor": "narrow",
+      "label": "Страница записи для клиентов: свободное время, адрес и Instagram"
+    },
+    {
+      "src": "screenshots/client-card.jpg",
+      "sizes": "750x1624",
+      "type": "image/jpeg",
+      "form_factor": "narrow",
+      "label": "Карточка клиента: Instagram, день рождения, все записи"
+    },
+    {
+      "src": "screenshots/clients.jpg",
+      "sizes": "750x1624",
+      "type": "image/jpeg",
+      "form_factor": "narrow",
+      "label": "Клиенты: сколько записей и когда последняя"
+    },
+    {
+      "src": "screenshots/finance.jpg",
+      "sizes": "750x1624",
+      "type": "image/jpeg",
+      "form_factor": "narrow",
+      "label": "Финансы месяца: приход, материалы, аренда и чистая прибыль"
+    }
   ]
 }

@@ -9,7 +9,7 @@ import { phoneMask } from './phone-input.js';
 import * as Install from './install.js';
 
 const APP_NAME = 'Beautybook';
-const APP_VERSION = '2.6.0';
+const APP_VERSION = '2.6.1';
 
 phoneMask();
 
@@ -1649,7 +1649,7 @@ function drawExpense(id) {
   sheetHtml(src ? 'Расход' : 'Расход на материалы', `
     <form id="exp-form" class="sheet-body" novalidate autocomplete="off">
       <label>Сумма, ₸<input name="amount" class="money" inputmode="numeric" enterkeyhint="done" value="${L.formatAmount(e.amount)}" placeholder="0"></label>
-      <label>Что купили<input name="note" value="${esc(e.note)}" enterkeyhint="done" placeholder="Гель-лаки, пилки, фрезы…"></label>
+      <label>Что купили<input name="note" value="${esc(e.note)}" enterkeyhint="done" placeholder="Материалы, расходники, инструменты…"></label>
       <label>Дата<input type="date" name="date" value="${esc(e.date)}"></label>
       <button type="submit" class="btn primary block">Сохранить</button>
       ${src ? `<button type="button" class="btn danger block" data-act="delete-expense" data-id="${esc(src.id)}">Удалить расход</button>` : ''}
