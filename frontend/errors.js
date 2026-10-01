@@ -23,11 +23,19 @@
     } catch (e) { /* не страшно */ }
   }
 
+  const own = url => {
+    try { return new URL(url, location.href).origin === location.origin; } catch (e) { return false; }
+  };
+
   addEventListener('error', e => {
     const el = e.target;
-    // Не загрузился скрипт или стиль сайта — например, после выкладки на телефоне смешались версии.
-    if (el && el !== window && (el.tagName === 'SCRIPT' || el.tagName === 'LINK')) send(`не загрузился ${file(el.src || el.href)}`, 'файл');
-    else if (el === window || !el || !el.tagName) send(e.message, `${file(e.filename)}:${e.lineno}`);
+    if (el && el !== window && (el.tagName === 'SCRIPT' || el.tagName === 'LINK')) {
+      // Не загрузился скрипт или стиль сайта — например, после выкладки на телефоне смешались версии.
+      // Чужие файлы пропускаем: Instagram и Facebook во встроенном браузере вставляют свой скрипт
+      // (connect.facebook.net/en_US/pcm.js), политика безопасности его не пускает — это не сбой сайта.
+      const url = el.src || el.href;
+      if (own(url)) send(`не загрузился ${file(url)}`, 'файл');
+    } else if (el === window || !el || !el.tagName) send(e.message, `${file(e.filename)}:${e.lineno}`);
   }, true);
   addEventListener('unhandledrejection', e => {
     const r = e.reason;

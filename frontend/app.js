@@ -8,7 +8,7 @@ import { API_URL, PUBLIC_URL, IS_LOCAL } from './config.js';
 import { phoneMask } from './phone-input.js';
 
 const APP_NAME = 'Beautybook';
-const APP_VERSION = '2.4.0';
+const APP_VERSION = '2.4.1';
 
 phoneMask();
 
