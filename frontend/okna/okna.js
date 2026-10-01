@@ -17,16 +17,35 @@ const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&a
 const chevron = '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>';
 const closeIcon = '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>';
 const pinIcon = '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg>';
+const instagramIcon = '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="3.5" width="17" height="17" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.2" cy="6.8" r=".4"/></svg>';
 
-// Где принимает мастер: адрес и кнопка 2ГИС. Ссылку ещё раз проверяет L.gisLink — только 2ГИС.
-function placeHtml(address, gis) {
-  const text = L.addressText(address), link = L.gisLink(gis);
-  if (!text && !link) return '';
+// Где принимает мастер: адрес, кнопки 2ГИС и Instagram. Ссылку ещё раз проверяет L.gisLink — только 2ГИС,
+// ник — L.instagramName (буквы, цифры, точка и «_»).
+function placeHtml(master) {
+  const text = L.addressText(master.address), link = L.gisLink(master.gis), insta = L.instagramName(master.instagram);
+  if (!text && !link && !insta) return '';
   return `
     <div class="okna-place">
       ${text ? `<p>${pinIcon}<span>${esc(text)}</span></p>` : ''}
       ${link ? `<a class="btn small secondary" href="${esc(link)}" target="_blank" rel="noopener">Открыть в 2ГИС</a>` : ''}
+      ${insta ? `<a class="btn small secondary" href="https://www.instagram.com/${esc(insta)}/" target="_blank" rel="noopener">${instagramIcon} Instagram</a>` : ''}
     </div>`;
+}
+
+// Цвета — как в приложении мастера (тема из его расписания); светлый или тёмный режим — как в телефоне клиента.
+// Тему запоминаем, чтобы при следующем открытии страница сразу была в цветах мастера.
+const themeKey = slug => `kae-okna:theme:${slug || 'legacy'}`;
+
+function applyTheme(theme, slug) {
+  const id = L.THEMES[theme] ? theme : 'plum';
+  const root = document.documentElement;
+  if (root.dataset.theme !== id) root.dataset.theme = id;
+  try { localStorage.setItem(themeKey(slug), id); } catch (e) { /* не страшно */ }
+  const style = getComputedStyle(root);
+  document.querySelectorAll('meta[name="theme-color"]').forEach(m => {
+    const color = style.getPropertyValue(String(m.media).includes('dark') ? '--d-bar2' : '--l-bar2').trim();
+    if (color) m.content = color;
+  });
 }
 
 let schedule = null;
@@ -57,6 +76,11 @@ function rememberBooking(entry) {
 // Мастер этой страницы: okna/?m=<slug>. Без него — прежняя ссылка Арай (до аккаунтов).
 const MASTER = (new URLSearchParams(location.search).get('m') || '').trim().toLowerCase();
 const withMaster = (url, slug = MASTER) => (slug ? `${url}${url.includes('?') ? '&' : '?'}m=${encodeURIComponent(slug)}` : url);
+
+try {
+  const early = new URLSearchParams(location.search).has('z') ? '' : localStorage.getItem(themeKey(MASTER));
+  if (early && L.THEMES[early]) document.documentElement.dataset.theme = early;
+} catch (e) { /* приватный режим — исходные цвета */ }
 
 const bookingEntry = (token, b) => ({ token, m: (b.master && b.master.slug) || MASTER, date: b.date, time: b.time, services: b.services || [], status: b.status });
 const bookingUrl = token => `${location.pathname}?z=${encodeURIComponent(token)}`;
@@ -101,13 +125,14 @@ function render() {
   const s = schedule;
   const name = s.name || 'Мастер';
   document.title = `Запись — ${name}`;
-  // Шапка — как в приложении (логотип и Nailapp, в okna/index.html), имя мастера — в заголовке.
-  const title = `<h2 class="okna-title">Запись к мастеру ${esc(name)}</h2>`;
-  // Подписка мастера на Nailapp закончилась: онлайн-запись на паузе, записаться — через WhatsApp.
+  applyTheme(s.theme, MASTER || s.slug);
+  // Шапка — как в приложении (логотип и Beautybook, в okna/index.html), имя и направление мастера — в заголовке.
+  const title = `<h2 class="okna-title">Запись к мастеру ${esc(name)}${s.specialty ? `<small>${esc(s.specialty)}</small>` : ''}</h2>`;
+  // Подписка мастера на Beautybook закончилась: онлайн-запись на паузе, записаться — через WhatsApp.
   if (s.paused) {
     view.innerHTML = `
       ${title}
-      ${placeHtml(s.address, s.gis)}
+      ${placeHtml(s)}
       <section class="card page-card">
         <p>Онлайн-запись к этому мастеру временно недоступна.</p>
         ${s.whatsapp ? `<a class="btn primary block" href="${esc(whatsappLink('Здравствуйте! Хочу записаться к вам.'))}" target="_blank" rel="noopener">Написать мастеру в WhatsApp</a>` : '<p class="hint">Свяжитесь с мастером, чтобы записаться.</p>'}
@@ -163,7 +188,7 @@ function render() {
   const mine = myBookings().filter(b => b.date >= clock.date && (b.m ? b.m === s.slug : Boolean(s.legacy)));
   view.innerHTML = `
     ${title}
-    ${placeHtml(s.address, s.gis)}
+    ${placeHtml(s)}
     ${mine.length ? `
     <section class="my-bookings">
       <h2 class="section-title">Мои записи</h2>
@@ -194,6 +219,7 @@ function openForm(date, time) {
       <p class="lead"><b>${L.dayTitle(date)}, ${esc(L.shortTime(time))}</b></p>
       <label>Ваше имя<input name="name" autocomplete="name" autocapitalize="words" enterkeyhint="next" value="${esc(me.name)}" placeholder="Например, Айгуль"></label>
       <label>Телефон (WhatsApp)<input name="phone" type="tel" autocomplete="tel" enterkeyhint="done" value="${esc(L.phoneFieldStart(me.phone))}"></label>
+      ${services.length ? `
       <fieldset>
         <legend>Что будем делать — можно несколько</legend>
         <div class="chips">${services.map(p => `
@@ -201,10 +227,11 @@ function openForm(date, time) {
             ${esc(p.name)}${p.price ? `<small>${L.formatAmount(p.price)} ₸</small>` : ''}
           </button>`).join('')}
         </div>
-      </fieldset>
+      </fieldset>` : `
+      <label>Что будем делать<input name="service" maxlength="60" enterkeyhint="next" placeholder="Например, стрижка"></label>`}
       <div class="summary" id="total" hidden></div>
       <p id="fit-warn" class="warn-text" hidden></p>
-      <label>Комментарий (необязательно)<input name="comment" enterkeyhint="done" maxlength="300" placeholder="Дизайн, длина, пожелания"></label>
+      <label>Комментарий (необязательно)<input name="comment" enterkeyhint="done" maxlength="300" placeholder="Пожелания мастеру"></label>
       <input name="website" class="trap" tabindex="-1" autocomplete="off" aria-hidden="true">
       <p id="form-error" class="warn-text" hidden></p>
       <button type="submit" class="btn primary block">Отправить заявку</button>
@@ -215,7 +242,9 @@ function openForm(date, time) {
   history.pushState({ form: true }, '');
 
   const form = $('#request-form');
-  const chosen = () => [...form.querySelectorAll('.chip.on')].map(c => c.dataset.service);
+  // Прайс мастера пуст (новый мастер ещё не заполнил) — клиент пишет услугу сам; сервер примет её как текст.
+  const chosen = () => (services.length ? [...form.querySelectorAll('.chip.on')].map(c => c.dataset.service)
+    : [form.elements.namedItem('service').value.trim().replace(/\s+/g, ' ').slice(0, 60)].filter(Boolean));
   // Сколько займут услуги и успеют ли они до следующей записи (расписание с 1.8.0).
   const day = (schedule.days || []).find(d => d.date === date);
   const timed = Boolean(day && Array.isArray(day.busy));
@@ -246,7 +275,7 @@ function openForm(date, time) {
     const body = { date, time, name: v('name').trim(), phone: v('phone'), services: chosen(), comment: v('comment').trim(), website: v('website') };
     const error = !body.name ? 'Укажите имя'
       : L.phoneFieldDigits(body.phone).length < 10 ? 'Укажите номер телефона полностью'
-      : !body.services.length ? 'Выберите вид работы'
+      : !body.services.length ? (services.length ? 'Выберите вид работы' : 'Напишите, что будем делать')
       : !fits(body.services) ? tooLong
       : '';
     if (error) return showError(error);
@@ -325,6 +354,7 @@ async function loadBooking(token) {
 function renderBooking(b) {
   const master = (b.master && b.master.name) || 'Мастер';
   document.title = `Моя запись — ${master}`;
+  applyTheme(b.master && b.master.theme, b.master && b.master.slug);
   const [tone, label] = BOOKING_STATUS[b.status] || BOOKING_STATUS.pending;
   const due = Math.max((b.total || 0) - (b.prepaid || 0), 0);
   const active = b.status === 'pending' || b.status === 'confirmed';
@@ -340,7 +370,7 @@ function renderBooking(b) {
       ${b.prepaid ? `<div class="line"><span>Предоплата</span><b>${L.formatMoney(b.prepaid)}</b></div>` : ''}
       ${b.status === 'confirmed' && b.prepaid ? `<div class="line"><span>Останется оплатить</span><b>${L.formatMoney(due)}</b></div>` : ''}` : ''}
     </section>
-    ${placeHtml(b.master && b.master.address, b.master && b.master.gis)}
+    ${placeHtml(b.master || {})}
     ${b.status === 'pending' ? `<p class="hint">${esc(master)} напишет вам в WhatsApp, чтобы подтвердить запись. Эта страница обновится сама.</p>` : ''}
     ${b.status === 'declined' ? '<p class="hint">Выберите другое время или напишите мастеру.</p>' : ''}
     ${whatsapp ? `<a class="btn secondary block" href="https://wa.me/${whatsapp}" target="_blank" rel="noopener">Написать мастеру в WhatsApp</a>` : ''}

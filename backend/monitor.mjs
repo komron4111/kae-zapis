@@ -1,7 +1,8 @@
-// Проверка Nailapp: всё ли работает и не упираемся ли в бесплатный тариф Cloudflare.
+// Проверка Beautybook (до 2.4.0 — Nailapp): всё ли работает и не упираемся ли в бесплатный тариф Cloudflare.
 // Запускает задача Claude по расписанию («Nailapp: проверка сервера»); можно и вручную,
 // из папки backend: ~/.local/node/bin/node monitor.mjs
-// Только читает: адреса сайта и сервера, нагрузку на базу, мастеров, фото, журнал ошибок.
+// Читает адреса сайта и сервера, нагрузку на базу, мастеров, фото, журнал ошибок. Пишет в базу одно:
+// снимок нагрузки за сутки (config.usage) — его показывают шкалы в разделе «Сервер» у администратора.
 // Печатает отчёт; в конце — «ИТОГ: OK | WARN | ALERT» и, если есть о чём сообщить
 // (а за сутки об этом ещё не сообщали), — «УВЕДОМИТЬ: <текст>».
 // Каждый запуск дописывает строку в ../.claude/monitor-log.md (папка .claude в git не попадает).
@@ -88,6 +89,13 @@ for (const [key, name, value, max, fmt] of loads) {
   if (value >= max * ALERT) problem('ALERT', `load:${key}`, `${name} — ${p}% лимита бесплатного тарифа`);
   else if (value >= max * WARN) problem('WARN', `load:${key}`, `${name} — ${p}% лимита бесплатного тарифа`);
 }
+// Снимок для страницы администратора: только числа и время (в JSON нет кавычек «'» — строка SQL безопасна).
+const usage = { at: new Date(now).toISOString(), size: info.database_size, requests: Math.round(requests), rowsWritten: info.rows_written_24h, rowsRead: info.rows_read_24h };
+try {
+  sql(`INSERT OR REPLACE INTO config (key, value) VALUES ('usage', '${JSON.stringify(usage)}')`);
+} catch (e) {
+  report.push(`  снимок нагрузки для администратора не записан: ${String(e.message || e).split('\n')[0]}`);
+}
 
 // 3. Мастера, фото, копии, попытки
 const since24 = new Date(now - DAY).toISOString();
@@ -142,14 +150,14 @@ if (errors.length) state.lastErrorId = errors[errors.length - 1].id;
 fs.mkdirSync(STATE_DIR, { recursive: true });
 fs.writeFileSync(STATE, JSON.stringify(state, null, 2));
 const stamp = new Date(now).toLocaleString('ru-RU', { timeZone: 'Asia/Almaty' });
-if (!fs.existsSync(LOG)) fs.writeFileSync(LOG, '# Проверки Nailapp\n\n| Время (Алматы) | Итог | Мастеров | База | Записано за сутки | Прочитано за сутки | Фото | Новых ошибок (сервер/страницы) |\n|---|---|---|---|---|---|---|---|\n');
+if (!fs.existsSync(LOG)) fs.writeFileSync(LOG, '# Проверки Beautybook (Nailapp)\n\n| Время (Алматы) | Итог | Мастеров | База | Записано за сутки | Прочитано за сутки | Фото | Новых ошибок (сервер/страницы) |\n|---|---|---|---|---|---|---|---|\n');
 fs.appendFileSync(LOG, `| ${stamp} | ${level} | ${s.masters} | ${mb(info.database_size)} | ${num(info.rows_written_24h)} | ${num(info.rows_read_24h)} | ${s.photos} / ${mb(s.photo_bytes)} | ${server.length}/${pages.length} |\n`);
 
-console.log(`Проверка Nailapp — ${stamp}`);
+console.log(`Проверка Beautybook — ${stamp}`);
 console.log(report.join('\n'));
 for (const p of problems) console.log(`${p.level === 'ALERT' ? '‼️' : '⚠️'} ${p.text}`);
 console.log(`ИТОГ: ${level}`);
 if (fresh.length) {
-  const text = `Nailapp: ${fresh[0].text}${fresh.length > 1 ? ` (и ещё ${fresh.length - 1})` : ''}`;
+  const text = `Beautybook: ${fresh[0].text}${fresh.length > 1 ? ` (и ещё ${fresh.length - 1})` : ''}`;
   console.log(`УВЕДОМИТЬ: ${text.slice(0, 190)}`);
 }

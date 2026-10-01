@@ -1,5 +1,6 @@
-/* Nailapp — оформление. Цвета — переменные.
-   Три темы: пурпурная (исходная), розовая и фиолетовая — html[data-theme].
+/* Beautybook — оформление. Цвета — переменные.
+   Четыре темы: пурпурная (исходная), розовая, фиолетовая и графит (2.4.0, для барберов
+   и парикмахеров, кому не по душе розовые тона) — html[data-theme].
    У каждой светлый и тёмный режим. Режим — html[data-mode]: в приложении исходно
    светлый, меняется кнопкой в шапке; без него (страница для клиентов) — как в телефоне. */
 
@@ -21,6 +22,12 @@
   --l-accent: #7858B8; --l-accent-soft: #EEE8F9; --l-bar1: #9C82D8; --l-bar2: #7056B8;
   --d-bg: #110F17; --d-card: #1C1924; --d-field: #16141D; --d-text: #EEEAF6; --d-muted: #9D96AE; --d-line: #2E2A3B;
   --d-accent: #A992EA; --d-accent-ink: #1C1433; --d-accent-soft: #2C2645; --d-bar1: #44356E; --d-bar2: #2A2046;
+}
+[data-theme="graphite"] {
+  --l-bg: #F3F4F6; --l-text: #1D2127; --l-muted: #646D78; --l-line: #DDE1E6;
+  --l-accent: #3D628F; --l-accent-soft: #E2E9F2; --l-bar1: #4B535E; --l-bar2: #262B32;
+  --d-bg: #0E1013; --d-card: #181B20; --d-field: #13161A; --d-text: #E8EBEF; --d-muted: #959EA9; --d-line: #292E35;
+  --d-accent: #82A9D9; --d-accent-ink: #0D1826; --d-accent-soft: #1E2836; --d-bar1: #3A4049; --d-bar2: #22262C;
 }
 
 /* Светлый режим */
@@ -610,9 +617,19 @@ body.auth { padding-bottom: env(safe-area-inset-bottom); }
 body.admin .line b { white-space: normal; text-align: right; overflow-wrap: anywhere; }
 body.admin .menu-row > b { flex: none; font-variant-numeric: tabular-nums; }
 body.admin .page-card > .btn.small { margin-top: 10px; }
-body.admin .sub-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+body.admin .sub-row { display: flex; align-items: flex-start; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }
 body.admin .sub-row:last-child { border-bottom: 0; }
-body.admin .sub-check { width: 24px; height: 24px; flex: none; margin: 0; accent-color: var(--accent); }
+body.admin .sub-check {
+  width: 24px;
+  height: 24px;
+  min-height: 0;
+  flex: none;
+  margin: 0;
+  padding: 0;
+  -webkit-appearance: checkbox;
+  appearance: auto;
+  accent-color: var(--accent);
+}
 body.admin .sub-info { min-width: 0; padding: 0; border: 0; background: none; color: inherit; text-align: left; }
 body.admin .sub-info b { display: block; font-size: 16px; }
 body.admin .sub-info small { display: block; color: var(--muted); font-size: 13px; }
@@ -663,7 +680,7 @@ a.profile-row { color: var(--accent); font-weight: 600; }
 
 /* ---------- Выбор темы ---------- */
 
-.themes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 10px; }
+.themes { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 10px; }
 .theme-pick {
   display: flex;
   flex-direction: column;
@@ -936,3 +953,143 @@ body.okna main { padding-bottom: 24px; }
 .my-booking small { color: var(--muted); font-size: 13px; }
 .my-booking .badge { align-self: flex-start; margin-top: 6px; }
 .btn-row.center { justify-content: center; }
+
+/* ---------- Анкета мастера и условия подписки (2.4.0) ---------- */
+
+.small-chips { gap: 6px; margin-top: 8px; }
+.check { display: flex; align-items: center; gap: 10px; margin-top: 14px; color: var(--text); font-size: 15px; font-weight: 500; }
+.check input[type=checkbox] {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  -webkit-appearance: checkbox;
+  appearance: auto;
+  accent-color: var(--accent);
+}
+.terms { margin-top: 14px; }
+.terms summary { color: var(--accent); font-weight: 600; cursor: pointer; }
+.terms-list { margin: 8px 0 0; padding-left: 20px; color: var(--muted); font-size: 14px; }
+.terms-list li + li { margin-top: 6px; }
+.terms-list b { color: var(--text); }
+
+/* ---------- Чат с администратором ---------- */
+
+.chat-body {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 56px - env(safe-area-inset-top));
+  min-height: calc(100dvh - 56px - env(safe-area-inset-top));
+  padding-bottom: 0;
+}
+.chat { display: flex; flex: 1; flex-direction: column; gap: 8px; padding: 12px 0; }
+.chat-empty { margin: auto 0; text-align: center; }
+.bubble { max-width: 82%; padding: 9px 12px; border-radius: 16px; background: var(--card); box-shadow: var(--shadow); }
+.bubble p { margin: 0; overflow-wrap: anywhere; }
+.bubble small { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; }
+.bubble.theirs { align-self: flex-start; border-bottom-left-radius: 6px; }
+.bubble.mine { align-self: flex-end; border-bottom-right-radius: 6px; background: var(--accent); color: var(--accent-ink); }
+.bubble.mine small { color: inherit; opacity: .8; }
+.chat-form {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  margin: 0 -16px;
+  padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+}
+.chat-form textarea {
+  flex: 1;
+  min-width: 0;
+  min-height: 48px;
+  max-height: 140px;
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--field);
+  color: var(--text);
+  font: inherit;
+  font-size: 17px;
+  resize: none;
+}
+.chat-form textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.chat-form .btn { flex: none; }
+.menu-badge, .btn-badge {
+  flex: none;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 700;
+  line-height: 20px;
+  text-align: center;
+}
+.btn-badge { margin-left: 6px; }
+
+/* ---------- Администратор (2.4.0): вход, сортировка, шкалы, записи по месяцам, чат ---------- */
+
+.face-small { display: flex; margin: 12px auto 0; }
+.sort-chips { margin: 0 0 12px; }
+
+/* Шкала из 10 овалов. Обычная (подписка) — от красного к зелёному, .rev (нагрузка) — наоборот. */
+.pills { display: flex; gap: 4px; }
+.pills i { flex: 1; max-width: 26px; height: 8px; border-radius: 999px; background: var(--line); }
+.pills i.on { background: var(--c); }
+.pills i:nth-child(1) { --c: #D93A2B; }
+.pills i:nth-child(2) { --c: #E2582A; }
+.pills i:nth-child(3) { --c: #EA7629; }
+.pills i:nth-child(4) { --c: #EF9428; }
+.pills i:nth-child(5) { --c: #EDB02E; }
+.pills i:nth-child(6) { --c: #D3BD2E; }
+.pills i:nth-child(7) { --c: #B0C133; }
+.pills i:nth-child(8) { --c: #86BD3C; }
+.pills i:nth-child(9) { --c: #5AB348; }
+.pills i:nth-child(10) { --c: #2FA552; }
+.pills.rev i:nth-child(1) { --c: #2FA552; }
+.pills.rev i:nth-child(2) { --c: #5AB348; }
+.pills.rev i:nth-child(3) { --c: #86BD3C; }
+.pills.rev i:nth-child(4) { --c: #B0C133; }
+.pills.rev i:nth-child(5) { --c: #D3BD2E; }
+.pills.rev i:nth-child(6) { --c: #EDB02E; }
+.pills.rev i:nth-child(7) { --c: #EF9428; }
+.pills.rev i:nth-child(8) { --c: #EA7629; }
+.pills.rev i:nth-child(9) { --c: #E2582A; }
+.pills.rev i:nth-child(10) { --c: #D93A2B; }
+
+.sub-main { min-width: 0; }
+.sub-scale { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
+.sub-scale .pills { flex: 1; max-width: 300px; }
+.sub-scale small { flex: none; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.page-card > .sub-scale { margin: 10px 0 4px; }
+.plan-choice { margin-top: 8px; }
+.plan-choice small { color: var(--muted); font-size: 13px; }
+.plan-choice .btn-row { margin-top: 6px; }
+
+.load-row { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.load-row:last-of-type { border-bottom: 0; }
+.load-head { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 8px; font-size: 15px; }
+.load-head b { text-align: right; font-variant-numeric: tabular-nums; }
+.load-row .pills i { max-width: none; height: 10px; }
+.load-level.ok { color: var(--ok); }
+.load-level.warn { color: var(--warn); }
+.load-level.bad { color: var(--danger); }
+
+.stats-table { width: 100%; margin-top: 8px; border-collapse: collapse; font-size: 15px; font-variant-numeric: tabular-nums; }
+.stats-table th { padding: 6px 4px; color: var(--muted); font-size: 12px; font-weight: 600; text-align: right; vertical-align: bottom; }
+.stats-table td { padding: 8px 4px; border-top: 1px solid var(--line); text-align: right; vertical-align: top; }
+.stats-table th:first-child, .stats-table td:first-child { text-align: left; }
+.stats-table td small { display: block; color: var(--muted); font-size: 12px; }
+
+.copy-btn { display: inline-grid; width: 32px; height: 32px; margin: -6px -6px -6px 2px; vertical-align: middle; color: var(--accent); }
+.copy-btn .ico { width: 18px; height: 18px; }
+
+body.admin .chat-form { margin: 0; padding: 10px 0 calc(10px + env(safe-area-inset-bottom)); }

@@ -1,4 +1,4 @@
-// Nailapp — интерфейс приложения. Расчёты — в logic.js, архив — в zip.js.
+// Beautybook (до 2.4.0 — Nailapp) — интерфейс приложения. Расчёты — в logic.js, архив — в zip.js.
 // Данные живут в телефоне (IndexedDB) и сами сохраняются в облако (сервер backend/ на
 // Cloudflare): копия записей и фото, свободное время для клиентов, заявки клиентов.
 
@@ -7,8 +7,8 @@ import { makeZip, readZip } from './zip.js';
 import { API_URL, PUBLIC_URL, IS_LOCAL } from './config.js';
 import { phoneMask } from './phone-input.js';
 
-const APP_NAME = 'Nailapp';
-const APP_VERSION = '2.3.0';
+const APP_NAME = 'Beautybook';
+const APP_VERSION = '2.4.0';
 
 phoneMask();
 
@@ -143,7 +143,7 @@ function freshData() {
   return {
     appointments: [],
     expenses: [],
-    prices: L.DEFAULT_SERVICES.map(([name, duration]) => ({ id: uid(), name, price: 0, duration })),
+    prices: [], // с 2.4.0 мастер (любого направления) заполняет прайс сам
     rent: [{ from: '2000-01', amount: L.DEFAULT_RENT }],
     settings: { ...L.DEFAULT_SETTINGS },
     blocks: [],
@@ -153,21 +153,12 @@ function freshData() {
   };
 }
 
-// Прайс мастера (с 1.8.0): если ни у одной услуги нет длительности, прайс старый —
-// в том числе только что восстановленный из копии. Приводим его к услугам мастера
-// (цены совпавших услуг остаются, пустые прежние убираются).
-function ensurePriceList() {
-  if (data.prices.some(p => p.duration > 0)) return false;
-  data.prices = L.mergePrices(data.prices, L.DEFAULT_SERVICES, uid);
-  return true;
-}
-
 function freshCloud() {
   // closing — заявки, подтверждённые без связи: закроем их в облаке при следующем сохранении.
   // bookings — что уже выложено по личным ссылкам клиентов: { token: JSON записи }.
   // account — аккаунт мастера с сервера { name, phone, slug, claimed }; lastPhone — чей аккаунт
   // был на этом телефоне последним (если войдёт другой мастер, чужие данные с телефона уберём).
-  return { key: '', pushKey: '', pushOn: false, schedulePrint: '', backupPrint: '', savedAt: null, uploaded: [], closing: [], bookings: {}, error: '', account: null, lastPhone: '' };
+  return { key: '', pushKey: '', pushOn: false, schedulePrint: '', backupPrint: '', savedAt: null, uploaded: [], closing: [], bookings: {}, error: '', account: null, lastPhone: '', statsPrint: '' };
 }
 
 const settings = () => ({ ...L.DEFAULT_SETTINGS, ...data.settings });
@@ -243,7 +234,7 @@ function render() {
   }
   const tabs = [['records', 'calendar', 'Записи'], ['clients', 'users', 'Клиенты'], ['finance', 'chart', 'Финансы'], ['settings', 'sliders', 'Настройки']];
   $('#tabbar').innerHTML = tabs.map(([id, ic, label]) =>
-    `<button data-tab="${id}"${ui.tab === id ? ' class="active" aria-current="page"' : ''}>${icon(ic)}<span>${label}</span>${id === 'records' && requests.length ? `<i class="tab-badge">${requests.length}</i>` : ''}</button>`).join('');
+    `<button data-tab="${id}"${ui.tab === id ? ' class="active" aria-current="page"' : ''}>${icon(ic)}<span>${label}</span>${id === 'records' && requests.length ? `<i class="tab-badge">${requests.length}</i>` : ''}${id === 'settings' ? chatBadge('tab-badge') : ''}</button>`).join('');
   fab.hidden = ui.tab !== 'records' && ui.tab !== 'clients';
   fab.dataset.act = ui.tab === 'clients' ? 'new-client' : 'new-appt';
   fab.setAttribute('aria-label', ui.tab === 'clients' ? 'Новый клиент' : 'Новая запись');
@@ -510,7 +501,7 @@ function banners() {
   if (!data.prices.some(p => p.price > 0)) {
     out.push(`
       <div class="banner">
-        <div class="grow">Заполните прайс — тогда сумма будет подставляться в запись сама.</div>
+        <div class="grow">${data.prices.length ? 'Заполните цены в прайсе — тогда сумма будет подставляться в запись сама.' : 'Добавьте свои услуги в прайс: название, цену и сколько длится. Клиенты выберут их по вашей ссылке.'}</div>
         <button class="btn small secondary" data-act="goto" data-to="settings" data-page="prices">Прайс</button>
       </div>`);
   }
@@ -563,6 +554,7 @@ function drawAppt(id, prefill) {
       <label>Телефон<input name="phone" type="tel" value="${esc(L.phoneFieldStart(a.phone))}" enterkeyhint="done"></label>
       <div class="suggest" data-for="phone"></div>
       <div class="phone-links" id="phone-links"></div>
+      ${services.length ? `
       <fieldset>
         <legend>Услуги — можно несколько</legend>
         <div class="chips">${services.map(p => `
@@ -571,7 +563,9 @@ function drawAppt(id, prefill) {
           </button>`).join('')}
         </div>
         <input type="hidden" name="services" value="${esc(JSON.stringify(chosen))}">
-      </fieldset>
+      </fieldset>` : `
+      <label>Услуга<input name="service-text" maxlength="60" enterkeyhint="done" placeholder="Например, стрижка"></label>
+      <p class="hint">Добавьте услуги в «Прайс» — тогда их можно выбирать кнопками, а цена подставится сама.</p>`}
       <div class="row2">
         <label>Сумма, ₸<input name="total" class="money" inputmode="numeric" enterkeyhint="done" value="${L.formatAmount(a.total)}" placeholder="0"></label>
         <label>Предоплата, ₸<input name="prepaid" class="money" inputmode="numeric" enterkeyhint="done" value="${L.formatAmount(a.prepaid)}" placeholder="0"></label>
@@ -584,7 +578,7 @@ function drawAppt(id, prefill) {
         </div>
         <input type="hidden" name="status" value="${esc(a.status)}">
       </fieldset>
-      <label>Заметка<input name="note" value="${esc(a.note)}" enterkeyhint="done" placeholder="Дизайн, длина, пожелания"></label>
+      <label>Заметка<input name="note" value="${esc(a.note)}" enterkeyhint="done" placeholder="Пожелания, детали"></label>
       ${src ? `
       <fieldset>
         <legend>Фото результата</legend>
@@ -613,7 +607,9 @@ function drawAppt(id, prefill) {
 }
 
 const field = (form, name) => form.elements.namedItem(name);
-const chosenServices = form => JSON.parse(field(form, 'services').value || '[]');
+// Услуги записи: кнопки из прайса, а пока прайс пуст — одна услуга текстом (поле «Услуга»).
+const chosenServices = form => (field(form, 'services') ? JSON.parse(field(form, 'services').value || '[]')
+  : [field(form, 'service-text').value.trim().replace(/\s+/g, ' ').slice(0, 60)].filter(Boolean));
 // При редактировании запись (или заявка, из которой она создаётся) не мешает сама себе.
 const selfId = form => form.dataset.id || (form.dataset.request ? `req:${form.dataset.request}` : '');
 
@@ -730,7 +726,7 @@ async function saveAppt(form) {
   const error = !rec.date ? 'Укажите дату'
     : !rec.time ? 'Укажите время'
     : !rec.name && !rec.phone ? 'Укажите имя или телефон клиента'
-    : !rec.services.length ? 'Выберите услугу'
+    : !rec.services.length ? (field(form, 'services') ? 'Выберите услугу' : 'Напишите услугу')
     : rec.prepaid > rec.total ? 'Предоплата не может быть больше суммы'
     : '';
   if (error) return toast(error);
@@ -744,6 +740,7 @@ async function saveAppt(form) {
   } else {
     saved = { id: uid(), ...rec, photos: [], created: now, updated: now };
     if (form.dataset.token) saved.token = form.dataset.token;
+    if (form.dataset.request) saved.source = 'link'; // клиент записался сам, по ссылке
     data.appointments.push(saved);
   }
   if (!(await save())) return;
@@ -1727,6 +1724,13 @@ function renderSettings() {
           ${icon('right')}
         </button>`).join('')}
       </section>
+      ${cloud.key ? `<section class="card settings-menu">
+        <button class="menu-row" data-act="open-chat">
+          <span class="menu-ico">${icon('chat')}</span>
+          <span class="grow"><b>Чат с администратором</b><small>Вопросы по оплате, подписке и работе приложения</small></span>
+          ${chatBadge('menu-badge')}${icon('right')}
+        </button>
+      </section>` : ''}
       <p class="version">${APP_NAME} · версия ${APP_VERSION}</p>
       </div></div>`;
     return;
@@ -1737,6 +1741,13 @@ function renderSettings() {
     <h2 class="page-title">${SETTINGS_PAGES[page][1]}</h2>
     ${settingsPageHtml(page)}
     </div></div>`;
+  const profile = $('#auth-form');
+  if (profile) {
+    profile.addEventListener('submit', e => {
+      e.preventDefault();
+      submitAuth(profile);
+    });
+  }
 }
 
 // Открыть пункт настроек (page) или вернуться к списку (null).
@@ -1788,6 +1799,7 @@ function settingsPageHtml(page) {
       <div class="line"><span>Имя для клиентов</span><b>${esc(s.clientName || a.name || '')}</b></div>
       <div class="line"><span>Телефон для входа</span><b>${esc(a.phone || '')}</b></div>
       <div class="line"><span>Подписка</span><b>${esc(subscriptionText(subscription()))}</b></div>
+      <details class="terms"><summary>Условия подписки</summary>${termsHtml()}</details>
       <p class="hint">В приложение входят по этому номеру и паролю. Имя видят клиенты по вашей ссылке — поменять его можно в «Ссылке для клиентов». Забыли пароль — его восстановит администратор.</p>
       <button class="btn secondary block" data-act="change-password">${icon('lock')} Сменить пароль</button>
       <button class="btn danger block" data-act="logout">Выйти из аккаунта</button>`) + card(`
@@ -1795,13 +1807,22 @@ function settingsPageHtml(page) {
       <label>Адрес<input value="${esc(s.address)}" maxlength="150" autocomplete="street-address" enterkeyhint="done" placeholder="Город, улица, дом, этаж или кабинет" data-change="set-address"></label>
       <label>Ссылка на 2ГИС<input type="url" inputmode="url" value="${esc(s.gis)}" enterkeyhint="done" placeholder="https://go.2gis.com/…" data-change="set-gis"></label>
       <p class="hint">В 2ГИС найдите свой салон или дом → «Поделиться» → «Копировать ссылку» и вставьте сюда. Адрес и кнопку «Открыть в 2ГИС» увидят клиенты по вашей ссылке и в своей записи.</p>
-      ${s.gis ? `<a class="btn small secondary" href="${esc(s.gis)}" target="_blank" rel="noopener">Проверить ссылку в 2ГИС</a>` : ''}`);
+      ${s.gis ? `<a class="btn small secondary" href="${esc(s.gis)}" target="_blank" rel="noopener">Проверить ссылку в 2ГИС</a>` : ''}`) + card(`
+      <h3 class="card-title">Анкета</h3>
+      <form id="auth-form" data-kind="profile" novalidate>
+        ${specialtyField(a.specialty || s.specialty)}
+        ${kaspiField(a.kaspi || s.kaspi)}
+        ${instagramField(s.instagram)}
+        <p class="warn-text" id="auth-error" hidden></p>
+        <button type="submit" class="btn secondary block">Сохранить анкету</button>
+      </form>`);
     }
     case 'cloud':
       return card(cloud.key ? cloudPairedHtml() : '<p class="hint">Войдите в аккаунт — записи и фото начнут сохраняться в облако сами.</p>');
     case 'prices':
       return card(`
       <p class="hint">Цена подставляется в запись при выборе услуги, в записи её можно поменять. Клиенты видят эти цены по ссылке. По длительности услуги считается, когда освободится время после записи.</p>
+      ${data.prices.length ? '' : '<p class="empty">Услуг пока нет. Добавьте свои: название, цену и сколько длится услуга.</p>'}
       <div class="prices">${data.prices.map(p => `
         <div class="price-item">
           <div class="price-row">
@@ -1965,7 +1986,7 @@ function showCloudStatus() {
 }
 
 function durationHint(duration) {
-  return `Время каждой услуги указано в «Прайсе». После записи время освобождается по её услугам: например, после снятия маникюра (20 мин) следующую запись можно поставить через полчаса. Если у услуги время не указано, считается ${L.formatDuration(duration)}.`;
+  return `Время каждой услуги указано в «Прайсе». После записи время освобождается по её услугам: например, после услуги на 30 минут следующую запись можно поставить через полчаса. Если у услуги время не указано, считается ${L.formatDuration(duration)}.`;
 }
 
 // Ссылка для клиентов — своя у каждого мастера: okna/?m=<slug>, на основном адресе сайта.
@@ -2091,6 +2112,7 @@ async function syncNow() {
     }
   });
   await step(syncBookings);
+  await step(syncStats);
   await step(loadRequests);
 
   syncing = false;
@@ -2164,7 +2186,7 @@ async function applyCloudBackup(copy) {
   data = {
     appointments: copy.appointments,
     expenses: copy.expenses,
-    prices: copy.prices.length ? copy.prices : freshData().prices,
+    prices: copy.prices,
     rent: copy.rent,
     settings: copy.settings,
     blocks: copy.blocks,
@@ -2172,7 +2194,6 @@ async function applyCloudBackup(copy) {
     rentPaid: copy.rentPaid,
     lastBackup: data.lastBackup,
   };
-  ensurePriceList();
   await dbSet('data', data);
   cloud.backupPrint = await dataPrint(data);
   cloud.uploaded = ids;
@@ -2192,9 +2213,56 @@ async function applyCloudBackup(copy) {
 function authGate() {
   if (!cloud.key) return ui.auth || (cloud.lastPhone ? 'login' : 'welcome'); // сервер вывел из аккаунта — сразу вход
   if (cloud.account && !cloud.account.claimed) return 'claim';
+  // Анкета (с 2.4.0) — по аккаунту, который уже прислал сервер 2.4.0: в сохранённом раньше поля specialty нет,
+  // и без связи старые данные не закроют приложение.
+  if (cloud.account && 'specialty' in cloud.account && (!cloud.account.specialty || !cloud.account.kaspi)) return 'profile';
   if (!subscriptionOk()) return 'expired';
   return null;
 }
+
+const chatUnread = () => (cloud.account && cloud.account.chatUnread) || 0;
+const chatBadge = cls => `<i class="${cls} chat-badge"${chatUnread() ? '' : ' hidden'}>${chatUnread()}</i>`;
+
+// Прочитали сообщения — убрать число со всех значков чата.
+function updateChatBadge() {
+  const n = chatUnread();
+  document.querySelectorAll('.chat-badge').forEach(b => {
+    b.textContent = n;
+    b.hidden = !n;
+  });
+}
+
+// Условия подписки — при регистрации, в анкете, в «Аккаунте» и в окне «Продлите подписку».
+function termsHtml() {
+  const t = L.TARIFF;
+  return `
+    <ul class="terms-list">
+      <li>Первые ${L.TRIAL_DAYS} дней после регистрации — бесплатно, со всеми возможностями.</li>
+      <li>Дальше — тариф «Про»: <b>${L.formatMoney(t.month.price)} в месяц</b> или <b>${L.formatMoney(t.year.price)} в год</b> (два месяца в подарок).</li>
+      <li>Оплата — через Kaspi.kz: администратор выставляет счёт на номер Kaspi из вашей анкеты, вы оплачиваете его в приложении Kaspi.</li>
+      <li>После оплаты доступ продлевается на оплаченный срок — от конца текущего, а если он уже закончился, со дня оплаты.</li>
+      <li>За 3 дня до окончания приложение напомнит о продлении.</li>
+      <li>На следующий день после окончания приложение и онлайн-запись для ваших клиентов приостанавливаются. Все данные сохраняются и снова доступны после оплаты; личные ссылки клиентов на уже сделанные записи работают.</li>
+      <li>Вопросы по оплате — в чате с администратором («Настройки» → «Чат с администратором»).</li>
+    </ul>`;
+}
+
+// Направление мастера: подсказки кнопками, можно вписать своё.
+function specialtyField(value) {
+  return `
+    <label>Ваше направление<input name="specialty" value="${esc(value || '')}" maxlength="40" autocapitalize="sentences" enterkeyhint="next" placeholder="Например, парикмахер"></label>
+    <div class="chips small-chips">${L.SPECIALTIES.map(x => `<button type="button" class="chip small" data-act="pick-specialty" data-value="${esc(x)}">${esc(x)}</button>`).join('')}</div>`;
+}
+
+const kaspiField = value => `<label>Номер Kaspi для оплаты подписки<input type="tel" name="kaspi" autocomplete="tel" value="${esc(L.phoneFieldStart(value))}" enterkeyhint="next"></label>
+    <p class="hint">На этот номер администратор выставит счёт в Kaspi.kz за подписку.</p>`;
+
+const instagramField = value => `<label>Instagram (необязательно)<input name="instagram" value="${esc(value ? '@' + value : '')}" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="next" placeholder="@ваш_ник"></label>
+    <p class="hint">Клиенты увидят кнопку Instagram на вашей странице записи.</p>`;
+
+const termsAgree = `
+    <details class="terms"><summary>Условия подписки</summary>${termsHtml()}</details>
+    <label class="check"><input type="checkbox" name="terms"> Согласен(на) с условиями подписки</label>`;
 
 // Подписка (2.2.0): даты приходят с сервера, а проверяем по дате телефона — окно
 // «Продлите подписку» появится на следующий день после окончания и без связи.
@@ -2240,8 +2308,12 @@ function renderAuth(screen) {
       <form class="card page-card" id="auth-form" data-kind="register" novalidate>
         <label>Ваше имя<input name="name" autocomplete="name" autocapitalize="words" enterkeyhint="next" placeholder="Так вас увидят клиенты"></label>
         ${phoneField(ui.authPhone)}
+        ${specialtyField(st.specialty)}
+        ${kaspiField(st.kaspi || ui.authPhone)}
+        ${instagramField(st.instagram)}
         ${placeFields}
         ${passwordFields}
+        ${termsAgree}
         <p class="warn-text" id="auth-error" hidden></p>
         <button type="submit" class="btn primary block">Создать аккаунт</button>
       </form>
@@ -2262,7 +2334,7 @@ function renderAuth(screen) {
     html = `
       <h2 class="page-title">Забыли пароль?</h2>
       <section class="card page-card">
-        <p>Пароль восстанавливает администратор Nailapp: он пришлёт временный пароль. Войдите с ним и смените пароль в «Настройки» → «Аккаунт».</p>
+        <p>Пароль восстанавливает администратор Beautybook: он пришлёт временный пароль. Войдите с ним и смените пароль в «Настройки» → «Аккаунт».</p>
         <div id="contact-box"><p class="hint">Загружаем контакт…</p></div>
       </section>
       <button class="btn ghost block" data-act="auth" data-screen="login">Назад ко входу</button>`;
@@ -2271,16 +2343,33 @@ function renderAuth(screen) {
     html = `
       <h2 class="page-title">Продлите подписку</h2>
       <section class="card page-card">
-        <p>Подписка на Nailapp закончилась${sub && sub.until ? ` ${esc(fullDate(sub.until))}` : ''}. Записи, клиенты и онлайн-запись для клиентов приостановлены — все ваши данные сохранены.</p>
-        <p class="hint">Чтобы продлить, напишите администратору Nailapp. Когда он отметит оплату, приложение снова откроется.</p>
+        <p>Подписка на Beautybook закончилась${sub && sub.until ? ` ${esc(fullDate(sub.until))}` : ''}. Записи, клиенты и онлайн-запись для клиентов приостановлены — все ваши данные сохранены.</p>
+        <p class="hint">Тариф «Про»: ${L.formatMoney(L.TARIFF.month.price)} в месяц или ${L.formatMoney(L.TARIFF.year.price)} в год. Напишите администратору — он выставит счёт в Kaspi.kz на ваш номер, а после оплаты приложение снова откроется.</p>
+        <button class="btn primary block" data-act="open-chat">${icon('chat')} Чат с администратором ${chatBadge('btn-badge')}</button>
         <div id="contact-box"><p class="hint">Загружаем контакт…</p></div>
         <button class="btn secondary block" data-act="check-subscription">Я оплатил(а) — проверить</button>
-      </section>`;
+      </section>
+      <details class="terms card page-card"><summary>Условия подписки</summary>${termsHtml()}</details>`;
+  } else if (screen === 'profile') {
+    const a = cloud.account || {};
+    html = `
+      <h2 class="page-title">Дополните анкету</h2>
+      <section class="card page-card">
+        <p>Приложение теперь называется Beautybook и подходит мастерам всех направлений красоты. Укажите ваше направление и номер Kaspi, на который администратор будет выставлять счёт за подписку.</p>
+      </section>
+      <form class="card page-card" id="auth-form" data-kind="profile" novalidate>
+        ${specialtyField(a.specialty || st.specialty)}
+        ${kaspiField(a.kaspi || st.kaspi || a.phone)}
+        ${instagramField(st.instagram)}
+        ${termsAgree}
+        <p class="warn-text" id="auth-error" hidden></p>
+        <button type="submit" class="btn primary block">Сохранить и продолжить</button>
+      </form>`;
   } else if (screen === 'claim') {
     html = `
       <h2 class="page-title">Ваш аккаунт</h2>
       <section class="card page-card">
-        <p>В Nailapp теперь вход по номеру телефона и паролю. Укажите свой номер и придумайте пароль — все ваши записи, клиенты и ссылка для клиентов останутся.</p>
+        <p>В Beautybook теперь вход по номеру телефона и паролю. Укажите свой номер и придумайте пароль — все ваши записи, клиенты и ссылка для клиентов останутся.</p>
       </section>
       <form class="card page-card" id="auth-form" data-kind="claim" novalidate>
         <label>Ваше имя<input name="name" autocomplete="name" autocapitalize="words" enterkeyhint="next" value="${esc(settings().clientName || '')}" placeholder="Так вас увидят клиенты"></label>
@@ -2294,8 +2383,8 @@ function renderAuth(screen) {
     html = `
       <section class="auth-hero">
         <img src="icons/icon-192.png" alt="" width="112" height="112">
-        <h2>Nailapp</h2>
-        <p>Записи, клиенты и финансы мастера. Клиенты сами записываются по вашей ссылке.</p>
+        <h2>Beautybook</h2>
+        <p>Записи, клиенты и финансы для мастеров красоты. Клиенты сами записываются по вашей ссылке.</p>
       </section>
       ${note}
       <button class="btn primary block" data-act="auth" data-screen="register">Создать аккаунт</button>
@@ -2322,11 +2411,11 @@ async function showContact(kind = 'forgot') {
   if (!box) return;
   const phone = (cloud.account && cloud.account.phone) || ui.authPhone || cloud.lastPhone || '';
   const text = kind === 'forgot'
-    ? `Здравствуйте! Не могу войти в Nailapp — забыт пароль. Мой номер для входа: ${phone}`
-    : `Здравствуйте! Хочу продлить подписку на Nailapp. Мой номер для входа: ${phone}`;
+    ? `Здравствуйте! Не могу войти в Beautybook — забыт пароль. Мой номер для входа: ${phone}`
+    : `Здравствуйте! Хочу продлить подписку на Beautybook. Мой номер для входа: ${phone}`;
   box.innerHTML = whatsapp
     ? `<a class="btn primary block" href="https://wa.me/${whatsapp}?text=${encodeURIComponent(text)}" target="_blank" rel="noopener">${icon('chat')} Написать администратору в WhatsApp</a>`
-    : '<p class="hint">Напишите администратору Nailapp — тому, кто дал вам ссылку на приложение.</p>';
+    : '<p class="hint">Напишите администратору Beautybook — тому, кто дал вам ссылку на приложение.</p>';
 }
 
 function authError(message) {
@@ -2344,12 +2433,21 @@ async function submitAuth(form) {
   const password = value('password');
   const address = L.addressText(value('address'));
   const gis = L.gisLink(value('gis'));
+  const specialty = L.specialtyText(value('specialty'));
+  const kaspi = L.phoneFromField(value('kaspi'));
+  const instagram = L.instagramName(value('instagram'));
+  const terms = field(form, 'terms') ? field(form, 'terms').checked : true;
+  if (kind === 'profile') return saveProfileForm(form, { specialty, kaspi, instagram, terms });
   const error = kind !== 'login' && !name ? 'Укажите имя — его увидят клиенты'
     : L.phoneFieldDigits(phone).length < 10 ? 'Укажите номер телефона полностью'
+    : kind === 'register' && !specialty ? 'Укажите ваше направление'
+    : kind === 'register' && L.phoneFieldDigits(kaspi).length < 10 ? 'Укажите номер Kaspi полностью — на него придёт счёт за подписку'
+    : kind === 'register' && value('instagram').trim() && !instagram ? 'Не похоже на Instagram — впишите ник, например @ваш_ник'
     : kind !== 'login' && !address ? 'Укажите адрес, где вы принимаете'
     : kind !== 'login' && !gis ? 'Вставьте ссылку на своё место в 2ГИС: в 2ГИС «Поделиться» → «Копировать ссылку»'
     : password.length < 6 ? 'Пароль — не короче 6 символов'
     : kind !== 'login' && password !== value('password2') ? 'Пароли не совпадают'
+    : kind === 'register' && !terms ? 'Отметьте согласие с условиями подписки'
     : '';
   if (error) return authError(error);
   const button = form.querySelector('button[type=submit]');
@@ -2372,7 +2470,7 @@ async function submitAuth(form) {
       return;
     }
     const key = newDeviceKey();
-    const res = await (await api('POST', kind === 'login' ? '/api/login' : '/api/register', { name, phone, secret, key, device: deviceName() })).json();
+    const res = await (await api('POST', kind === 'login' ? '/api/login' : '/api/register', { name, phone, secret, key, device: deviceName(), specialty, kaspi })).json();
     // На телефоне данные другого мастера (он вышел не через «Выйти») — убираем их.
     if (cloud.lastPhone && cloud.lastPhone !== res.account.phone) await clearLocalData();
     cloud = { ...freshCloud(), key, pushKey: res.pushKey, account: res.account, lastPhone: res.account.phone };
@@ -2381,7 +2479,7 @@ async function submitAuth(form) {
     ui.authNote = '';
     ui.authPhone = '';
     if (kind === 'register') {
-      data.settings = { ...settings(), clientName: name, address, gis, whatsapp: settings().whatsapp || phone };
+      data.settings = { ...settings(), clientName: name, address, gis, whatsapp: settings().whatsapp || phone, specialty, kaspi, instagram };
       await save();
       render();
       toast('Аккаунт создан');
@@ -2394,6 +2492,33 @@ async function submitAuth(form) {
   } finally {
     button.disabled = false;
     button.textContent = label;
+  }
+}
+
+// Анкета (направление, номер Kaspi, Instagram): «Дополните анкету» и «Аккаунт».
+async function saveProfileForm(form, { specialty, kaspi, instagram, terms }) {
+  const typedInstagram = field(form, 'instagram') ? field(form, 'instagram').value.trim() : '';
+  const error = !specialty ? 'Укажите ваше направление'
+    : L.phoneFieldDigits(kaspi).length < 10 ? 'Укажите номер Kaspi полностью — на него придёт счёт за подписку'
+    : typedInstagram && !instagram ? 'Не похоже на Instagram — впишите ник, например @ваш_ник'
+    : !terms ? 'Отметьте согласие с условиями подписки'
+    : '';
+  if (error) return authError(error);
+  const button = form.querySelector('button[type=submit]');
+  button.disabled = true;
+  try {
+    const { account } = await (await api('PUT', '/api/account/profile', { specialty, kaspi })).json();
+    cloud.account = account;
+    await dbSet('cloud', cloud).catch(() => {});
+    data.settings = { ...settings(), specialty, kaspi, instagram };
+    await save();
+    render();
+    toast('Анкета сохранена');
+    scheduleSync(0);
+  } catch (e) {
+    authError(e.message === 'нет связи с облаком' ? 'Нет связи. Проверьте интернет и попробуйте ещё раз' : e.message);
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -2489,15 +2614,102 @@ async function logoutAccount() {
   toast('Вы вышли из аккаунта');
 }
 
+// ---------- Чат с администратором ----------
+// Сообщения хранятся на сервере; пока окно открыто и приложение на экране — проверяем новые раз в 10 секунд.
+
+let chatTimer = null;
+
+function chatBubbles(messages) {
+  if (!messages.length) return '<p class="hint chat-empty">Напишите администратору: вопрос по оплате, подписке или работе приложения.</p>';
+  return messages.map(m => `
+    <div class="bubble ${m.author === 'master' ? 'mine' : 'theirs'}">
+      <p>${esc(m.text).replace(/\n/g, '<br>')}</p>
+      <small>${esc(formatDateTime(m.created))}${m.author === 'master' && m.seen ? ' · прочитано' : ''}</small>
+    </div>`).join('');
+}
+
+async function loadChat() {
+  const list = $('#chat-list');
+  if (!list) return stopChat();
+  try {
+    const { messages } = await (await api('GET', '/api/chat')).json();
+    // Окно листается целиком (sheet); новые сообщения показываем, если читали самый низ.
+    const atBottom = sheet.scrollHeight - sheet.scrollTop - sheet.clientHeight < 60;
+    list.innerHTML = chatBubbles(messages);
+    if (atBottom || !list.dataset.loaded) sheet.scrollTop = sheet.scrollHeight;
+    list.dataset.loaded = '1';
+    if (cloud.account && cloud.account.chatUnread) {
+      cloud.account.chatUnread = 0;
+      await dbSet('cloud', cloud).catch(() => {});
+      updateChatBadge();
+    }
+  } catch (e) {
+    if (!list.dataset.loaded) list.innerHTML = `<p class="hint chat-empty">${esc(e.message === 'нет связи с облаком' ? 'Нет связи — сообщения появятся, когда интернет вернётся' : e.message)}</p>`;
+  }
+}
+
+function stopChat() {
+  clearInterval(chatTimer);
+  chatTimer = null;
+}
+
+function openChat() {
+  pushSheet(() => {
+    sheetHtml('Чат с администратором', `
+      <div class="sheet-body chat-body">
+        <div class="chat" id="chat-list"><p class="hint chat-empty">Загружаем сообщения…</p></div>
+        <form id="chat-form" class="chat-form" novalidate>
+          <textarea name="text" rows="2" maxlength="2000" placeholder="Сообщение администратору" aria-label="Сообщение"></textarea>
+          <button type="submit" class="btn primary">Отправить</button>
+        </form>
+      </div>`);
+    const form = $('#chat-form');
+    form.addEventListener('submit', async e => {
+      e.preventDefault();
+      const box = field(form, 'text');
+      const text = box.value.trim();
+      if (!text) return;
+      const button = form.querySelector('button');
+      button.disabled = true;
+      try {
+        const { messages } = await (await api('POST', '/api/chat', { text })).json();
+        box.value = '';
+        $('#chat-list').innerHTML = chatBubbles(messages);
+        sheet.scrollTop = sheet.scrollHeight;
+      } catch (err) {
+        toast(err.message === 'нет связи с облаком' ? 'Нет связи — сообщение не отправлено' : err.message);
+      } finally {
+        button.disabled = false;
+      }
+    });
+    loadChat();
+    stopChat();
+    chatTimer = setInterval(() => {
+      if (!$('#chat-list')) return stopChat();
+      if (document.visibilityState === 'visible') loadChat();
+    }, 10000);
+  });
+}
+
 // «Продлить» из предупреждения: WhatsApp администратора с готовым текстом.
 async function renewSubscription() {
   let whatsapp = '';
   try {
     whatsapp = (await (await api('GET', '/api/contact')).json()).whatsapp || '';
   } catch (e) { /* нет связи */ }
-  if (!whatsapp) return toast('Напишите администратору Nailapp — тому, кто дал вам ссылку на приложение');
+  if (!whatsapp) return toast('Напишите администратору в чат: «Настройки» → «Чат с администратором»');
   const phone = (cloud.account && cloud.account.phone) || '';
-  location.href = `https://wa.me/${whatsapp}?text=${encodeURIComponent(`Здравствуйте! Хочу продлить подписку на Nailapp. Мой номер для входа: ${phone}`)}`;
+  location.href = `https://wa.me/${whatsapp}?text=${encodeURIComponent(`Здравствуйте! Хочу продлить подписку на Beautybook. Мой номер для входа: ${phone}`)}`;
+}
+
+// Числа записей по месяцам — администратору (без имён и телефонов), только когда изменились.
+async function syncStats() {
+  if (!cloud.account || !cloud.account.claimed) return;
+  const payload = L.statsPayload(data, today());
+  const print = JSON.stringify(payload);
+  if (print === cloud.statsPrint) return;
+  await api('PUT', '/api/stats', payload);
+  cloud.statsPrint = print;
 }
 
 // Убрать с телефона данные мастера: записи, фото, заявки.
@@ -2649,7 +2861,7 @@ async function restoreBackup(file) {
   data = {
     appointments: copy.appointments,
     expenses: copy.expenses,
-    prices: copy.prices.length ? copy.prices : freshData().prices,
+    prices: copy.prices,
     rent: copy.rent,
     settings: copy.settings,
     blocks: copy.blocks,
@@ -2657,7 +2869,6 @@ async function restoreBackup(file) {
     rentPaid: copy.rentPaid,
     lastBackup: copy.exportedAt,
   };
-  ensurePriceList();
   if (!(await save())) return;
   await cleanupPhotos();
   render();
@@ -2867,7 +3078,7 @@ const actions = {
     const url = clientLink();
     if (!navigator.share) return actions['copy-link']();
     try {
-      await navigator.share({ title: 'Запись на маникюр', url });
+      await navigator.share({ title: 'Онлайн-запись', url });
     } catch (e) { /* отменили */ }
   },
   'copy-link': async () => {
@@ -2919,6 +3130,11 @@ const actions = {
     scrollTo(0, 0);
   },
   'change-password': () => openChangePassword(),
+  'open-chat': () => openChat(),
+  'pick-specialty': el => {
+    const input = el.closest('form, .card, .page-card').querySelector('input[name=specialty]');
+    if (input) input.value = el.dataset.value;
+  },
   'check-subscription': async el => {
     el.disabled = true;
     await refreshAccount();
@@ -3102,7 +3318,6 @@ async function start() {
     delete a.service;
     migrated = true;
   }
-  if (ensurePriceList()) migrated = true;
   if (stored && !pref('plumDefault')) {
     if (data.settings.theme === 'rose') {
       data.settings.theme = 'plum';
@@ -3121,6 +3336,11 @@ async function start() {
       if (!e.data) return;
       if (e.data.type === 'open-requests') showRequests();
       if (e.data.type === 'new-request') loadRequests().catch(() => {});
+      if (e.data.type === 'new-chat') {
+        refreshAccount();
+        if ($('#chat-list')) loadChat();
+      }
+      if (e.data.type === 'open-chat' && cloud.key) openChat();
     });
   }
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
@@ -3129,6 +3349,7 @@ async function start() {
   if (params.has('open')) {
     history.replaceState(history.state, '', location.pathname);
     if (params.get('open') === 'requests' && cloud.key) showRequests();
+    if (params.get('open') === 'chat' && cloud.key) openChat();
   }
   // Подписка на уведомления могла обновиться (например, после перезагрузки iPhone).
   if (cloud.key && cloud.pushOn && 'Notification' in window && Notification.permission === 'granted') {

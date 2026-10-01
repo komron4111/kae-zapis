@@ -1,4 +1,4 @@
-// Сервер Nailapp на Cloudflare Workers: аккаунты мастеров, заявки клиентов, уведомления,
+// Сервер Beautybook (до 2.4.0 — Nailapp) на Cloudflare Workers: аккаунты мастеров, заявки клиентов, уведомления,
 // свободное время для страницы клиентов, облачная копия записей и фото. Данные — в D1.
 //
 // С 2.0.0 у каждого мастера свой аккаунт: телефон и пароль. Пароль на сервер не приходит —
@@ -95,6 +95,9 @@ async function route(request, env, ctx) {
     if ((m = path.match(/^\/api\/admin\/masters\/([\w-]+)\/password$/)) && method === 'POST') return resetPassword(request, env, m[1]);
     if (path === '/api/admin/contact' && method === 'PUT') return putContact(request, env);
     if ((m = path.match(/^\/api\/admin\/masters\/([\w-]+)\/subscription$/)) && method === 'POST') return changeSubscription(request, env, m[1]);
+    if (path === '/api/admin/chats' && method === 'GET') return listChats(env);
+    if ((m = path.match(/^\/api\/admin\/chats\/([\w-]+)$/)) && method === 'GET') return getAdminChat(env, m[1]);
+    if ((m = path.match(/^\/api\/admin\/chats\/([\w-]+)$/)) && method === 'POST') return postAdminChat(request, env, ctx, m[1]);
     throw new HttpError(404, 'Не найдено');
   }
 
@@ -104,10 +107,14 @@ async function route(request, env, ctx) {
   if (path === '/api/account/claim' && method === 'POST') return claimAccount(request, env, me);
   if (path === '/api/account/password' && method === 'PUT') return changePassword(request, env, me);
   if (path === '/api/account/session' && method === 'DELETE') return logout(env, me);
+  if (path === '/api/account/profile' && method === 'PUT') return saveProfile(request, env, me);
+  if (path === '/api/chat' && method === 'GET') return getChat(env, me); // чат — и после окончания подписки
+  if (path === '/api/chat' && method === 'POST') return postChat(request, env, me);
   // Подписка закончилась: данные мастера не принимаем и не отдаём, пока администратор её не продлит.
   if (!me.active) throw new HttpError(402, 'Подписка закончилась — продлите её у администратора');
   if (path === '/api/push' && method === 'PUT') return savePush(request, env, me);
   if (path === '/api/schedule' && method === 'PUT') return saveSchedule(request, env, me);
+  if (path === '/api/stats' && method === 'PUT') return putStats(request, env, me);
   if (path === '/api/requests' && method === 'GET') return listRequests(env, me);
   if ((m = path.match(/^\/api\/requests\/([\w-]+)\/(confirm|decline)$/)) && method === 'POST') return closeRequest(request, env, me, m[1], m[2]);
   if ((m = path.match(/^\/api\/bookings\/([\w-]{16,64})$/)) && method === 'PUT') return putBooking(request, env, me, m[1]);
@@ -258,9 +265,9 @@ async function freeSlug(env, name) {
 const almatyToday = () => L.masterClock(-300).date;
 
 async function periodsOf(env, masterId) {
-  const { results } = await env.DB.prepare('SELECT start_date, end_date, kind, created FROM subscriptions WHERE master_id = ? ORDER BY start_date, id')
+  const { results } = await env.DB.prepare('SELECT start_date, end_date, kind, created, plan, amount FROM subscriptions WHERE master_id = ? ORDER BY start_date, id')
     .bind(masterId).all();
-  return results.map(r => ({ from: r.start_date, to: r.end_date, kind: r.kind, marked: r.created }));
+  return results.map(r => ({ from: r.start_date, to: r.end_date, kind: r.kind, marked: r.created, plan: r.plan || '', amount: r.amount || 0 }));
 }
 
 // Что видит мастер: текущий период (или последний), до какого дня доступ, открыт ли он сейчас.
@@ -271,10 +278,20 @@ function subscriptionJson(m, periods) {
   return { ...sub, from: current ? current.from : null, kind: current ? current.kind : null, active: L.subscriptionActive(sub, today) };
 }
 
-const accountJson = (m, periods = []) => ({
+const accountJson = (m, periods = [], chatUnread = 0) => ({
   name: m.name, phone: m.phone ? L.formatPhone(m.phone) : '', slug: m.slug, claimed: Boolean(m.pass_hash),
-  subscription: subscriptionJson(m, periods),
+  specialty: m.specialty || '', kaspi: m.kaspi_phone ? L.formatPhone(m.kaspi_phone) : '',
+  subscription: subscriptionJson(m, periods), chatUnread,
 });
+
+// Анкета мастера: направление (видят клиенты и администратор) и номер Kaspi для счёта за подписку.
+function readProfile(body) {
+  const specialty = L.specialtyText(body.specialty);
+  if (!specialty) throw new HttpError(400, 'Укажите ваше направление');
+  const kaspi = L.phoneDigits(body.kaspi);
+  if (!/^7\d{10}$/.test(kaspi)) throw new HttpError(400, 'Укажите номер Kaspi полностью — на него придёт счёт за подписку');
+  return { specialty, kaspi };
+}
 const hashSecret = (salt, secret) => sha256hex(`${salt}:${secret}`);
 
 function readName(body) {
@@ -323,16 +340,20 @@ async function register(request, env) {
   const phone = readPhone(body);
   const secret = readSecret(body.secret);
   const key = readKey(body);
+  if (body.specialty === undefined) throw new HttpError(400, 'Обновите приложение: закройте его и откройте снова');
+  const profile = readProfile(body);
   await remember(env, 'register', who);
   if (await env.DB.prepare('SELECT 1 FROM masters WHERE phone = ?').bind(phone).first()) {
     throw new HttpError(409, 'Этот номер уже зарегистрирован — войдите по нему');
   }
   const id = crypto.randomUUID(), salt = newToken(), now = new Date().toISOString();
-  const first = L.nextPeriod(null, almatyToday()); // первый месяц — с дня регистрации
-  const master = { name, phone, slug: await freeSlug(env, name), pass_hash: await hashSecret(salt, secret), paid_until: first.end, unlimited: 0 };
+  const first = L.trialPeriod(almatyToday()); // бесплатные дни — с дня регистрации
+  const master = { name, phone, slug: await freeSlug(env, name), pass_hash: await hashSecret(salt, secret), paid_until: first.end, unlimited: 0,
+    specialty: profile.specialty, kaspi_phone: profile.kaspi };
   try {
-    await env.DB.prepare('INSERT INTO masters (id, phone, name, slug, pass_hash, pass_salt, created, updated, paid_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .bind(id, phone, name, master.slug, master.pass_hash, salt, now, now, first.end).run();
+    await env.DB.prepare(`INSERT INTO masters (id, phone, name, slug, pass_hash, pass_salt, created, updated, paid_until, specialty, kaspi_phone)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(id, phone, name, master.slug, master.pass_hash, salt, now, now, first.end, profile.specialty, profile.kaspi).run();
   } catch (e) {
     // Два запроса с одним номером одновременно: второй упирается в UNIQUE.
     if (/UNIQUE/i.test(String(e && e.message))) throw new HttpError(409, 'Этот номер уже зарегистрирован — войдите по нему');
@@ -341,7 +362,7 @@ async function register(request, env) {
   await env.DB.prepare("INSERT INTO subscriptions (master_id, start_date, end_date, kind, created) VALUES (?, ?, ?, 'trial', ?)")
     .bind(id, first.start, first.end, now).run();
   await startSession(env, id, key, body.device);
-  return json({ ok: true, account: accountJson(master, [{ from: first.start, to: first.end, kind: 'trial', marked: now }]), pushKey: (await vapidKeys(env)).publicKey }, 201);
+  return json({ ok: true, account: accountJson(master, [{ from: first.start, to: first.end, kind: 'trial', marked: now, plan: '', amount: 0 }]), pushKey: (await vapidKeys(env)).publicKey }, 201);
 }
 
 async function login(request, env) {
@@ -354,25 +375,36 @@ async function login(request, env) {
   if (await tooMany(env, 'login', who, 10, HOUR) || await tooMany(env, 'login-phone', byPhone, 20, HOUR)) {
     throw new HttpError(429, 'Слишком много попыток входа. Попробуйте через час или напишите администратору');
   }
-  const master = await env.DB.prepare('SELECT id, name, phone, slug, pass_hash, pass_salt, paid_until, unlimited FROM masters WHERE phone = ?').bind(phone).first();
+  const master = await env.DB.prepare('SELECT id, name, phone, slug, pass_hash, pass_salt, paid_until, unlimited, specialty, kaspi_phone FROM masters WHERE phone = ?').bind(phone).first();
   if (!master || !master.pass_hash || await hashSecret(master.pass_salt, secret) !== master.pass_hash) {
     await remember(env, 'login', who);
     await remember(env, 'login-phone', byPhone);
     throw new HttpError(403, 'Неверный номер или пароль');
   }
   await startSession(env, master.id, key, body.device);
-  return json({ ok: true, account: accountJson(master, await periodsOf(env, master.id)), pushKey: (await vapidKeys(env)).publicKey });
+  return json({ ok: true, account: accountJson(master, await periodsOf(env, master.id), await unreadForMaster(env, master.id)), pushKey: (await vapidKeys(env)).publicKey });
 }
 
 async function getAccount(env, me) {
-  const master = await env.DB.prepare('SELECT name, phone, slug, pass_hash, paid_until, unlimited FROM masters WHERE id = ?').bind(me.masterId).first();
+  const master = await env.DB.prepare('SELECT name, phone, slug, pass_hash, paid_until, unlimited, specialty, kaspi_phone FROM masters WHERE id = ?').bind(me.masterId).first();
   if (!master) throw new HttpError(401, 'Аккаунт не найден — войдите заново');
-  return json({ account: accountJson(master, await periodsOf(env, me.masterId)) });
+  return json({ account: accountJson(master, await periodsOf(env, me.masterId), await unreadForMaster(env, me.masterId)) });
 }
+
+// Анкета: направление и номер Kaspi (мастер дополняет или меняет в «Аккаунте»).
+async function saveProfile(request, env, me) {
+  const profile = readProfile(await readJson(request, 1024));
+  await env.DB.prepare('UPDATE masters SET specialty = ?, kaspi_phone = ?, updated = ? WHERE id = ?')
+    .bind(profile.specialty, profile.kaspi, new Date().toISOString(), me.masterId).run();
+  return getAccount(env, me);
+}
+
+const unreadForMaster = async (env, masterId) => (await env.DB.prepare("SELECT COUNT(*) AS n FROM messages WHERE master_id = ? AND author = 'admin' AND seen = 0")
+  .bind(masterId).first()).n;
 
 // Прежний мастер (до 2.0.0) задаёт номер, имя и пароль — дальше входит, как все.
 async function claimAccount(request, env, me) {
-  const master = await env.DB.prepare('SELECT name, phone, slug, pass_hash, paid_until, unlimited FROM masters WHERE id = ?').bind(me.masterId).first();
+  const master = await env.DB.prepare('SELECT name, phone, slug, pass_hash, paid_until, unlimited, specialty, kaspi_phone FROM masters WHERE id = ?').bind(me.masterId).first();
   if (!master) throw new HttpError(401, 'Аккаунт не найден — войдите заново');
   if (master.pass_hash) throw new HttpError(409, 'Аккаунт уже оформлен');
   const body = await readJson(request, 2048);
@@ -478,7 +510,7 @@ const ADMIN_SESSION = 12 * HOUR;
 function adminOrigin(request) {
   const origin = request.headers.get('Origin') || '';
   if (ADMIN_ORIGINS.includes(origin) || /^http:\/\/localhost(:\d+)?$/.test(origin)) return origin;
-  throw new HttpError(403, 'Вход по Face ID работает только на странице администратора Nailapp');
+  throw new HttpError(403, 'Вход по Face ID работает только на странице администратора Beautybook');
 }
 
 // Одноразовый вызов: 32 случайных байта. Всего в базе не больше 1000 — поток запросов её не раздует.
@@ -545,8 +577,8 @@ async function passkeyRegisterOptions(request, env) {
   const { results } = await adminKeys(env, rpId);
   return json({
     challenge: await newChallenge(env, 'register'),
-    rp: { id: rpId, name: 'Nailapp' },
-    user: { id: L.bytesToB64u(new TextEncoder().encode('nailapp-admin')), name: 'Администратор Nailapp', displayName: 'Администратор Nailapp' },
+    rp: { id: rpId, name: 'Beautybook' },
+    user: { id: L.bytesToB64u(new TextEncoder().encode('nailapp-admin')), name: 'Администратор Beautybook', displayName: 'Администратор Beautybook' },
     exclude: results.map(r => r.id),
     timeout: 120000,
   });
@@ -579,6 +611,8 @@ async function deletePasskey(env, id) {
 async function listMasters(env) {
   const { results, meta } = await env.DB.prepare(`
     SELECT m.id, m.name, m.phone, m.slug, m.created, m.pass_hash <> '' AS claimed, m.paid_until, m.unlimited,
+      m.specialty, m.kaspi_phone, m.clients, json_extract(s.value, '$.instagram') AS instagram,
+      (SELECT COUNT(*) FROM messages x WHERE x.master_id = m.id AND x.author = 'master' AND x.seen = 0) AS unread,
       (SELECT COUNT(*) FROM devices d WHERE d.master_id = m.id) AS devices,
       s.updated AS active, json_extract(s.value, '$.address') AS address, json_extract(s.value, '$.gis') AS gis,
       (SELECT COUNT(*) FROM photos p WHERE p.master_id = m.id) AS photos,
@@ -589,20 +623,47 @@ async function listMasters(env) {
         + (SELECT COALESCE(SUM(LENGTH(k.name) + LENGTH(k.services) + 120), 0) FROM bookings k WHERE k.master_id = m.id) AS other_bytes
     FROM masters m LEFT JOIN schedules s ON s.master_id = m.id
     ORDER BY m.created DESC`).all();
-  const { results: all } = await env.DB.prepare('SELECT id, master_id, start_date, end_date, kind, created FROM subscriptions ORDER BY start_date, id').all();
+  const { results: all } = await env.DB.prepare('SELECT id, master_id, start_date, end_date, kind, created, plan, amount FROM subscriptions ORDER BY start_date, id').all();
   const periods = {};
-  for (const p of all) (periods[p.master_id] = periods[p.master_id] || []).push({ id: p.id, from: p.start_date, to: p.end_date, kind: p.kind, marked: p.created });
+  for (const p of all) (periods[p.master_id] = periods[p.master_id] || []).push({ id: p.id, from: p.start_date, to: p.end_date, kind: p.kind, marked: p.created, plan: p.plan || '', amount: p.amount || 0 });
+  // Записи по месяцам за год: принятые (из приложения) и заявки по ссылке (считает сервер).
+  const since = L.addMonths(L.monthOf(almatyToday()), -11);
+  const stats = {};
+  const statOf = (id, ym) => ((stats[id] = stats[id] || {})[ym] = stats[id][ym] || { total: 0, link: 0, manual: 0, clients: 0, sent: 0, confirmed: 0 });
+  for (const r of (await env.DB.prepare('SELECT master_id, month, total, link, clients FROM master_stats WHERE month >= ?').bind(since).all()).results) {
+    Object.assign(statOf(r.master_id, r.month), { total: r.total, link: r.link, manual: r.total - r.link, clients: r.clients });
+  }
+  for (const r of (await env.DB.prepare('SELECT master_id, month, sent, confirmed FROM request_stats WHERE month >= ?').bind(since).all()).results) {
+    Object.assign(statOf(r.master_id, r.month), { sent: r.sent, confirmed: r.confirmed });
+  }
   return json({
     today: almatyToday(),
     size: (meta && meta.size_after) || null,
+    usage: await loadUsage(env),
     masters: results.map(r => ({
       id: r.id, name: r.name, phone: r.phone ? L.formatPhone(r.phone) : '', slug: r.slug, created: r.created,
       claimed: Boolean(r.claimed), devices: r.devices, active: r.active || null,
       address: L.addressText(r.address), gis: L.gisLink(r.gis),
+      specialty: r.specialty || '', kaspi: r.kaspi_phone ? L.formatPhone(r.kaspi_phone) : '', instagram: L.instagramName(r.instagram),
+      clients: r.clients || 0, unread: r.unread || 0, stats: stats[r.id] || {},
       storage: { photos: r.photos, photoBytes: r.photo_bytes, backups: r.backups, backupBytes: r.backup_bytes, otherBytes: r.other_bytes },
       subscription: { ...subscriptionJson(r, periods[r.id] || []), periods: periods[r.id] || [] },
     })),
   });
+}
+
+// Нагрузка за сутки (запросы, записанные и прочитанные строки) — Worker сам её не знает. Её записывает
+// проверка сервера (backend/monitor.mjs, по расписанию) в config.usage; здесь — только числа и время.
+async function loadUsage(env) {
+  const row = await env.DB.prepare("SELECT value FROM config WHERE key = 'usage'").first();
+  if (!row) return null;
+  try {
+    const u = JSON.parse(row.value);
+    const n = v => Math.max(0, Math.round(Number(v) || 0));
+    return { at: String(u.at || ''), size: n(u.size), requests: n(u.requests), rowsWritten: n(u.rowsWritten), rowsRead: n(u.rowsRead) };
+  } catch (e) {
+    return null;
+  }
 }
 
 // Новый пароль задаёт администратор: страница администратора придумывает временный пароль
@@ -632,9 +693,12 @@ async function changeSubscription(request, env, id) {
   const body = await readJson(request, 1024);
   const today = almatyToday(), now = new Date().toISOString();
   if (body.action === 'extend') {
-    const next = L.nextPeriod(master.paid_until, today);
+    const plan = body.plan === 'year' ? 'year' : 'month';
+    const tariff = L.TARIFF[plan];
+    const next = L.nextPeriod(master.paid_until, today, tariff.months);
     await env.DB.batch([
-      env.DB.prepare("INSERT INTO subscriptions (master_id, start_date, end_date, kind, created) VALUES (?, ?, ?, 'paid', ?)").bind(id, next.start, next.end, now),
+      env.DB.prepare("INSERT INTO subscriptions (master_id, start_date, end_date, kind, created, plan, amount) VALUES (?, ?, ?, 'paid', ?, ?, ?)")
+        .bind(id, next.start, next.end, now, plan, tariff.price),
       env.DB.prepare('UPDATE masters SET paid_until = ? WHERE id = ?').bind(next.end, id),
     ]);
   } else if (body.action === 'undo') {
@@ -666,6 +730,85 @@ async function changeSubscription(request, env, id) {
   const fresh = await env.DB.prepare('SELECT paid_until, unlimited FROM masters WHERE id = ?').bind(id).first();
   const periods = await periodsOf(env, id);
   return json({ ok: true, subscription: { ...subscriptionJson(fresh, periods), periods } });
+}
+
+// ---------- Чат мастера с администратором ----------
+
+const messageJson = r => ({ id: r.id, author: r.author, text: r.text, created: r.created, seen: Boolean(r.seen) });
+
+async function chatMessages(env, masterId) {
+  const { results } = await env.DB.prepare('SELECT id, author, text, created, seen FROM messages WHERE master_id = ? ORDER BY id DESC LIMIT 200')
+    .bind(masterId).all();
+  return results.reverse().map(messageJson);
+}
+
+function readMessage(body) {
+  const text = String(body.text || '').replace(/\r\n?/g, '\n').trim().slice(0, 2000);
+  if (!text) throw new HttpError(400, 'Напишите сообщение');
+  return text;
+}
+
+// Мастер открыл чат: сообщения администратора считаются прочитанными.
+async function getChat(env, me) {
+  await env.DB.prepare("UPDATE messages SET seen = 1 WHERE master_id = ? AND author = 'admin' AND seen = 0").bind(me.masterId).run();
+  return json({ messages: await chatMessages(env, me.masterId) });
+}
+
+async function postChat(request, env, me) {
+  if (await tooMany(env, 'chat', me.masterId, 60, HOUR)) throw new HttpError(429, 'Слишком много сообщений подряд. Попробуйте позже');
+  const text = readMessage(await readJson(request, 8192));
+  await remember(env, 'chat', me.masterId);
+  await env.DB.prepare("INSERT INTO messages (master_id, author, text, created) VALUES (?, 'master', ?, ?)").bind(me.masterId, text, new Date().toISOString()).run();
+  return json({ messages: await chatMessages(env, me.masterId) }, 201);
+}
+
+// Администратор: все переписки — последнее сообщение и сколько непрочитанных от мастера.
+async function listChats(env) {
+  const { results } = await env.DB.prepare(`
+    SELECT m.id, m.name, m.phone, l.text, l.author, l.created,
+      (SELECT COUNT(*) FROM messages x WHERE x.master_id = m.id AND x.author = 'master' AND x.seen = 0) AS unread
+    FROM masters m JOIN messages l ON l.id = (SELECT MAX(id) FROM messages WHERE master_id = m.id)
+    ORDER BY l.id DESC`).all();
+  return json({ chats: results.map(r => ({ masterId: r.id, name: r.name, phone: r.phone ? L.formatPhone(r.phone) : '', unread: r.unread,
+    last: { text: r.text, author: r.author, created: r.created } })) });
+}
+
+async function getAdminChat(env, id) {
+  await env.DB.prepare("UPDATE messages SET seen = 1 WHERE master_id = ? AND author = 'master' AND seen = 0").bind(id).run();
+  return json({ messages: await chatMessages(env, id) });
+}
+
+async function postAdminChat(request, env, ctx, id) {
+  if (!(await env.DB.prepare('SELECT 1 FROM masters WHERE id = ?').bind(id).first())) throw new HttpError(404, 'Мастер не найден');
+  const text = readMessage(await readJson(request, 8192));
+  await env.DB.prepare("INSERT INTO messages (master_id, author, text, created) VALUES (?, 'admin', ?, ?)").bind(id, text, new Date().toISOString()).run();
+  ctx.waitUntil(pushToMaster(env, id, { title: 'Сообщение от администратора', body: text.slice(0, 140), tag: 'chat', url: './?open=chat', kind: 'chat' })
+    .catch(e => console.error('push chat', e)));
+  return json({ messages: await chatMessages(env, id) }, 201);
+}
+
+// ---------- Статистика для администратора ----------
+
+// Приложение присылает числа своих записей по месяцам (без имён и телефонов) и размер базы клиентов.
+async function putStats(request, env, me) {
+  const body = await readJson(request, 8192);
+  const months = body.months && typeof body.months === 'object' ? body.months : {};
+  const count = v => Math.max(0, Math.min(100000, Math.round(Number(v) || 0)));
+  const now = new Date().toISOString();
+  const steps = Object.entries(months).filter(([ym, st]) => /^\d{4}-\d{2}$/.test(ym) && st && typeof st === 'object').slice(0, 13)
+    .map(([ym, st]) => env.DB.prepare(`INSERT INTO master_stats (master_id, month, total, link, clients, updated) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT (master_id, month) DO UPDATE SET total = excluded.total, link = excluded.link, clients = excluded.clients, updated = excluded.updated`)
+      .bind(me.masterId, ym, count(st.total), Math.min(count(st.link), count(st.total)), count(st.clients), now));
+  steps.push(env.DB.prepare('UPDATE masters SET clients = ? WHERE id = ?').bind(count(body.clients), me.masterId));
+  await env.DB.batch(steps);
+  return json({ ok: true });
+}
+
+// Заявка по ссылке: отправлена клиентом (sent) или подтверждена мастером (confirmed) — по месяцу записи.
+function countRequest(env, masterId, date, field) {
+  const column = field === 'confirmed' ? 'confirmed' : 'sent';
+  return env.DB.prepare(`INSERT INTO request_stats (master_id, month, ${column}) VALUES (?, ?, 1)
+    ON CONFLICT (master_id, month) DO UPDATE SET ${column} = ${column} + 1`).bind(masterId, String(date).slice(0, 7)).run();
 }
 
 // Куда писать, если забыли пароль: WhatsApp администратора.
@@ -711,6 +854,7 @@ async function getOkna(env, slug) {
   if (!masterActive(master)) {
     const s = schedule || {};
     return json({ app: 'kae-zapis', kind: 'okna', v: 2, name: s.name || master.name, whatsapp: s.whatsapp || '', address: s.address || '', gis: s.gis || '',
+      instagram: s.instagram || '', specialty: s.specialty || '', theme: s.theme || 'plum',
       slug: master.slug, legacy, paused: true, booking: false, days: [], updated: s.updated || new Date(0).toISOString() });
   }
   if (!schedule) return json({ app: 'kae-zapis', kind: 'okna', name: master.name, slug: master.slug, legacy, days: [], booking: false });
@@ -750,16 +894,22 @@ async function createRequest(request, env, ctx, slug) {
       master.id, r.date, minutes + r.duration, minutes, fallback)
     .run();
   if (!result.meta.changes) throw new HttpError(409, 'Это время только что заняли — выберите другое');
+  await countRequest(env, master.id, r.date, 'sent');
   await remember(env, 'request', who);
   ctx.waitUntil(notifyMaster(env, master.id, { id, ...r }));
   return json({ ok: true, token }, 201);
 }
 
 async function notifyMaster(env, masterId, r) {
+  return pushToMaster(env, masterId, { title: 'Новая заявка на запись', body: L.requestSummary(r), tag: `request-${r.id}`, url: './?open=requests', kind: 'request' });
+}
+
+// Уведомление на телефон мастера: заявка клиента или сообщение администратора (kind: 'chat').
+async function pushToMaster(env, masterId, message) {
   const { results } = await env.DB.prepare('SELECT id, push FROM devices WHERE master_id = ? AND push IS NOT NULL').bind(masterId).all();
   if (!results.length) return;
   const vapid = await vapidKeys(env);
-  const payload = JSON.stringify({ title: 'Новая заявка на запись', body: L.requestSummary(r), tag: `request-${r.id}`, url: './?open=requests' });
+  const payload = JSON.stringify(message);
   for (const device of results) {
     try {
       const res = await sendPush(JSON.parse(device.push), payload, vapid, SITE);
@@ -787,6 +937,9 @@ async function getBooking(env, token) {
     whatsapp: (schedule && schedule.whatsapp) || '',
     address: (schedule && schedule.address) || '',
     gis: (schedule && schedule.gis) || '',
+    instagram: (schedule && schedule.instagram) || '',
+    specialty: (schedule && schedule.specialty) || '',
+    theme: (schedule && schedule.theme) || 'plum',
     slug: row ? row.slug : '',
   };
   if (b) {
@@ -845,6 +998,7 @@ async function closeRequest(request, env, me, id, action) {
     if (booking) await saveBooking(env, me.masterId, token, booking);
   }
   const result = await env.DB.prepare('DELETE FROM requests WHERE id = ? AND master_id = ?').bind(id, me.masterId).run();
+  if (result.meta.changes && r && action === 'confirm') await countRequest(env, me.masterId, r.date, 'confirmed');
   return json({ ok: true, found: result.meta.changes > 0, token: token || null });
 }
 

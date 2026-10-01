@@ -287,7 +287,7 @@ test('расписание для клиентов: без имён и теле�
     settings: { ...L.DEFAULT_SETTINGS, whatsapp: '8 700 111 22 33' },
   };
   const s = L.buildSchedule(data, new Date(2026, 9, 1, 10, 0), 3);
-  eq([s.kind, s.name, s.whatsapp, s.duration], ['okna', 'Арай', '77001112233', 150]);
+  eq([s.kind, s.name, s.whatsapp, s.duration], ['okna', '', '77001112233', 150]); // имени по умолчанию нет (до 2.4.0 — «Арай»)
   eq(s.days.map(d => d.date), ['2026-10-01', '2026-10-02', '2026-10-03']);
   eq(s.days[0].busy, [[720, 870]]); // услуги нет в прайсе — 2 ч 30 мин по умолчанию
   eq(L.scheduleTimes(s, s.days[0], 150).slice(0, 3), ['09:00', '09:30', '14:30']);
@@ -310,7 +310,7 @@ test('копия сохраняется и читается обратно', () 
     expenses: [{ id: 'e1', date: '2026-09-05', amount: 15000, note: 'Гель-лаки' }],
     prices: [{ id: 'p1', name: 'Маникюр', price: 5000, duration: 60 }],
     rent: [{ from: '2000-01', amount: 70000 }],
-    settings: { dayStart: '10:00', lastStart: '19:00', duration: 120, clientName: 'Арай', whatsapp: '+7 700 111 22 33', address: 'Абая 10', gis: 'https://go.2gis.com/abc12', theme: 'lavender' },
+    settings: { dayStart: '10:00', lastStart: '19:00', duration: 120, clientName: 'Арай', whatsapp: '+7 700 111 22 33', address: 'Абая 10', gis: 'https://go.2gis.com/abc12', instagram: 'aray.nails', specialty: 'Маникюр и педикюр', kaspi: '+7 700 111 22 33', theme: 'lavender' },
     blocks: [{ id: 'v', from: '2026-10-10', to: '2026-10-12', note: 'Отпуск' }],
     clients: [{ id: 'c1', name: 'Жанна', phone: '+7 702 000 00 01', created: '2026-09-28T10:00:00.000Z' }],
   };
@@ -330,7 +330,7 @@ test('копия сохраняется и читается обратно', () 
 test('тема оформления в копии: своя сохраняется, неизвестная — пурпурная (исходная)', () => {
   const read = theme => L.readBackup(JSON.stringify({ app: 'kae-zapis', appointments: [], settings: { theme } })).settings.theme;
   eq([read('lavender'), read('rose'), read('neon'), read(undefined)], ['lavender', 'rose', 'plum', 'plum']);
-  eq(Object.keys(L.THEMES), ['rose', 'plum', 'lavender']);
+  eq(Object.keys(L.THEMES), ['rose', 'plum', 'lavender', 'graphite']);
 });
 
 test('чужой файл не принимается', () => {
@@ -419,7 +419,14 @@ test('проверка заявки клиента', () => {
 
 // ---------- Длительность услуг (1.8.0) ----------
 
-const PRICES = L.DEFAULT_SERVICES.map(([name, duration], i) => ({ id: 'p' + i, name, price: 0, duration }));
+// Прайс для проверок — список мастера маникюра от 29.09.2026 (до 2.4.0 его получал каждый новый мастер).
+const SAMPLE_SERVICES = [
+  ['Снятие маникюра', 20], ['Снятие+Маникюр', 60], ['Маникюр с укреплением', 90], ['Наращивание', 150],
+  ['Снятие педикюра', 20], ['Педикюр', 60], ['Педикюр с покрытием', 90], ['Педикюр со стопой', 90],
+  ['Маникюр+Педикюр', 90], ['Маникюр с укреплением + Педикюр с покрытием', 150],
+  ['Наращивание+Педикюр с покрытием', 210], ['Наращивание+Педикюр со стопой', 240], ['Маникюр+Педикюр со стопой', 210],
+];
+const PRICES = SAMPLE_SERVICES.map(([name, duration], i) => ({ id: 'p' + i, name, price: 0, duration }));
 const at = (time, services, extra = {}) => ({ id: time, date: '2026-10-01', time, status: 'booked', services, ...extra });
 const freeWith = (items, need) => L.formatRanges(L.toRanges(L.freeTimes(items, '2026-10-01', S, -1, undefined, { prices: PRICES, need })));
 
@@ -550,28 +557,6 @@ test('копия: закрытое время сохраняется, с нев�
     { id: 'y', from: '2026-10-05', to: '2026-10-05', start: '16:00' },
   ] }));
   eq(copy.blocks, CLOSED);
-});
-
-test('прайс мастера: новые услуги добавляются, цены и названия прежних остаются', () => {
-  let n = 0;
-  const merged = L.mergePrices([
-    { id: 'a', name: 'Маникюр', price: 8000 },
-    { id: 'b', name: 'Наращивание', price: 15000 },
-    { id: 'c', name: 'маникюр + педикюр', price: 16000 },
-  ], L.DEFAULT_SERVICES, () => 'n' + n++);
-  eq(merged.length, 14);
-  eq(merged.find(p => p.id === 'b'), { id: 'b', name: 'Наращивание', price: 15000, duration: 150 });
-  eq(merged.find(p => p.id === 'c'), { id: 'c', name: 'маникюр + педикюр', price: 16000, duration: 90 });
-  eq(merged[0], { id: 'n0', name: 'Снятие маникюра', price: 0, duration: 20 });
-  eq(merged[merged.length - 1], { id: 'a', name: 'Маникюр', price: 8000 }); // нет в списке — в конце, как была
-});
-
-test('прайс мастера: пустые прежние услуги (без цены и времени) убираются', () => {
-  const phone = ['Наращивание', 'Маникюр', 'Снятие', 'Педикюр', 'Маникюр+Педикюр'].map((name, i) => ({ id: 'o' + i, name, price: 0 }));
-  let n = 0;
-  const merged = L.mergePrices(phone, L.DEFAULT_SERVICES, () => 'n' + n++);
-  eq(merged.map(p => p.name), L.DEFAULT_SERVICES.map(([name]) => name));
-  eq(merged.find(p => p.name === 'Наращивание').id, 'o0'); // прежняя услуга, не новая
 });
 
 // ---------- Карточка клиента (1.10.0) ----------
@@ -744,6 +729,48 @@ test('подписка: доступ по последний день включ
   eq(L.subscriptionDaysLeft({ until: '2026-10-29' }, '2026-10-26'), 3);
   eq(L.subscriptionDaysLeft({ until: '2026-10-29' }, '2026-10-30'), -1);
   eq(L.subscriptionDaysLeft({ until: '2026-10-29', unlimited: true }, '2026-10-26'), null);
+});
+
+test('Beautybook: 7 бесплатных дней, «Про» на месяц или год', () => {
+  eq(L.trialPeriod('2026-10-01'), { start: '2026-10-01', end: '2026-10-07' });
+  eq(L.nextPeriod('2026-10-07', '2026-10-05', 1), { start: '2026-10-08', end: '2026-11-07' });
+  eq(L.nextPeriod('2026-10-07', '2026-10-05', 12), { start: '2026-10-08', end: '2027-10-07' });
+  eq(L.nextPeriod('2026-09-01', '2026-10-05', 12), { start: '2026-10-05', end: '2027-10-04' }); // закончилась — с сегодня
+  eq([L.TARIFF.month.price, L.TARIFF.year.price, L.TARIFF.year.months], [2990, 29900, 12]);
+});
+
+test('расписание для клиентов: тема, Instagram и направление мастера', () => {
+  const s = L.buildSchedule({ appointments: [], blocks: [], prices: [],
+    settings: { ...L.DEFAULT_SETTINGS, clientName: 'Ерлан', theme: 'graphite', instagram: 'https://www.instagram.com/Erlan.Barber/', specialty: '  Барбер ' } }, new Date(2026, 9, 1), 1);
+  eq([s.theme, s.instagram, s.specialty], ['graphite', 'erlan.barber', 'Барбер']);
+  eq(L.cleanSchedule(s), s);
+  const evil = L.cleanSchedule({ ...s, theme: '"><script>', instagram: 'javascript:alert(1)', specialty: '<b>x</b>'.repeat(20) });
+  eq([evil.theme, evil.instagram, evil.specialty], ['plum', '', Array(20).fill('x').join(' ')]);
+  eq(['"><img src=x onerror=alert(1)>', 'Барбер '.repeat(10), ' Визажист >> '].map(L.specialtyText),
+    ['"', 'Барбер '.repeat(10).slice(0, 40), 'Визажист']);
+});
+
+test('копия: личная ссылка записи и «пришла по ссылке» сохраняются', () => {
+  const copy = L.readBackup(JSON.stringify({ app: 'kae-zapis', appointments: [
+    { id: 'a', date: '2026-10-01', time: '10:00', token: 'x-AzjQKfDO_EpleEyfwmTA', source: 'link' },
+    { id: 'b', date: '2026-10-01', time: '11:00', token: 'плохой токен', source: 'что-то' },
+  ] }));
+  eq([copy.appointments[0].token, copy.appointments[0].source], ['x-AzjQKfDO_EpleEyfwmTA', 'link']);
+  eq(['token' in copy.appointments[1], 'source' in copy.appointments[1]], [false, false]);
+});
+
+test('статистика мастера для администратора', () => {
+  const apps = [
+    { date: '2026-10-01', status: 'paid', source: 'link', phone: '+7 701 111 11 11', name: 'Айгуль' },
+    { date: '2026-10-02', status: 'booked', phone: '+7 701 111 11 11', name: 'Айгуль' },
+    { date: '2026-10-03', status: 'booked', name: 'Жанна' },
+    { date: '2026-10-04', status: 'cancelled', source: 'link', name: 'Отмена' },
+    { date: '2026-09-30', status: 'paid', name: 'Сентябрь' },
+  ];
+  eq(L.monthStats(apps, '2026-10'), { total: 3, link: 1, manual: 2, clients: 2 });
+  const payload = L.statsPayload({ appointments: apps, clients: [{ id: 'c', name: 'Без записей', phone: '+7 702 000 00 01' }] }, '2026-10-15');
+  eq(Object.keys(payload.months), ['2026-10', '2026-09']);
+  eq(payload.clients, 5);
 });
 
 test('контрольная сумма CRC32', () => {

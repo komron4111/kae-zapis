@@ -1,11 +1,13 @@
-// Страница администратора Nailapp. Разделы, в которые проваливаешься, как «Настройки» в приложении:
-// «Мастера» (поиск, карточка мастера с подпиской, сброс пароля), «Подписки» (календарь по месяцам:
-// галочка «оплата получена» продлевает доступ на месяц), «Сервер» (место в базе), «WhatsApp для мастеров»
-// (куда пишут через «Забыли пароль?»), «Вход по Face ID». Назад — кнопкой «‹» или жестом браузера:
-// каждый раздел — запись в истории (history.pushState).
+// Страница администратора Beautybook (до 2.4.0 — Nailapp). Разделы, в которые проваливаешься, как «Настройки»
+// в приложении: «Мастера» (поиск, сортировка, карточка мастера: анкета, записи по месяцам, подписка, сброс
+// пароля), «Подписки» (календарь по месяцам: галочка «оплата получена» продлевает доступ на месяц или год,
+// шкала до конца подписки, сортировка), «Чат с мастерами», «Сервер» (шкалы загрузки, место по мастерам),
+// «WhatsApp для мастеров» (куда пишут через «Забыли пароль?»), «Вход по Face ID». Назад — кнопкой «‹»
+// или жестом браузера: каждый раздел — запись в истории (history.pushState).
 //
 // Вход — код администратора (секрет ADMIN_CODE на сервере, а если он не задан — ACCESS_CODE)
-// или Face ID / код-пароль телефона (WebAuthn), если администратор включил его на этом устройстве.
+// или Face ID / код-пароль телефона (WebAuthn), если администратор включил его на этом устройстве:
+// тогда Face ID спрашивается сразу при открытии страницы.
 // Ни код, ни вход по Face ID нигде не сохраняются: только в памяти открытой страницы.
 //
 // Временный пароль придумывает эта страница и «растягивает» его так же, как телефон
@@ -32,6 +34,10 @@ const ICONS = {
   lock: '<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/>',
   left: '<path d="M15 5l-7 7 7 7"/>',
   right: '<path d="M9 5l7 7-7 7"/>',
+  phone: '<path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2z"/>',
+  copy: '<rect x="8.5" y="8.5" width="12" height="12" rx="2.5"/><path d="M15.5 8.5V6a2.5 2.5 0 0 0-2.5-2.5H6A2.5 2.5 0 0 0 3.5 6v7A2.5 2.5 0 0 0 6 15.5h2.5"/>',
+  check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+  instagram: '<rect x="3.5" y="3.5" width="17" height="17" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.2" cy="6.8" r=".4"/>',
 };
 const icon = name => `<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
 
@@ -44,8 +50,17 @@ let passkeys = [];
 let query = '';
 let today = ''; // сегодня по Алматы — с сервера
 let subMonth = ''; // месяц в «Подписках», YYYY-MM
+let statMonth = ''; // месяц, за который в списке мастеров показаны записи
+let masterSort = 'created'; // список мастеров: created | total | link | clients
+let subSort = 'created'; // «Подписки»: created | left
+let paying = ''; // мастер, которому в «Подписках» выбирают срок оплаты (месяц или год)
+let usage = null; // нагрузка за сутки — снимок последней проверки сервера (backend/monitor.mjs)
+let chats = null; // переписки с мастерами: последнее сообщение и непрочитанные
+let messages = []; // сообщения открытого чата
+let chatTimer = null;
 
-// Где мы: '' — меню разделов; 'masters', 'master' (карточка masterId), 'subs', 'server', 'contact', 'face'.
+// Где мы: '' — меню разделов; 'masters', 'master' (карточка masterId), 'subs', 'chats', 'chat' (переписка
+// с masterId), 'server', 'contact', 'face'.
 let page = '';
 let masterId = '';
 let resetNote = null; // временный пароль после сброса — показывается в карточке мастера один раз
@@ -91,42 +106,44 @@ function deviceName() {
 
 // ---------- Вход ----------
 
-function renderLogin(error = '') {
+function renderLogin(error = '', auto = false) {
   code = '';
   session = '';
   page = '';
+  stopChat();
   view.innerHTML = `
     <h2 class="page-title">Администратор</h2>
-    <section class="card page-card" id="face-card" hidden>
-      <button type="button" class="btn primary block" id="face-login">Войти по Face ID</button>
-      <p class="hint">Или по коду администратора — ниже.</p>
-      <p class="warn-text" id="face-error" hidden></p>
-    </section>
     <form class="card page-card" id="code-form" novalidate>
-      <p class="hint">Здесь видны все мастера Nailapp: можно сбросить забытый пароль и указать свой WhatsApp для кнопки «Забыли пароль?».</p>
+      <p class="hint">Здесь видны все мастера Beautybook: подписки, записи, чат с мастерами, сброс забытого пароля.</p>
       <label>Код администратора<input type="password" name="code" autocomplete="current-password"></label>
       ${error ? `<p class="warn-text">${esc(error)}</p>` : ''}
       <button type="submit" class="btn primary block">Войти</button>
+      <button type="button" class="btn small ghost face-small" id="face-login" hidden>${icon('lock')} Войти по Face ID</button>
+      <p class="warn-text" id="face-error" hidden></p>
     </form>`;
   $('#code-form').addEventListener('submit', e => {
     e.preventDefault();
     code = e.target.elements.code.value.trim();
     load(true);
   });
-  $('#face-login').addEventListener('click', faceLogin);
-  prepareFaceLogin();
+  $('#face-login').addEventListener('click', () => faceLogin());
+  prepareFaceLogin(auto);
 }
 
-// Есть ли для этого адреса вход по Face ID — тогда показываем кнопку и готовим вызов.
-async function prepareFaceLogin() {
+// Есть ли для этого адреса вход по Face ID — тогда показываем маленькую кнопку и готовим вызов.
+// auto — страницу только что открыли: Face ID спрашиваем сразу, без нажатия (просьба администратора).
+// Если браузер без нажатия спросить не даст или вход отменят, останутся кнопка и код.
+async function prepareFaceLogin(auto = false) {
   loginOptions = null;
   if (!canFace) return;
   try {
     const options = await request('POST', '/api/admin/passkey/login-options', {});
     if (!options.available) return;
     loginOptions = { ...options, at: Date.now() };
-    const card = $('#face-card');
-    if (card) card.hidden = false;
+    const button = $('#face-login');
+    if (!button) return;
+    button.hidden = false;
+    if (auto && document.visibilityState === 'visible') faceLogin(true);
   } catch (e) { /* нет связи — остаётся вход по коду */ }
 }
 
@@ -137,7 +154,7 @@ function faceError(text) {
   box.hidden = !text;
 }
 
-async function faceLogin() {
+async function faceLogin(auto = false) {
   const options = loginOptions;
   if (!options || Date.now() - options.at > FRESH) {
     faceError('Страница долго была открыта — нажмите «Войти по Face ID» ещё раз');
@@ -158,6 +175,7 @@ async function faceLogin() {
     });
   } catch (e) {
     prepareFaceLogin();
+    if (auto) return; // сам спросить не дали или отменили — есть кнопка и код
     return faceError(e.name === 'NotAllowedError' ? 'Вход по Face ID отменён или не прошёл — нажмите ещё раз или войдите по коду' : `Face ID не сработал: ${e.message}`);
   }
   try {
@@ -181,8 +199,10 @@ async function load(first = false) {
     const list = await call('GET', '/api/admin/masters');
     masters = list.masters;
     dbSize = list.size;
+    usage = list.usage || null;
     today = list.today || L.ymd(new Date());
     if (!subMonth) subMonth = L.monthOf(today);
+    if (!statMonth) statMonth = L.monthOf(today);
     try {
       contact = (await (await fetch(`${API}/api/contact`, { cache: 'no-store' })).json()).whatsapp || '';
     } catch (e) { /* покажем пустое поле */ }
@@ -207,20 +227,24 @@ async function load(first = false) {
 const SECTIONS = {
   masters: ['users', 'Мастера'],
   subs: ['calendar', 'Подписки'],
+  chats: ['chat', 'Чат с мастерами'],
   server: ['cloud', 'Сервер'],
-  contact: ['chat', 'WhatsApp для мастеров'],
+  contact: ['phone', 'WhatsApp для мастеров'],
   face: ['lock', 'Вход по Face ID'],
 };
 
+const unreadTotal = () => masters.reduce((n, m) => n + (m.unread || 0), 0);
+
 function summary(id) {
-  if (id === 'masters') return `${masters.length} · поиск, адреса, место, сброс пароля`;
+  if (id === 'masters') return `${masters.length} · анкеты, записи по месяцам, сортировка`;
   if (id === 'subs') {
     const ym = L.monthOf(today);
     const paid = masters.filter(m => paidIn(m, ym).length).length;
     const off = masters.filter(m => !sub(m).unlimited && !L.subscriptionActive(sub(m), today)).length;
     return `оплатили в этом месяце: ${paid}${off ? ` · закончилась: ${off}` : ''}`;
   }
-  if (id === 'server') return dbSize ? `база ${size(dbSize)} из 500 МБ · место по мастерам` : 'место по мастерам';
+  if (id === 'chats') return unreadTotal() ? `новых сообщений: ${unreadTotal()}` : 'вопросы мастеров по оплате и приложению';
+  if (id === 'server') return `загрузка ${loadLevel()[1]} · база ${dbSize ? size(dbSize) : '—'} из 500 МБ`;
   if (id === 'contact') return contact ? L.formatPhone(contact) : 'не указан — мастерам некуда писать';
   if (id === 'face') return passkeys.length ? `включён: ${passkeys.length} ${L.plural(passkeys.length, ['устройство', 'устройства', 'устройств'])}` : 'выключен';
   return '';
@@ -242,12 +266,13 @@ addEventListener('popstate', e => {
   page = state.page || '';
   masterId = state.masterId || '';
   resetNote = null;
-  if (page && !SECTIONS[page] && page !== 'master') page = '';
+  if (page && !SECTIONS[page] && page !== 'master' && page !== 'chat') page = '';
   render('prev');
 });
 
 function render(anim) {
   const enter = anim ? ` enter-${anim}` : '';
+  if (page !== 'chat') stopChat();
   if (!page) {
     view.innerHTML = `
       <div class="slide-clip"><div class="settings-home${enter}">
@@ -256,26 +281,29 @@ function render(anim) {
           <button class="menu-row" data-go="${id}">
             <span class="menu-ico">${icon(ic)}</span>
             <span class="grow"><b>${title}</b><small>${esc(summary(id))}</small></span>
-            ${icon('right')}
+            ${id === 'chats' && unreadTotal() ? `<i class="menu-badge">${unreadTotal()}</i>` : ''}${icon('right')}
           </button>`).join('')}
         </section>
         <button class="btn ghost block" id="leave">Выйти</button>
       </div></div>`;
     return;
   }
-  const m = page === 'master' ? masters.find(x => x.id === masterId) : null;
-  if (page === 'master' && !m) {
+  const m = page === 'master' || page === 'chat' ? masters.find(x => x.id === masterId) : null;
+  if ((page === 'master' || page === 'chat') && !m) {
     page = 'masters';
     return render();
   }
   const title = m ? esc(m.name || 'Без имени') : SECTIONS[page][1];
-  const backTitle = m ? 'Мастера' : 'Администратор';
+  const backTitle = page === 'chat' ? 'Назад' : m ? 'Мастера' : 'Администратор';
   view.innerHTML = `
     <div class="slide-clip"><div class="settings-page${enter}">
       <button class="back-link" data-back>${icon('left')} ${backTitle}</button>
       <h2 class="page-title">${title}</h2>
-      ${m ? masterHtml(m) : page === 'masters' ? mastersHtml() : page === 'subs' ? subsHtml() : page === 'server' ? serverHtml() : page === 'contact' ? contactHtml() : faceHtml()}
+      ${page === 'chat' ? chatHtml() : m ? masterHtml(m) : page === 'masters' ? mastersHtml() : page === 'subs' ? subsHtml() : page === 'chats' ? chatsHtml()
+        : page === 'server' ? serverHtml() : page === 'contact' ? contactHtml() : faceHtml()}
     </div></div>`;
+  if (page === 'chat') startChat();
+  if (page === 'chats') loadChats();
   if (page === 'masters') {
     const search = $('#q');
     search.addEventListener('input', () => {
@@ -304,23 +332,77 @@ function clientLink(m) {
 
 // ---------- Мастера ----------
 
-// Поиск по имени, ссылке, адресу или цифрам номера (от 3 цифр).
+const DAY_FORMS = ['день', 'дня', 'дней'];
+const RECORD_FORMS = ['запись', 'записи', 'записей'];
+const MASTER_SORTS = { created: 'Новые', total: 'Записи', link: 'По ссылке', clients: 'Клиенты' };
+const SUB_SORTS = { created: 'По регистрации', left: 'По остатку подписки' };
+const EMPTY_STAT = { total: 0, link: 0, manual: 0, clients: 0, sent: 0, confirmed: 0 };
+const statOf = (m, ym) => ({ ...EMPTY_STAT, ...((m.stats || {})[ym] || {}) });
+const monthShort = ym => `${L.MONTHS[Number(ym.slice(5)) - 1].slice(0, 3).toLowerCase()} ${ym.slice(2, 4)}`;
+
+const sortChips = (kind, options, current) => `
+  <div class="chips sort-chips" role="group" aria-label="Сортировка">${Object.entries(options).map(([id, title]) => `
+    <button type="button" class="chip small${id === current ? ' on' : ''}" data-sort="${kind}:${id}" aria-pressed="${id === current}">${title}</button>`).join('')}
+  </div>`;
+
+const monthNav = (kind, ym) => `
+  <div class="month-nav">
+    <button class="icon-btn" data-month="-1" data-kind="${kind}" aria-label="Предыдущий месяц">${icon('left')}</button>
+    <b>${L.monthTitle(ym)}</b>
+    <button class="icon-btn" data-month="1" data-kind="${kind}" aria-label="Следующий месяц">${icon('right')}</button>
+  </div>`;
+
+// Поиск по имени, направлению, ссылке, адресу или цифрам номера (от 3 цифр).
+// Сортировка: новые сверху; по принятым записям, по записям из заявок по ссылке (за выбранный месяц);
+// по числу клиентов в базе мастера.
 function rows() {
   const q = query.trim().toLowerCase();
   const qd = q.replace(/\D/g, '');
   const list = masters.filter(m => !q || m.name.toLowerCase().includes(q) || m.slug.includes(q) || (m.address || '').toLowerCase().includes(q)
-    || (qd.length >= 3 && L.phoneDigits(m.phone).includes(qd)));
-  return list.map(m => `
+    || (m.specialty || '').toLowerCase().includes(q) || (qd.length >= 3 && L.phoneDigits(m.phone).includes(qd)));
+  const key = { total: m => statOf(m, statMonth).total, link: m => statOf(m, statMonth).link, clients: m => m.clients || 0 }[masterSort];
+  const newest = (a, b) => b.created.localeCompare(a.created);
+  list.sort(key ? (a, b) => key(b) - key(a) || newest(a, b) : newest);
+  return list.map(m => {
+    const st = statOf(m, statMonth);
+    const about = [m.specialty, m.phone || 'номер не указан', shortAccess(m)].filter(Boolean).join(' · ');
+    const nums = `${monthShort(statMonth)}: ${st.total} ${L.plural(st.total, RECORD_FORMS)}, по ссылке ${st.link} · клиентов ${m.clients || 0}`;
+    return `
     <button class="menu-row" data-master="${esc(m.id)}">
-      <span class="grow"><b>${esc(m.name || 'Без имени')}</b><small>${esc([m.phone || 'номер не указан', shortAccess(m), m.address, `${size(total(m.storage))} на сервере`].filter(Boolean).join(' · '))}</small></span>
-      ${icon('right')}
-    </button>`).join('') || '<p class="hint list-empty">Никого не нашли</p>';
+      <span class="grow"><b>${esc(m.name || 'Без имени')}</b><small>${esc(about)}</small><small>${esc(nums)}</small></span>
+      ${m.unread ? `<i class="menu-badge" aria-label="Новых сообщений: ${m.unread}">${m.unread}</i>` : ''}${icon('right')}
+    </button>`;
+  }).join('') || '<p class="hint list-empty">Никого не нашли</p>';
 }
 
 function mastersHtml() {
   return `
-    <input type="search" id="q" class="search" placeholder="Имя, номер, ссылка или адрес" aria-label="Поиск мастера" value="${esc(query)}">
-    <section class="card settings-menu" id="masters">${rows()}</section>`;
+    <input type="search" id="q" class="search" placeholder="Имя, направление, номер или адрес" aria-label="Поиск мастера" value="${esc(query)}">
+    ${sortChips('master', MASTER_SORTS, masterSort)}
+    ${monthNav('stat', statMonth)}
+    <section class="card settings-menu" id="masters">${rows()}</section>
+    <p class="hint">Записи — принятые за месяц (без отменённых), «по ссылке» — из них пришедшие заявкой со страницы клиентов. Клиенты — все клиенты в базе мастера. Числа присылает приложение мастера при синхронизации.</p>`;
+}
+
+// Записи мастера по месяцам за год: принятые, заявки по ссылке (отправлено клиентами / принято), внесённые вручную.
+function statsCard(m) {
+  const now = L.monthOf(today);
+  const months = Array.from({ length: 12 }, (_, i) => L.addMonths(now, -i));
+  const lines = months.map(ym => {
+    const st = statOf(m, ym);
+    if (ym !== now && !st.total && !st.sent) return '';
+    return `
+        <tr><td>${esc(monthShort(ym))}</td><td>${st.total}</td><td>${st.sent}${st.link ? `<small>принято ${st.link}</small>` : ''}</td><td>${st.manual}</td></tr>`;
+  }).join('');
+  return `
+    <section class="card page-card">
+      <h3 class="card-title">Записи по месяцам</h3>
+      <table class="stats-table">
+        <thead><tr><th>Месяц</th><th>Записей</th><th>Заявок по ссылке</th><th>Внёс сам</th></tr></thead>
+        <tbody>${lines}</tbody>
+      </table>
+      <p class="hint">Записей — принятые в этом месяце (без отменённых). Заявок по ссылке — сколько клиенты отправили со страницы записи; «принято» — сколько из них стали записями. Внёс сам — записи, которые мастер добавил в приложении. Откуда пришла запись, приложение помечает с версии 2.4.0 (октябрь 2026): более ранние записи считаются внесёнными самим мастером.</p>
+    </section>`;
 }
 
 function masterHtml(m) {
@@ -328,7 +410,7 @@ function masterHtml(m) {
   const gis = L.gisLink(m.gis);
   const link = clientLink(m);
   if (resetNote && resetNote.id === m.id) {
-    const text = `Здравствуйте, ${m.name}! Ваш временный пароль для входа в Nailapp: ${resetNote.temp}. Войдите по своему номеру ${m.phone} и смените пароль: «Настройки» → «Аккаунт» → «Сменить пароль».`;
+    const text = `Здравствуйте, ${m.name}! Ваш временный пароль для входа в Beautybook: ${resetNote.temp}. Войдите по своему номеру ${m.phone} и смените пароль: «Настройки» → «Аккаунт» → «Сменить пароль».`;
     return `
       <section class="card page-card">
         <h3 class="card-title">Пароль сброшен</h3>
@@ -340,13 +422,21 @@ function masterHtml(m) {
   }
   return `
     <section class="card page-card">
+      <div class="line"><span>Направление</span><b>${esc(m.specialty || 'не указано')}</b></div>
       <div class="line"><span>Телефон</span><b>${esc(m.phone || 'не указан')}</b></div>
+      <div class="line"><span>Kaspi для счёта</span><b>${m.kaspi ? `${esc(m.kaspi)} <button class="icon-btn copy-btn" data-copy="${esc(L.phoneDigits(m.kaspi).slice(-10))}" aria-label="Скопировать номер Kaspi">${icon('copy')}</button>` : 'не указан'}</b></div>
+      <div class="line"><span>Клиентов в базе</span><b>${m.clients || 0}</b></div>
       <div class="line"><span>Зарегистрирован</span><b>${esc(formatDate(m.created))}</b></div>
       <div class="line"><span>Аккаунт</span><b>${m.claimed ? 'оформлен' : 'не оформлен'}</b></div>
       <div class="line"><span>Приложение</span><b>${m.devices ? 'подключено' : 'сейчас не в приложении'}</b></div>
       <div class="line"><span>Адрес</span><b>${esc(m.address || 'не указан')}</b></div>
-      ${gis ? `<a class="btn small secondary" href="${esc(gis)}" target="_blank" rel="noopener">Открыть в 2ГИС</a>` : ''}
+      <div class="btn-row">
+        ${gis ? `<a class="btn small secondary" href="${esc(gis)}" target="_blank" rel="noopener">Открыть в 2ГИС</a>` : ''}
+        ${m.instagram ? `<a class="btn small secondary" href="https://www.instagram.com/${esc(m.instagram)}/" target="_blank" rel="noopener">${icon('instagram')} @${esc(m.instagram)}</a>` : ''}
+        <button class="btn small secondary" data-chat="${esc(m.id)}">${icon('chat')} Написать${m.unread ? ` · ${m.unread}` : ''}</button>
+      </div>
     </section>
+    ${statsCard(m)}
     <section class="card page-card">
       <h3 class="card-title">Ссылка для клиентов</h3>
       <div class="link-box">${esc(link)}</div>
@@ -367,7 +457,7 @@ function masterHtml(m) {
 const sub = m => m.subscription || { until: null, unlimited: false, periods: [] };
 const fullDate = d => `${L.shortDate(d)} ${d.slice(0, 4)}`;
 const almatyDate = iso => L.masterClock(-300, Date.parse(iso)).date; // когда отмечено — по Алматы
-const DAY_FORMS = ['день', 'дня', 'дней'];
+const PLAN_NAMES = { month: 'месяц', year: 'год' };
 
 function accessText(m) {
   const s = sub(m);
@@ -394,51 +484,89 @@ function coverage(m, ym) {
   return { from: ps.map(p => p.from).sort()[0], to: ps.map(p => p.to).sort().pop() };
 }
 
-// Календарь по месяцам: все мастера, зарегистрированные к концу месяца, в порядке регистрации.
-// Галочка — оплата получена в этом месяце; ставить и снимать — только в текущем.
+// Шкала из 10 овалов. Подписка: от красного к зелёному, каждый овал — 3 дня из последних 30;
+// чем ближе конец, тем меньше горит овалов и тем они краснее. Нагрузка (rev): от зелёного к красному.
+function pills(lit, label, rev = false) {
+  return `<span class="pills${rev ? ' rev' : ''}" role="img" aria-label="${esc(label)}">${Array.from({ length: 10 }, (_, i) => `<i${i < lit ? ' class="on"' : ''}></i>`).join('')}</span>`;
+}
+
+const daysLeft = m => (sub(m).unlimited ? Infinity : sub(m).until ? L.subscriptionDaysLeft(sub(m), today) : -Infinity);
+
+function subScale(m) {
+  const left = daysLeft(m);
+  if (left === Infinity) return `<div class="sub-scale">${pills(10, 'Доступ бессрочный')}<small>бессрочно</small></div>`;
+  if (left < 0) return `<div class="sub-scale">${pills(0, 'Подписка закончилась')}<small>закончилась</small></div>`;
+  const days = left + 1; // дней доступа, считая сегодняшний
+  return `<div class="sub-scale">${pills(Math.min(10, Math.ceil(days / 3)), `Доступ до ${fullDate(sub(m).until)}`)}<small>до ${esc(sub(m).until.slice(0, 4) === today.slice(0, 4) ? L.shortDate(sub(m).until) : fullDate(sub(m).until))}</small></div>`;
+}
+
+// Галочку поставили — выбрать срок оплаты (тариф «Про»: месяц или год).
+function planChoice(m) {
+  const option = plan => {
+    const t = L.TARIFF[plan], next = L.nextPeriod(sub(m).until, today, t.months);
+    return `<button type="button" class="btn small ${plan === 'month' ? 'primary' : 'secondary'}" data-pay-plan="${plan}" data-id="${esc(m.id)}">${t.title} · ${L.formatMoney(t.price)} → до ${esc(fullDate(next.end))}</button>`;
+  };
+  return `
+        <div class="plan-choice">
+          <small>Оплата получена — за какой срок?</small>
+          <div class="btn-row">${option('month')}${option('year')}<button type="button" class="btn small ghost" data-pay-plan="">Отмена</button></div>
+        </div>`;
+}
+
+// Календарь по месяцам: все мастера, зарегистрированные к концу месяца, — по порядку регистрации
+// или по остатку подписки (у кого кончается раньше — сверху). Галочка — оплата получена в этом месяце;
+// ставить и снимать — только в текущем.
 function subsHtml() {
   const current = subMonth === L.monthOf(today);
   const last = L.addDays(L.addMonthsToDate(`${subMonth}-01`, 1), -1);
   const list = masters.filter(m => almatyDate(m.created) <= last).sort((a, b) => a.created.localeCompare(b.created));
+  if (subSort === 'left') list.sort((a, b) => daysLeft(a) - daysLeft(b) || a.created.localeCompare(b.created));
   const paidCount = list.filter(m => paidIn(m, subMonth).length).length;
+  const income = list.reduce((sum, m) => sum + paidIn(m, subMonth).reduce((t, p) => t + (p.amount || 0), 0), 0);
   const rows = list.map(m => {
     const s = sub(m);
     const paid = paidIn(m, subMonth);
     const cov = coverage(m, subMonth);
     const status = s.unlimited ? 'бессрочно' : current ? accessText(m) : cov ? `доступ с ${L.shortDate(cov.from)} по ${fullDate(cov.to)}` : 'без доступа';
-    const note = paid.length ? `оплата ${paid.map(p => L.shortDate(almatyDate(p.marked))).join(', ')}` : '';
+    const note = paid.length ? `оплата ${paid.map(p => `${L.shortDate(almatyDate(p.marked))}${p.plan ? ` за ${PLAN_NAMES[p.plan] || p.plan}` : ''}`).join(', ')}` : '';
     const off = !s.unlimited && current && !L.subscriptionActive(s, today);
     return `
       <div class="sub-row${off ? ' off' : ''}">
         <input type="checkbox" class="sub-check" data-pay="${esc(m.id)}" aria-label="Оплата от ${esc(m.name)} получена" ${paid.length ? 'checked' : ''} ${current && !s.unlimited ? '' : 'disabled'}>
-        <button class="sub-info grow" data-master="${esc(m.id)}"><b>${esc(m.name || 'Без имени')}</b><small>${esc([status, note].filter(Boolean).join(' · '))}</small></button>
+        <div class="grow sub-main">
+          <button class="sub-info" data-master="${esc(m.id)}"><b>${esc(m.name || 'Без имени')}</b><small>${esc([status, note].filter(Boolean).join(' · '))}</small></button>
+          ${current ? subScale(m) : ''}
+          ${current && paying === m.id ? planChoice(m) : ''}
+        </div>
       </div>`;
   }).join('');
   return `
-    <div class="month-nav">
-      <button class="icon-btn" data-month="-1" aria-label="Предыдущий месяц">${icon('left')}</button>
-      <b>${L.monthTitle(subMonth)}</b>
-      <button class="icon-btn" data-month="1" aria-label="Следующий месяц">${icon('right')}</button>
-    </div>
-    <p class="hint">Оплатили${current ? ' в этом месяце' : ''}: ${paidCount} из ${list.length}.</p>
+    ${monthNav('sub', subMonth)}
+    ${sortChips('sub', SUB_SORTS, subSort)}
+    <p class="hint">Оплатили${current ? ' в этом месяце' : ''}: ${paidCount} из ${list.length}${income ? ` · получено ${L.formatMoney(income)}` : ''}.</p>
     <section class="card list">${rows || '<p class="hint list-empty">В этом месяце мастеров ещё не было</p>'}</section>
-    <p class="hint">Галочка — «оплата получена»: доступ мастера продлевается на месяц — от конца текущего периода, а если он уже закончился, с сегодняшнего дня. Отметили по ошибке — снимите галочку. Отмечать можно в текущем месяце. Нажмите на мастера — там все его периоды, бессрочный доступ и дата окончания.</p>`;
+    <p class="hint">Галочка — «оплата получена»: выберите срок — месяц (${L.formatMoney(L.TARIFF.month.price)}) или год (${L.formatMoney(L.TARIFF.year.price)}). Доступ продлится от конца текущего периода, а если он уже закончился — с сегодняшнего дня. Отметили по ошибке — снимите галочку. Шкала под мастером — сколько осталось до конца подписки: каждый овал — 3 дня, красные — конец близко. Отмечать можно в текущем месяце. Нажмите на мастера — там все его периоды, бессрочный доступ и дата окончания.</p>`;
 }
 
 // Подписка в карточке мастера: сейчас, все периоды, продлить, отменить, дата, бессрочно.
 function subscriptionCard(m) {
   const s = sub(m);
-  const next = L.nextPeriod(s.until, today);
-  const kinds = { trial: 'первый месяц', manual: 'изменено вручную' };
+  const kinds = { trial: 'пробный период', manual: 'изменено вручную' };
+  const paidText = p => `оплата ${L.shortDate(almatyDate(p.marked))}${p.plan ? ` за ${PLAN_NAMES[p.plan] || p.plan}` : ''}${p.amount ? `, ${L.formatMoney(p.amount)}` : ''}`;
   const periods = [...s.periods].reverse().map(p => `
-    <div class="line"><span>${esc(L.shortDate(p.from))} – ${esc(fullDate(p.to))}</span><b>${esc(p.kind === 'paid' ? `оплата ${L.shortDate(almatyDate(p.marked))}` : kinds[p.kind] || p.kind)}</b></div>`).join('');
+    <div class="line"><span>${esc(L.shortDate(p.from))} – ${esc(fullDate(p.to))}</span><b>${esc(p.kind === 'paid' ? paidText(p) : kinds[p.kind] || p.kind)}</b></div>`).join('');
   const hasPaid = s.periods.some(p => p.kind === 'paid');
+  const extend = plan => {
+    const t = L.TARIFF[plan], next = L.nextPeriod(s.until, today, t.months);
+    return `<button class="btn ${plan === 'month' ? 'primary' : 'secondary'} block" data-sub="extend-${plan}">Оплата за ${PLAN_NAMES[plan]} (${L.formatMoney(t.price)}) — до ${esc(fullDate(next.end))}</button>`;
+  };
   return `
     <section class="card page-card">
       <h3 class="card-title">Подписка</h3>
       <div class="line"><span>Сейчас</span><b>${esc(accessText(m))}</b></div>
+      ${subScale(m)}
       ${periods}
-      ${s.unlimited ? '' : `<button class="btn primary block" data-sub="extend">Оплата получена — продлить до ${esc(fullDate(next.end))}</button>`}
+      ${s.unlimited ? '' : extend('month') + extend('year')}
       ${hasPaid && !s.unlimited ? '<button class="btn ghost block" data-sub="undo">Отменить последнюю оплату</button>' : ''}
       ${s.unlimited ? '' : `
       <form id="until-form" class="until-form" novalidate>
@@ -458,16 +586,22 @@ async function changeSubscription(id, body) {
   await load();
 }
 
-// Галочка в календаре: поставить — оплата получена (+ месяц), снять — отменить последнюю оплату.
-async function togglePayment(id, want) {
+// Оплата получена: продлить на месяц или год (plan). Спрашиваем подтверждение в карточке мастера;
+// в «Подписках» подтверждение — выбор срока после галочки.
+async function extendSubscription(id, plan, ask = true) {
   const m = masters.find(x => x.id === id);
-  if (!m) return;
-  if (want) {
-    const next = L.nextPeriod(sub(m).until, today);
-    if (!confirm(`Оплата от ${m.name} получена? Доступ продлится до ${fullDate(next.end)}.`)) return;
-    return changeSubscription(id, { action: 'extend' });
-  }
-  if (!confirm(`Снять отметку об оплате от ${m.name}? Последний оплаченный месяц отменится.`)) return;
+  const t = L.TARIFF[plan];
+  if (!m || !t) return;
+  const next = L.nextPeriod(sub(m).until, today, t.months);
+  if (ask && !confirm(`Оплата от ${m.name} за ${PLAN_NAMES[plan]} (${L.formatMoney(t.price)}) получена? Доступ продлится до ${fullDate(next.end)}.`)) return;
+  paying = '';
+  return changeSubscription(id, { action: 'extend', plan });
+}
+
+// Сняли галочку — отменить последнюю отмеченную оплату.
+async function undoPayment(id) {
+  const m = masters.find(x => x.id === id);
+  if (!m || !confirm(`Снять отметку об оплате от ${m.name}? Последняя отмеченная оплата отменится.`)) return;
   return changeSubscription(id, { action: 'undo' });
 }
 
@@ -475,8 +609,9 @@ function subscriptionAction(action) {
   const m = masters.find(x => x.id === masterId);
   if (!m) return;
   const s = sub(m);
-  if (action === 'extend') return togglePayment(m.id, true);
-  if (action === 'undo') return togglePayment(m.id, false);
+  if (action === 'extend-month') return extendSubscription(m.id, 'month');
+  if (action === 'extend-year') return extendSubscription(m.id, 'year');
+  if (action === 'undo') return undoPayment(m.id);
   if (action === 'unlimited') {
     const on = !s.unlimited;
     if (!confirm(on ? `Сделать доступ ${m.name} бессрочным? Подписка больше не будет заканчиваться.` : `Отключить бессрочный доступ ${m.name}? Доступ будет до ${s.until ? fullDate(s.until) : 'сегодня'}.`)) return;
@@ -494,14 +629,166 @@ async function saveUntil(e) {
   return changeSubscription(m.id, { action: 'until', value });
 }
 
+// ---------- Чат с мастерами ----------
+// Мастер пишет из «Настройки» → «Чат с администратором»; ответ приходит ему уведомлением.
+// Открытый чат проверяет новые сообщения раз в 10 секунд, пока страница на экране.
+
+function chatsHtml() {
+  return `
+    <p class="hint">Вопросы мастеров по оплате, подписке и работе приложения. Ваш ответ придёт мастеру уведомлением. Написать первым можно из карточки мастера — кнопка «Написать».</p>
+    <section class="card settings-menu" id="chats">${chatRows()}</section>`;
+}
+
+function chatRows() {
+  if (!chats) return '<p class="hint list-empty">Загружаем…</p>';
+  return chats.map(c => `
+    <button class="menu-row" data-chat="${esc(c.masterId)}">
+      <span class="grow"><b>${esc(c.name || 'Без имени')}</b><small>${esc(`${c.last.author === 'admin' ? 'Вы: ' : ''}${c.last.text}`)}</small></span>
+      ${c.unread ? `<i class="menu-badge" aria-label="Новых сообщений: ${c.unread}">${c.unread}</i>` : ''}${icon('right')}
+    </button>`).join('') || '<p class="hint list-empty">Сообщений пока нет</p>';
+}
+
+async function loadChats() {
+  try {
+    chats = (await call('GET', '/api/admin/chats')).chats;
+  } catch (e) {
+    const box = $('#chats');
+    if (box && !chats) box.innerHTML = `<p class="hint list-empty">${esc(e.message)}</p>`;
+    return;
+  }
+  for (const m of masters) {
+    const c = chats.find(x => x.masterId === m.id);
+    m.unread = c ? c.unread : 0;
+  }
+  const box = $('#chats');
+  if (box) box.innerHTML = chatRows();
+}
+
+function formatTime(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return '';
+  return d.toLocaleString('ru-RU', { timeZone: 'Asia/Almaty', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
+}
+
+function bubbles() {
+  if (!messages.length) return '<p class="hint chat-empty">Сообщений пока нет — напишите мастеру первым.</p>';
+  return messages.map(x => `
+    <div class="bubble ${x.author === 'admin' ? 'mine' : 'theirs'}">
+      <p>${esc(x.text).replace(/\n/g, '<br>')}</p>
+      <small>${esc(formatTime(x.created))}${x.author === 'admin' && x.seen ? ' · прочитано' : ''}</small>
+    </div>`).join('');
+}
+
+function chatHtml() {
+  return `
+    <div class="chat" id="chat-list">${bubbles()}</div>
+    <form id="chat-form" class="chat-form" novalidate>
+      <textarea name="text" rows="2" maxlength="2000" placeholder="Сообщение мастеру" aria-label="Сообщение"></textarea>
+      <button type="submit" class="btn primary">Отправить</button>
+    </form>`;
+}
+
+function showMessages(list, scroll) {
+  const box = $('#chat-list');
+  if (!box) return;
+  const atBottom = innerHeight + scrollY >= document.documentElement.scrollHeight - 80;
+  messages = list;
+  box.innerHTML = bubbles();
+  if (scroll || atBottom) scrollTo(0, document.documentElement.scrollHeight);
+}
+
+async function loadMessages(first = false) {
+  const id = masterId;
+  try {
+    const list = (await call('GET', `/api/admin/chats/${encodeURIComponent(id)}`)).messages;
+    if (page !== 'chat' || masterId !== id) return;
+    showMessages(list, first);
+    const m = masters.find(x => x.id === id);
+    if (m) m.unread = 0;
+    if (chats) chats.forEach(c => { if (c.masterId === id) c.unread = 0; });
+  } catch (e) {
+    if (first) $('#chat-list').innerHTML = `<p class="hint chat-empty">${esc(e.message)}</p>`;
+  }
+}
+
+function startChat() {
+  messages = [];
+  $('#chat-list').innerHTML = '<p class="hint chat-empty">Загружаем сообщения…</p>';
+  const form = $('#chat-form');
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    const box = form.elements.text;
+    const text = box.value.trim();
+    if (!text) return;
+    const button = form.querySelector('button');
+    button.disabled = true;
+    try {
+      const list = (await call('POST', `/api/admin/chats/${encodeURIComponent(masterId)}`, { text })).messages;
+      box.value = '';
+      showMessages(list, true);
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      button.disabled = false;
+    }
+  });
+  loadMessages(true);
+  stopChat();
+  chatTimer = setInterval(() => {
+    if (document.visibilityState === 'visible') loadMessages();
+  }, 10000);
+}
+
+function stopChat() {
+  clearInterval(chatTimer);
+  chatTimer = null;
+}
+
 // ---------- Сервер ----------
 
+// Бесплатный тариф Cloudflare: база до 500 МБ, в сутки — 100 000 запросов к серверу, 100 000 записанных
+// и 5 000 000 прочитанных строк. Суточные цифры приносит проверка сервера (monitor.mjs, 9:00, 15:00, 21:00).
+const FREE = { size: 500e6, requests: 100000, rowsWritten: 100000, rowsRead: 5000000 };
+const REVIEW_MASTERS = 30; // на 30 мастерах решаем про платный тариф
+const num = n => Math.round(Number(n) || 0).toLocaleString('ru-RU');
+
+function loads() {
+  const u = usage || {};
+  return [
+    ['База данных', dbSize || u.size || 0, FREE.size, v => `${size(v)} из 500 МБ`],
+    usage && ['Запросы к серверу за сутки', u.requests, FREE.requests, v => `${num(v)} из ${num(FREE.requests)}`],
+    usage && ['Записано строк в базу за сутки', u.rowsWritten, FREE.rowsWritten, v => `${num(v)} из ${num(FREE.rowsWritten)}`],
+    usage && ['Прочитано строк за сутки', u.rowsRead, FREE.rowsRead, v => `${num(v)} из ${num(FREE.rowsRead)}`],
+  ].filter(Boolean);
+}
+
+// Общая загрузка — по самой большой доле лимита.
+function loadLevel() {
+  const worst = Math.max(0, ...loads().map(([, value, max]) => (Number(value) || 0) / max));
+  return worst >= 0.8 ? ['bad', 'высокая'] : worst >= 0.5 ? ['warn', 'средняя'] : ['ok', 'низкая'];
+}
+
+function loadScale(title, value, max, text) {
+  const share = (Number(value) || 0) / max;
+  const percent = share > 0 && share < 0.01 ? '<1' : String(Math.round(share * 100));
+  const lit = share > 0 ? Math.min(10, Math.max(1, Math.ceil(share * 10))) : 0;
+  return `
+      <div class="load-row">
+        <div class="load-head"><span>${esc(title)}</span><b>${esc(text(value))} · ${percent}%</b></div>
+        ${pills(lit, `${title}: ${percent}%`, true)}
+      </div>`;
+}
+
 function serverHtml() {
+  const [tone, word] = loadLevel();
+  const when = usage && usage.at ? formatTime(usage.at) : '';
   const byStorage = [...masters].sort((a, b) => total(b.storage) - total(a.storage));
   return `
     <section class="card page-card">
-      ${dbSize ? `<div class="line"><span>Вся база</span><b>${esc(size(dbSize))} из 500 МБ (${Math.round(dbSize / 5e6)}%)</b></div>` : ''}
-      <p class="hint">Бесплатный тариф Cloudflare: база до 500 МБ, в сутки — 100 000 запросов к серверу и 100 000 записей в базу. Больше всего места займут фото. Если подойдём к пределу, придёт уведомление проверки.</p>
+      <h3 class="card-title">Загрузка: <span class="load-level ${tone}">${word}</span></h3>
+      ${loads().map(([title, value, max, text]) => loadScale(title, value, max, text)).join('')}
+      ${loadScale(`Мастера (на ${REVIEW_MASTERS} решаем про платный тариф)`, masters.length, REVIEW_MASTERS, v => `${v} из ${REVIEW_MASTERS}`)}
+      <p class="hint">Бесплатный тариф Cloudflare: база до 500 МБ, в сутки — 100 000 запросов к серверу и 100 000 записей в базу. Зелёные овалы — запас большой, красные — подходим к пределу. ${when ? `Суточные цифры — по проверке сервера ${esc(when)}.` : 'Суточные цифры появятся после ближайшей проверки сервера (9:00, 15:00, 21:00).'} Если подойдём к пределу, придёт уведомление проверки.</p>
     </section>
     <h3 class="section-title">Место по мастерам</h3>
     <section class="card settings-menu">${byStorage.map(m => `
@@ -640,15 +927,37 @@ async function resetPassword(id) {
 }
 
 view.addEventListener('click', e => {
-  const target = e.target.closest('[data-go], [data-master], [data-back], [data-reset], [data-unkey], [data-month], [data-sub], #add-face, #leave');
+  const target = e.target.closest('[data-go], [data-master], [data-back], [data-reset], [data-unkey], [data-month], [data-sub], [data-sort], [data-chat], [data-copy], [data-pay-plan], #add-face, #leave');
   if (!target) return;
   if (target.dataset.month) {
-    subMonth = L.addMonths(subMonth, Number(target.dataset.month));
+    const step = Number(target.dataset.month);
+    if (target.dataset.kind === 'stat') statMonth = L.addMonths(statMonth, step);
+    else {
+      subMonth = L.addMonths(subMonth, step);
+      paying = '';
+    }
     render();
     return;
   }
+  if (target.dataset.sort) {
+    const [kind, value] = target.dataset.sort.split(':');
+    if (kind === 'master') masterSort = value;
+    else subSort = value;
+    render();
+    return;
+  }
+  if ('payPlan' in target.dataset) {
+    if (!target.dataset.payPlan) {
+      paying = '';
+      render();
+      return;
+    }
+    return extendSubscription(target.dataset.id, target.dataset.payPlan, false);
+  }
+  if (target.dataset.copy) return copyText(target, target.dataset.copy);
   if (target.dataset.sub) return subscriptionAction(target.dataset.sub);
   if (target.dataset.go) go(target.dataset.go);
+  else if (target.dataset.chat) go('chat', target.dataset.chat);
   else if (target.dataset.master) go('master', target.dataset.master);
   else if ('back' in target.dataset) history.back();
   else if (target.dataset.reset) resetPassword(target.dataset.reset);
@@ -657,12 +966,28 @@ view.addEventListener('click', e => {
   else if (target.id === 'leave') renderLogin();
 });
 
+// Номер Kaspi — в буфер обмена (10 цифр без +7: так его вставляют в счёт Kaspi).
+async function copyText(button, text) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (e) {
+    return alert(`Скопируйте вручную: ${text}`);
+  }
+  button.innerHTML = icon('check');
+  setTimeout(() => { button.innerHTML = icon('copy'); }, 1500);
+}
+
 view.addEventListener('change', e => {
   const box = e.target.closest('[data-pay]');
   if (!box) return;
   const want = box.checked;
   box.checked = !want; // галочка встанет, когда сервер подтвердит
-  togglePayment(box.dataset.pay, want);
+  if (want) {
+    paying = box.dataset.pay; // сначала — за какой срок оплата
+    render();
+  } else {
+    undoPayment(box.dataset.pay);
+  }
 });
 
-renderLogin();
+renderLogin('', true);

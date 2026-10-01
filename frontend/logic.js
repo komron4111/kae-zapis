@@ -8,30 +8,25 @@ export const MONTHS_GEN = ['января', 'февраля', 'марта', 'ап
 export const WEEKDAYS = ['Воскресенье', 'Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота'];
 export const WEEKDAYS_SHORT = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
 
-// Прайс мастера (список от 29.09.2026): услуга и сколько она длится, минут.
-// Цен здесь нет — их вносит Арай в «Настройках».
-export const DEFAULT_SERVICES = [
-  ['Снятие маникюра', 20],
-  ['Снятие+Маникюр', 60],
-  ['Маникюр с укреплением', 90],
-  ['Наращивание', 150],
-  ['Снятие педикюра', 20],
-  ['Педикюр', 60],
-  ['Педикюр с покрытием', 90],
-  ['Педикюр со стопой', 90],
-  ['Маникюр+Педикюр', 90],
-  ['Маникюр с укреплением + Педикюр с покрытием', 150],
-  ['Наращивание+Педикюр с покрытием', 210],
-  ['Наращивание+Педикюр со стопой', 240],
-  ['Маникюр+Педикюр со стопой', 210],
-];
 export const DEFAULT_RENT = 0; // своя сумма — в «Настройки» → «Аренда» (до 2.2.1 было 70 000 ₸ Арай)
 
 // Рабочее время: запись можно начать с dayStart до lastStart включительно.
 // duration — сколько длится услуга, у которой в прайсе не указана длительность.
-export const DEFAULT_SETTINGS = { dayStart: '09:00', lastStart: '20:00', duration: 150, clientName: 'Арай', whatsapp: '', address: '', gis: '', theme: 'plum' };
-// Темы оформления: id → название в «Настройках». Цвета — в style.css.
-export const THEMES = { rose: 'Розовая', plum: 'Пурпурная', lavender: 'Фиолетовая' };
+// specialty — направление мастера, instagram — ник для клиентов, kaspi — номер для счёта Kaspi за подписку.
+export const DEFAULT_SETTINGS = { dayStart: '09:00', lastStart: '20:00', duration: 150, clientName: '', whatsapp: '', address: '', gis: '', instagram: '', specialty: '', kaspi: '', theme: 'plum' };
+// Темы оформления: id → название в «Настройках». Цвета — в style.css. «Графит» — тёмная,
+// без розового (например, для парикмахеров и барберов). Клиенты видят страницу записи в теме мастера.
+export const THEMES = { rose: 'Розовая', plum: 'Пурпурная', lavender: 'Фиолетовая', graphite: 'Графит' };
+
+// Направления мастера — подсказки при регистрации; можно вписать своё.
+export const SPECIALTIES = ['Маникюр и педикюр', 'Парикмахер', 'Барбер', 'Брови и ресницы', 'Визажист', 'Косметолог', 'Массаж', 'Депиляция и шугаринг', 'Тату и перманент'];
+// Одна строка до 40 знаков; теги и угловые скобки убираем: направление — простой текст.
+export const specialtyText = value => String(value == null ? '' : value).replace(/<[^>]*>/g, ' ').replace(/[<>]/g, '')
+  .trim().replace(/\s+/g, ' ').slice(0, 40);
+
+// Тариф «Про» (единственный): месяц или год. Первые TRIAL_DAYS дней после регистрации — бесплатно.
+export const TARIFF = { month: { months: 1, price: 2990, title: 'Месяц' }, year: { months: 12, price: 29900, title: 'Год' } };
+export const TRIAL_DAYS = 7;
 // Клиентам время предлагается с шагом 30 минут.
 export const SLOT_STEP = 30;
 // На сколько дней вперёд публикуются свободные окошки.
@@ -355,11 +350,16 @@ export function subscriptionEnd(start) {
   return addDays(addMonthsToDate(start, 1), -1);
 }
 
-// Следующий оплаченный месяц: сразу после текущего периода, а если доступ уже закончился
-// (или его не было) — с сегодняшнего дня.
-export function nextPeriod(until, today) {
+// Следующий оплаченный срок (months месяцев: 1 — месяц, 12 — год): сразу после текущего периода,
+// а если доступ уже закончился (или его не было) — с сегодняшнего дня.
+export function nextPeriod(until, today, months = 1) {
   const start = until && until >= today ? addDays(until, 1) : today;
-  return { start, end: subscriptionEnd(start) };
+  return { start, end: addDays(addMonthsToDate(start, months), -1) };
+}
+
+// Бесплатные дни после регистрации: с дня регистрации, TRIAL_DAYS дней включительно.
+export function trialPeriod(start) {
+  return { start, end: addDays(start, TRIAL_DAYS - 1) };
 }
 
 // sub — { until: 'YYYY-MM-DD' | null, unlimited }.
@@ -424,6 +424,9 @@ export function buildSchedule(data, now = new Date(), days = HORIZON_DAYS) {
     whatsapp: phoneDigits(s.whatsapp),
     address: addressText(s.address),
     gis: gisLink(s.gis),
+    instagram: instagramName(s.instagram),
+    specialty: specialtyText(s.specialty),
+    theme: THEMES[s.theme] ? s.theme : DEFAULT_SETTINGS.theme,
     dayStart: s.dayStart,
     lastStart: s.lastStart,
     duration: s.duration,
@@ -456,6 +459,9 @@ export function cleanSchedule(raw) {
     whatsapp: phoneDigits(raw.whatsapp).slice(0, 15),
     address: addressText(raw.address),
     gis: gisLink(raw.gis),
+    instagram: instagramName(raw.instagram),
+    specialty: specialtyText(raw.specialty),
+    theme: Object.prototype.hasOwnProperty.call(THEMES, raw.theme) ? raw.theme : DEFAULT_SETTINGS.theme,
     dayStart: TIME_RE.test(raw.dayStart) ? raw.dayStart : DEFAULT_SETTINGS.dayStart,
     lastStart: TIME_RE.test(raw.lastStart) ? raw.lastStart : DEFAULT_SETTINGS.lastStart,
     duration: int(raw.duration, 5, 720, DEFAULT_SETTINGS.duration),
@@ -738,20 +744,25 @@ export function pastClients(appointments, saved = []) {
   return out;
 }
 
-// Приводит прайс к списку услуг мастера [название, минуты]: совпавшие по названию
-// получают длительность (цена и название остаются), новые — с ценой 0.
-// Порядок — как в списке. Прежние услуги не из списка остаются в конце, только если
-// у них есть цена или длительность; пустые (без цены и времени) убираются.
-export function mergePrices(prices, list, makeId) {
-  const key = name => norm(name).replace(/\s*\+\s*/g, '+');
-  const rest = [...prices];
-  const merged = list.map(([name, duration]) => {
-    const i = rest.findIndex(p => key(p.name) === key(name));
-    if (i < 0) return { id: makeId(), name, price: 0, duration };
-    const [p] = rest.splice(i, 1);
-    return { ...p, duration: p.duration > 0 ? p.duration : duration };
-  });
-  return [...merged, ...rest.filter(p => p.price > 0 || p.duration > 0)];
+// ---------- Статистика мастера для администратора ----------
+// За месяц: принятые записи (кроме отменённых), из них пришедшие заявкой по ссылке, остальные мастер
+// внёс сам; клиентов в этом месяце. Имён и телефонов на сервер не уходит — только числа.
+export function monthStats(appointments, ym) {
+  const list = appointments.filter(a => a.date && a.date.startsWith(ym) && a.status !== 'cancelled');
+  const link = list.filter(a => a.source === 'link').length;
+  const clients = new Set(list.map(a => phoneDigits(a.phone) || norm(a.name)).filter(Boolean)).size;
+  return { total: list.length, link, manual: list.length - link, clients };
+}
+
+// Что приложение отправляет на сервер: последние 12 месяцев и сколько всего клиентов в базе.
+export function statsPayload(data, today) {
+  const months = {};
+  for (let i = 0; i < 12; i++) {
+    const ym = addMonths(monthOf(today), -i);
+    const st = monthStats(data.appointments || [], ym);
+    if (st.total || i === 0) months[ym] = st;
+  }
+  return { months, clients: pastClients(data.appointments || [], data.clients || []).length };
 }
 
 // ---------- Карточка клиента: Instagram, день рождения, откуда пришёл ----------
@@ -860,7 +871,7 @@ export function readBackup(text) {
   let obj = null;
   try { obj = JSON.parse(text); } catch (e) { /* не JSON */ }
   if (!obj || obj.app !== BACKUP_APP || !Array.isArray(obj.appointments)) {
-    throw new Error('Это не файл копии Nailapp');
+    throw new Error('Это не файл копии Beautybook');
   }
   const str = v => (v == null ? '' : String(v));
   const list = v => (Array.isArray(v) ? v : []);
@@ -878,6 +889,9 @@ export function readBackup(text) {
     photos: list(a.photos).filter(id => typeof id === 'string' && /^[\w-]+$/.test(id)),
     created: a.created || null,
     updated: a.updated || null,
+    // Личная ссылка клиента на запись и «пришла по ссылке» — до 2.4.0 при восстановлении терялись.
+    ...(typeof a.token === 'string' && /^[\w-]{16,64}$/.test(a.token) ? { token: a.token } : {}),
+    ...(a.source === 'link' ? { source: 'link' } : {}),
   }));
   const expenses = list(obj.expenses).filter(e => e && DATE_RE.test(e.date)).map((e, i) => ({
     id: str(e.id) || 'e' + i, date: e.date, amount: toMoney(e.amount), note: str(e.note),
@@ -936,6 +950,9 @@ function readSettings(src) {
   if (typeof s.whatsapp === 'string') out.whatsapp = s.whatsapp;
   if (typeof s.address === 'string') out.address = addressText(s.address);
   if (typeof s.gis === 'string') out.gis = gisLink(s.gis);
+  if (typeof s.instagram === 'string') out.instagram = instagramName(s.instagram);
+  if (typeof s.specialty === 'string') out.specialty = specialtyText(s.specialty);
+  if (typeof s.kaspi === 'string') out.kaspi = s.kaspi;
   if (typeof s.theme === 'string' && Object.keys(THEMES).includes(s.theme)) out.theme = s.theme;
   return out;
 }

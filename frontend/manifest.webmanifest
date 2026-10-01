@@ -1,7 +1,7 @@
 {
-  "name": "Nailapp",
-  "short_name": "Nailapp",
-  "description": "Записи клиентов, прайс и финансы мастера маникюра",
+  "name": "Beautybook",
+  "short_name": "Beautybook",
+  "description": "Записи клиентов, прайс и финансы мастера красоты",
   "lang": "ru",
   "dir": "ltr",
   "start_url": "./",
