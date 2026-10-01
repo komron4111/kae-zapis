@@ -384,6 +384,60 @@ const ruFrom = pushed.length;
 await call('POST', `/api/admin/chats/${aId}`, { admin: CODE, body: { text: 'Привет!' } });
 note = (got = await nthPush(ruFrom + 1)) && await decryptPush(got.body, ua2);
 check('без lang — по-русски, как раньше', note && note.title === 'Сообщение от администратора', JSON.stringify(note));
+// ---------- Напоминания мастеру о записях (2.8.0) ----------
+// У мастера A подписка masterSub (по-русски). Сервер шлёт напоминания по расписанию «*/5 * * * *».
+const remindCron = () => fetch(`${API}/__scheduled?cron=${encodeURIComponent('*/5 * * * *')}`);
+const kzTime = ms => {
+  const c = L.masterClock(-300, ms);
+  return { date: c.date, time: `${String(Math.floor(c.minutes / 60)).padStart(2, '0')}:${String(c.minutes % 60).padStart(2, '0')}` };
+};
+const base = Date.now();
+const remindItem = (id, dueIn, atIn) => ({ id, due: base + dueIn, at: base + atIn, ...kzTime(base + atIn), name: 'Айгүл', services: ['Маникюр'] });
+r = await call('PUT', '/api/reminders', { body: { items: [] } });
+check('напоминания без ключа устройства — 401', r.status === 401);
+r = await call('PUT', '/api/reminders', { key: A.key, body: { tz: -300, items: [remindItem('a1:h', -1000, 2 * 36e5), remindItem('a2:h', 36e5, 3 * 36e5),
+  { id: 'bad', due: 'x' }, remindItem('a3:h', -2 * 36e5, 36e5), remindItem('<a>', -1000, 36e5)] } });
+check('напоминания сохранены (неверные и сильно опоздавшие отброшены)', r.status === 200 && r.data.count === 2, JSON.stringify(r.data));
+if (cron.status !== 404) {
+  let from = pushed.length;
+  await remindCron();
+  note = (got = await nthPush(from + 1)) && await decryptPush(got.body, ua2);
+  const a1 = remindItem('a1:h', -1000, 2 * 36e5);
+  check('напоминание пришло мастеру: «Сегодня в … — запись», клиент и услуга', got && got.path === `/master-${RUN}` && note && note.kind === 'remind'
+    && note.title === `${a1.date === L.masterClock(-300).date ? 'Сегодня' : L.shortDate(a1.date, 'ru')} в ${L.shortTime(a1.time)} — запись`
+    && note.body === 'Айгүл · Маникюр' && note.url === `./?open=day&d=${a1.date}`, JSON.stringify(note));
+  check('срок жизни напоминания — до начала записи', got && Number(got.headers.ttl) > 3600 && Number(got.headers.ttl) <= 2 * 3600, got && got.headers.ttl);
+  await sleep(1000);
+  from = pushed.length;
+  await remindCron();
+  await sleep(1500);
+  check('то же напоминание второй раз не приходит, будущее ждёт своего времени', pushed.length === from);
+  r = await call('PUT', '/api/reminders', { key: A.key, body: { tz: -300, items: [remindItem('a1:h', -1000, 2 * 36e5), remindItem('a2:h', 36e5, 3 * 36e5)] } });
+  await remindCron();
+  await sleep(1500);
+  check('телефон прислал тот же список — отправленное не повторяется', r.data.count === 1 && pushed.length === from, JSON.stringify(r.data));
+  await call('PUT', '/api/push', { key: A.key, body: { ...masterSub, lang: 'kk' } });
+  const a4 = remindItem('a4:d', -1000, 864e5 + 6e4);
+  await call('PUT', '/api/reminders', { key: A.key, body: { tz: -300, items: [a4] } });
+  from = pushed.length;
+  await remindCron();
+  note = (got = await nthPush(from + 1)) && await decryptPush(got.body, ua2);
+  const today = L.masterClock(-300).date;
+  const when = a4.date === today ? 'Бүгін' : a4.date === L.addDays(today, 1) ? 'Ертең' : L.shortDate(a4.date, 'kk');
+  check('напоминание по-казахски: «Ертең, … — жазылу»', note && note.title === `${when}, ${L.shortTime(a4.time)} — жазылу`, JSON.stringify(note));
+  await call('PUT', '/api/push', { key: A.key, body: masterSub });
+  await call('PUT', '/api/reminders', { key: A.key, body: { tz: -300, items: [remindItem('a5:h', -1000, 36e5)] } });
+  await subCall(aId, { action: 'until', value: L.addDays(todayKz, -1) });
+  from = pushed.length;
+  await remindCron();
+  await sleep(1500);
+  check('подписка закончилась — напоминания не приходят', pushed.length === from);
+  await subCall(aId, { action: 'until', value: L.subscriptionEnd(todayKz) });
+  r = await call('PUT', '/api/reminders', { key: A.key, body: { tz: -300, items: [] } });
+  check('напоминания выключены — список пуст', r.status === 200 && r.data.count === 0);
+} else {
+  check('напоминания по расписанию — пропущено: wrangler dev запущен без --test-scheduled', true);
+}
 r = await call('DELETE', '/api/admin/push', { admin: CODE, body: { endpoint: adminSub.endpoint } });
 check('уведомления администратору выключены', r.status === 200 && !r.data.devices.some(d => d.endpoint === adminSub.endpoint));
 const count = pushed.length;

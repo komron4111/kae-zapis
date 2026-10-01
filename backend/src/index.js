@@ -77,8 +77,10 @@ export default {
   },
 
   // Каждый день в 9:00 по Алматы (cron в wrangler.toml): у кого из мастеров подписка кончается.
+  // 04:00 UTC — утренняя сводка администратору; каждые 5 минут — напоминания мастерам о записях (2.8.0).
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(subscriptionDigest(env).catch(e => logError(env, 'server', 'scheduled', (e && e.message) || String(e))));
+    const job = event.cron === '0 4 * * *' ? subscriptionDigest(env) : sendReminders(env);
+    ctx.waitUntil(job.catch(e => logError(env, 'server', 'scheduled', (e && e.message) || String(e))));
   },
 };
 
@@ -135,6 +137,7 @@ async function route(request, env, ctx) {
   // Подписка закончилась: данные мастера не принимаем и не отдаём, пока администратор её не продлит.
   if (!me.active) throw new HttpError(402, 'Подписка закончилась — продлите её у администратора');
   if (path === '/api/push' && method === 'PUT') return savePush(request, env, me);
+  if (path === '/api/reminders' && method === 'PUT') return saveReminders(request, env, me);
   if (path === '/api/schedule' && method === 'PUT') return saveSchedule(request, env, me);
   if (path === '/api/stats' && method === 'PUT') return putStats(request, env, me);
   if (path === '/api/requests' && method === 'GET') return listRequests(env, me);
@@ -945,9 +948,9 @@ async function notifyMaster(env, masterId, r) {
   return pushToMaster(env, masterId, lang => ({ title: tr(lang, 'Новая заявка на запись'), body: L.requestSummary(r, lang), tag: `request-${r.id}`, url: './?open=requests', kind: 'request' }));
 }
 
-// Уведомление на телефон мастера: заявка клиента или сообщение администратора (kind: 'chat').
-// message — текст или функция lang => текст (на языке этого телефона).
-async function pushToMaster(env, masterId, message) {
+// Уведомление на телефон мастера: заявка клиента, сообщение администратора (kind: 'chat') или напоминание
+// о записи ('remind'). message — текст или функция lang => текст (на языке этого телефона); ttl — см. sendPush.
+async function pushToMaster(env, masterId, message, { ttl } = {}) {
   const { results } = await env.DB.prepare('SELECT id, push FROM devices WHERE master_id = ? AND push IS NOT NULL').bind(masterId).all();
   if (!results.length) return;
   const vapid = await vapidKeys(env);
@@ -955,7 +958,7 @@ async function pushToMaster(env, masterId, message) {
     try {
       const sub = JSON.parse(device.push);
       const payload = JSON.stringify(typeof message === 'function' ? message(pushLang(sub.lang)) : message);
-      const res = await sendPush(sub, payload, vapid, SITE);
+      const res = await sendPush(sub, payload, vapid, SITE, ttl);
       if (res.status === 404 || res.status === 410) {
         await env.DB.prepare('UPDATE devices SET push = NULL WHERE id = ?').bind(device.id).run();
       } else if (!res.ok) {
@@ -1011,6 +1014,104 @@ async function savePush(request, env, me) {
   const clean = { ...readPushSubscription(body), lang: pushLang(body.lang) };
   await env.DB.prepare('UPDATE devices SET push = ? WHERE id = ?').bind(JSON.stringify(clean), me.deviceId).run();
   return json({ ok: true });
+}
+
+// ---------- Напоминания мастеру о записях (2.8.0) ----------
+// Телефон присылает ближайшие напоминания (L.reminderItems → L.cleanReminders), сервер каждые 5 минут
+// присылает те, у которых подошло время (sendReminders). sent — уже отправленные {id: due}: тот же список,
+// присланный ещё раз, не повторит напоминание. rev — версия строки: если телефон прислал новый список,
+// пока сервер отправлял уведомления, никто не затрёт чужие изменения (запись повторяется по новой версии).
+
+const REMIND_EARLY = 150e3; // проверка раз в 5 минут: шлём, если до срока меньше 2,5 минуты — точность ±2,5 минуты
+const REMIND_LATE = 30 * 6e4; // опоздало больше чем на 30 минут (сервер не работал) — уже не шлём
+
+function recentSent(text, now) {
+  let sent = {};
+  try { sent = JSON.parse(text || '{}') || {}; } catch (e) { /* испорчено — начнём заново */ }
+  return Object.fromEntries(Object.entries(sent).filter(([, due]) => typeof due === 'number' && due > now - 2 * 864e5).slice(-500));
+}
+
+function parseItems(text) {
+  try {
+    const items = JSON.parse(text || '[]');
+    return Array.isArray(items) ? items : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+async function saveReminders(request, env, me) {
+  const body = await readJson(request, 256 * 1024);
+  const now = Date.now();
+  const clean = L.cleanReminders(body.items, now);
+  const tz = Number.isFinite(body.tz) && Math.abs(body.tz) <= 900 ? Math.round(body.tz) : -300;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const row = await env.DB.prepare('SELECT sent, rev FROM reminders WHERE master_id = ?').bind(me.masterId).first();
+    const sent = recentSent(row && row.sent, now);
+    const items = clean.filter(x => sent[x.id] !== x.due);
+    const values = [JSON.stringify(items), JSON.stringify(sent), items.length ? items[0].due : null, tz, new Date(now).toISOString(), me.masterId];
+    const res = row
+      ? await env.DB.prepare('UPDATE reminders SET items = ?, sent = ?, next_due = ?, tz = ?, updated = ?, rev = rev + 1 WHERE master_id = ? AND rev = ?')
+        .bind(...values, row.rev).run()
+      : await env.DB.prepare('INSERT OR IGNORE INTO reminders (items, sent, next_due, tz, updated, master_id, rev) VALUES (?, ?, ?, ?, ?, ?, 1)')
+        .bind(...values).run();
+    if (res.meta.changes) return json({ ok: true, count: items.length });
+  }
+  throw new HttpError(409, 'Не удалось сохранить напоминания — попробуйте ещё раз');
+}
+
+// Текст на языке телефона: «Сегодня в 14:30 — запись» / «Бүгін, 14:30 — жазылу», ниже — клиент и услуги.
+// По нажатию приложение откроет день записи.
+function reminderMessage(item, lang, tz) {
+  const today = L.masterClock(Number.isFinite(tz) ? tz : -300).date;
+  const when = item.date === today ? tr(lang, 'Сегодня') : item.date === L.addDays(today, 1) ? tr(lang, 'Завтра') : L.shortDate(item.date, lang);
+  return {
+    title: tr(lang, '{when} в {time} — запись', { when, time: L.shortTime(item.time) }),
+    body: [item.name, L.servicesLabel(item.services || [])].filter(Boolean).join(' · ') || tr(lang, 'Откройте приложение, чтобы посмотреть запись'),
+    tag: `remind-${item.id}`,
+    url: `./?open=day&d=${item.date}`,
+    kind: 'remind',
+  };
+}
+
+async function sendReminders(env) {
+  const now = Date.now();
+  const { results } = await env.DB.prepare(`SELECT r.master_id, m.paid_until, m.unlimited FROM reminders r JOIN masters m ON m.id = r.master_id
+    WHERE r.next_due IS NOT NULL AND r.next_due <= ?`).bind(now + REMIND_EARLY).all();
+  let pushed = 0;
+  for (const master of results) {
+    try {
+      pushed += await remindMaster(env, master, now);
+    } catch (e) {
+      console.error('remind', e && e.stack ? e.stack : e);
+    }
+  }
+  return pushed;
+}
+
+// Напоминания одного мастера: что пора — отправить (если подписка действует и запись ещё не началась),
+// остальное оставить до следующей проверки.
+async function remindMaster(env, master, now) {
+  const active = masterActive(master);
+  const done = {}; // отправлено в этот раз: { id: due }
+  let pushed = 0;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const row = await env.DB.prepare('SELECT items, sent, tz, rev FROM reminders WHERE master_id = ?').bind(master.master_id).first();
+    if (!row) break;
+    const sent = { ...recentSent(row.sent, now), ...done };
+    const items = parseItems(row.items).filter(x => sent[x.id] !== x.due);
+    for (const item of items.filter(x => x.due <= now + REMIND_EARLY)) {
+      sent[item.id] = done[item.id] = item.due;
+      if (!active || item.at <= now || now - item.due > REMIND_LATE) continue;
+      await pushToMaster(env, master.master_id, lang => reminderMessage(item, lang, row.tz), { ttl: Math.max(60, (item.at - now) / 1000) });
+      pushed++;
+    }
+    const rest = items.filter(x => x.due > now + REMIND_EARLY);
+    const res = await env.DB.prepare('UPDATE reminders SET items = ?, sent = ?, next_due = ?, rev = rev + 1 WHERE master_id = ? AND rev = ?')
+      .bind(JSON.stringify(rest), JSON.stringify(sent), rest.length ? rest[0].due : null, master.master_id, row.rev).run();
+    if (res.meta.changes) break;
+  }
+  return pushed;
 }
 
 // ---------- Уведомления администратору (2.5.0) ----------

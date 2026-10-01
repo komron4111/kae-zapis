@@ -32,7 +32,11 @@ export const DEFAULT_RENT = 0; // своя сумма — в «Настройк�
 // Рабочее время: запись можно начать с dayStart до lastStart включительно.
 // duration — сколько длится услуга, у которой в прайсе не указана длительность.
 // specialty — направление мастера, instagram — ник для клиентов, kaspi — номер для счёта Kaspi за подписку.
-export const DEFAULT_SETTINGS = { dayStart: '09:00', lastStart: '20:00', duration: 150, clientName: '', whatsapp: '', address: '', gis: '', instagram: '', specialty: '', kaspi: '', theme: 'plum' };
+// remindDays, remindHours — за сколько дней и часов до записи напомнить мастеру уведомлением (2.8.0; 0 — не напоминать).
+export const DEFAULT_SETTINGS = { dayStart: '09:00', lastStart: '20:00', duration: 150, clientName: '', whatsapp: '', address: '', gis: '', instagram: '', specialty: '', kaspi: '', theme: 'plum', remindDays: 0, remindHours: 2 };
+// Что можно выбрать в «Напоминаниях о записях».
+export const REMIND_DAYS = [0, 1, 2, 3, 7];
+export const REMIND_HOURS = [0, 1, 2, 3, 4, 5, 6, 12];
 // Темы оформления: id → название в «Настройках». Цвета — в style.css. «Графит» — тёмная,
 // без розового (например, для парикмахеров и барберов). Клиенты видят страницу записи в теме мастера.
 // «Розово-чёрная» (2.7.0) — как фон значка на экране «Домой»: чёрный с розовым неоном; в «Оформлении» — первой, во всю ширину.
@@ -731,6 +735,45 @@ export function validateRequest(body, schedule, clock) {
   return { ok: true, request: { date: b.date, time: b.time, name, phone: formatPhone(digits), services, comment, duration } };
 }
 
+// ---------- Напоминания мастеру о записях (2.8.0) ----------
+// Телефон считает ближайшие напоминания и отдаёт их серверу, сервер присылает их уведомлениями
+// в нужное время — даже когда приложение закрыто. due — когда напомнить, at — начало записи
+// (мс, по часам телефона: Казахстан — UTC+5). Отменённые и уже начавшиеся записи не напоминаем.
+// id — запись и вид («d» — за дни, «h» — за часы): по нему сервер не пришлёт одно напоминание дважды.
+export function reminderItems(appointments, settings, nowMs, limit = 300) {
+  const s = settings || {};
+  const kinds = [['d', (REMIND_DAYS.includes(s.remindDays) ? s.remindDays : 0) * 864e5],
+    ['h', (REMIND_HOURS.includes(s.remindHours) ? s.remindHours : 0) * 36e5]].filter(([, ms]) => ms > 0);
+  const items = [];
+  for (const a of kinds.length ? appointments || [] : []) {
+    if (!a || a.status === 'cancelled' || !DATE_RE.test(a.date) || !TIME_RE.test(a.time)) continue;
+    const at = parseYmd(a.date).getTime() + toMinutes(a.time) * 6e4;
+    if (at <= nowMs) continue;
+    for (const [kind, ms] of kinds) {
+      if (at - ms <= nowMs) continue;
+      items.push({ id: `${a.id}:${kind}`, due: at - ms, at, date: a.date, time: a.time,
+        name: String(a.name || '').trim().slice(0, 60), services: servicesOf(a).map(x => String(x).slice(0, 60)).slice(0, 10) });
+    }
+  }
+  return items.sort((x, y) => x.due - y.due).slice(0, limit);
+}
+
+// Список напоминаний, присланный телефоном, — на сервере: только своего вида, без сильно опоздавших
+// (больше 5 минут), не дальше чем за 8 дней до записи, не больше 300, по порядку.
+export function cleanReminders(raw, nowMs) {
+  const out = [];
+  for (const x of (Array.isArray(raw) ? raw : []).slice(0, 400)) {
+    if (!x || typeof x !== 'object' || typeof x.id !== 'string' || !/^[\w:-]{1,80}$/.test(x.id)) continue;
+    const due = Number(x.due), at = Number(x.at);
+    if (!Number.isFinite(due) || !Number.isFinite(at) || due >= at || at - due > 8 * 864e5 || due < nowMs - 5 * 6e4 || at > nowMs + 400 * 864e5) continue;
+    if (!DATE_RE.test(x.date) || !TIME_RE.test(x.time)) continue;
+    out.push({ id: x.id, due: Math.round(due), at: Math.round(at), date: x.date, time: x.time,
+      name: String(x.name == null ? '' : x.name).trim().replace(/\s+/g, ' ').slice(0, 60),
+      services: (Array.isArray(x.services) ? x.services : []).map(v => String(v).trim().slice(0, 60)).filter(Boolean).slice(0, 10) });
+  }
+  return out.sort((a, b) => a.due - b.due).slice(0, 300);
+}
+
 // ---------- Личная ссылка клиента на запись ----------
 
 // Что видит клиент по своей ссылке: pending — заявка ждёт ответа,
@@ -1135,5 +1178,7 @@ function readSettings(src) {
   if (typeof s.specialty === 'string') out.specialty = specialtyText(s.specialty);
   if (typeof s.kaspi === 'string') out.kaspi = s.kaspi;
   if (typeof s.theme === 'string' && Object.keys(THEMES).includes(s.theme)) out.theme = s.theme;
+  if (REMIND_DAYS.includes(s.remindDays)) out.remindDays = s.remindDays;
+  if (REMIND_HOURS.includes(s.remindHours)) out.remindHours = s.remindHours;
   return out;
 }

@@ -311,7 +311,7 @@ test('копия сохраняется и читается обратно', () 
     expenses: [{ id: 'e1', date: '2026-09-05', amount: 15000, note: 'Гель-лаки' }],
     prices: [{ id: 'p1', name: 'Маникюр', price: 5000, duration: 60 }],
     rent: [{ from: '2000-01', amount: 70000 }],
-    settings: { dayStart: '10:00', lastStart: '19:00', duration: 120, clientName: 'Арай', whatsapp: '+7 700 111 22 33', address: 'Абая 10', gis: 'https://go.2gis.com/abc12', instagram: 'aray.nails', specialty: 'Маникюр и педикюр', kaspi: '+7 700 111 22 33', theme: 'lavender' },
+    settings: { dayStart: '10:00', lastStart: '19:00', duration: 120, clientName: 'Арай', whatsapp: '+7 700 111 22 33', address: 'Абая 10', gis: 'https://go.2gis.com/abc12', instagram: 'aray.nails', specialty: 'Маникюр и педикюр', kaspi: '+7 700 111 22 33', theme: 'lavender', remindDays: 1, remindHours: 3 },
     blocks: [{ id: 'v', from: '2026-10-10', to: '2026-10-12', note: 'Отпуск' }],
     clients: [{ id: 'c1', name: 'Жанна', phone: '+7 702 000 00 01', created: '2026-09-28T10:00:00.000Z' }],
   };
@@ -821,6 +821,45 @@ test('не архив — понятная ошибка', async () => {
     message = e.message;
   }
   eq(message, 'Это не архив копии');
+});
+
+// ---------- Напоминания мастеру о записях (2.8.0) ----------
+
+test('напоминания: за 2 часа по умолчанию, за дни — по выбору; без отменённых и прошедших', () => {
+  const now = new Date(2026, 9, 1, 10, 0).getTime();
+  const at = (date, time) => L.parseYmd(date).getTime() + L.toMinutes(time) * 6e4;
+  const appts = [
+    { id: 'a', date: '2026-10-01', time: '13:00', status: 'booked', name: 'Айгүл', services: ['Маникюр'] },
+    { id: 'b', date: '2026-10-01', time: '11:30', status: 'booked', name: '', services: [] }, // через 1,5 часа: за 2 часа уже поздно
+    { id: 'c', date: '2026-10-03', time: '09:00', status: 'cancelled', name: 'Отмена', services: [] },
+    { id: 'd', date: '2026-10-03', time: '15:00', status: 'paid', name: 'Дана', services: ['Педикюр'] },
+    { id: 'e', date: '2026-09-30', time: '15:00', status: 'booked', name: 'Вчера', services: [] },
+  ];
+  const ids = s => L.reminderItems(appts, { ...L.DEFAULT_SETTINGS, ...s }, now).map(x => x.id);
+  eq([L.DEFAULT_SETTINGS.remindDays, L.DEFAULT_SETTINGS.remindHours], [0, 2]);
+  eq(ids({}), ['a:h', 'd:h']);
+  eq(ids({ remindDays: 1 }), ['a:h', 'd:d', 'd:h']);
+  eq(ids({ remindDays: 0, remindHours: 0 }), []);
+  eq(ids({ remindDays: 5, remindHours: 9 }), []); // чего нельзя выбрать — не напоминаем
+  eq(L.reminderItems(appts, L.DEFAULT_SETTINGS, now)[0],
+    { id: 'a:h', due: at('2026-10-01', '11:00'), at: at('2026-10-01', '13:00'), date: '2026-10-01', time: '13:00', name: 'Айгүл', services: ['Маникюр'] });
+});
+
+test('напоминания на сервере: только своего вида, без сильно опоздавших, по порядку', () => {
+  const now = Date.UTC(2026, 9, 1, 5, 0);
+  const item = (id, dueIn, atIn) => ({ id, due: now + dueIn, at: now + atIn, date: '2026-10-01', time: '14:00', name: '  Айгүл  ', services: ['Маникюр', 7] });
+  const clean = L.cleanReminders([item('b:h', 36e5, 2 * 36e5), item('a:h', -6e4, 36e5), item('old:h', -10 * 6e4, 36e5), item('x:h', 36e5, 6e4),
+    { id: '<script>', due: now + 1, at: now + 2, date: '2026-10-01', time: '14:00' }, null], now);
+  eq(clean.map(x => x.id), ['a:h', 'b:h']);
+  eq([clean[0].name, clean[0].services], ['Айгүл', ['Маникюр', '7']]);
+  eq(L.cleanReminders('мусор', now), []);
+});
+
+test('настройки напоминаний в копии: свои сохраняются, неверные — по умолчанию', () => {
+  const read = s => L.readBackup(JSON.stringify({ app: 'kae-zapis', appointments: [], settings: s })).settings;
+  eq([read({ remindDays: 1, remindHours: 3 }).remindDays, read({ remindDays: 1, remindHours: 3 }).remindHours], [1, 3]);
+  eq([read({ remindDays: 5, remindHours: 'x' }).remindDays, read({ remindDays: 5, remindHours: 'x' }).remindHours], [0, 2]);
+  eq(read({ remindHours: 0 }).remindHours, 0);
 });
 
 // ---------- Казахский язык (2.7.0) ----------

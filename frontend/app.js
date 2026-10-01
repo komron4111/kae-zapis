@@ -10,7 +10,7 @@ import * as Install from './install.js';
 import { t, getLang, setLang, otherLangLabel } from './i18n.js';
 
 const APP_NAME = 'Beautybook';
-const APP_VERSION = '2.7.0';
+const APP_VERSION = '2.8.0';
 
 phoneMask();
 
@@ -164,7 +164,8 @@ function freshCloud() {
   // bookings — что уже выложено по личным ссылкам клиентов: { token: JSON записи }.
   // account — аккаунт мастера с сервера { name, phone, slug, claimed }; lastPhone — чей аккаунт
   // был на этом телефоне последним (если войдёт другой мастер, чужие данные с телефона уберём).
-  return { key: '', pushKey: '', pushOn: false, schedulePrint: '', backupPrint: '', savedAt: null, uploaded: [], closing: [], bookings: {}, error: '', account: null, lastPhone: '', statsPrint: '' };
+  // remindPrint — какой список напоминаний о записях уже на сервере (2.8.0).
+  return { key: '', pushKey: '', pushOn: false, schedulePrint: '', backupPrint: '', savedAt: null, uploaded: [], closing: [], bookings: {}, error: '', account: null, lastPhone: '', statsPrint: '', remindPrint: '' };
 }
 
 const settings = () => ({ ...L.DEFAULT_SETTINGS, ...data.settings });
@@ -1693,6 +1694,7 @@ function drawExpense(id) {
 const SETTINGS_PAGES = {
   account: ['user', 'Аккаунт'],
   cloud: ['cloud', 'Облако и заявки'],
+  remind: ['bell', 'Напоминания о записях'],
   prices: ['tag', 'Прайс'],
   hours: ['clock', 'Рабочее время'],
   link: ['link', 'Ссылка для клиентов'],
@@ -1701,6 +1703,9 @@ const SETTINGS_PAGES = {
   archive: ['archive', 'Архив на телефон'],
 };
 const SERVICE_FORMS = ['услуга', 'услуги', 'услуг', 'қызмет'];
+const HOUR_FORMS = ['час', 'часа', 'часов', 'сағат'];
+// Напоминания о записях (2.8.0): «За 1 день», «За 2 часа», «За неделю», «Не напоминать».
+const remindLabel = (n, forms) => (!n ? t('Не напоминать') : n === 7 && forms === DAY_FORMS ? t('За неделю') : t('За {count}', { count: `${n} ${L.plural(n, forms)}` }));
 const LANG_NAMES = { ru: 'Русский', kk: 'Қазақша' }; // названия языков — всегда на своём языке
 
 // Коротко о том, что внутри пункта, — видно, не открывая его.
@@ -1711,6 +1716,10 @@ function settingsSummary(page) {
     return cloud.account ? `${cloud.account.phone}${sub && sub.until && !sub.unlimited ? ` · ${t('подписка {until}', { until: L.dateUntil(sub.until) })}` : ''} · ${t('пароль и выход')}` : t('Вход по номеру и паролю');
   }
   if (page === 'cloud') return !cloud.key ? t('Не подключено') : cloud.pushOn ? t('Подключено, уведомления включены') : t('Подключено');
+  if (page === 'remind') {
+    const on = [s.remindDays && remindLabel(s.remindDays, DAY_FORMS), s.remindHours && remindLabel(s.remindHours, HOUR_FORMS)].filter(Boolean);
+    return on.length ? `${on.join(' · ')}${cloud.pushOn ? '' : ` · ${t('уведомления выключены')}`}` : t('Выключены');
+  }
   if (page === 'prices') return data.prices.length ? `${data.prices.length} ${L.plural(data.prices.length, SERVICE_FORMS)}` : t('Услуг пока нет');
   if (page === 'hours') return `${L.shortTime(s.dayStart)}–${L.shortTime(s.lastStart)}`;
   if (page === 'link') return s.whatsapp ? `${s.clientName} · ${L.formatPhone(s.whatsapp)}` : s.clientName || t('Свободное время и заявки');
@@ -1840,6 +1849,16 @@ function settingsPageHtml(page) {
     }
     case 'cloud':
       return card(cloud.key ? cloudPairedHtml() : `<p class="hint">${t('Войдите в аккаунт — записи и фото начнут сохраняться в облако сами.')}</p>`);
+    case 'remind': {
+      const select = (name, list, forms, value) => `<select data-change="set-${name}">${list.map(n => `
+        <option value="${n}"${n === value ? ' selected' : ''}>${remindLabel(n, forms)}</option>`).join('')}
+      </select>`;
+      return card(`
+      <p class="hint">${t('Перед каждой записью на этот телефон придёт уведомление — даже если приложение закрыто. Об отменённых записях не напоминаем.')}</p>
+      <label>${t('За сколько дней до записи')}${select('remindDays', L.REMIND_DAYS, DAY_FORMS, s.remindDays)}</label>
+      <label>${t('За сколько часов до записи')}${select('remindHours', L.REMIND_HOURS, HOUR_FORMS, s.remindHours)}</label>
+      ${pushStatusHtml()}`);
+    }
     case 'prices':
       return card(`
       <p class="hint">${t('Цена подставляется в запись при выборе услуги, в записи её можно поменять. Клиенты видят эти цены по ссылке. По длительности услуги приложение понимает, когда после записи снова будет свободно.')}</p>
@@ -1985,16 +2004,28 @@ function openRentMonth(month) {
   });
 }
 
+// Уведомления на этом телефоне (о заявках и напоминания о записях): 'on' | 'off' | 'unsupported'.
+const pushState = () => (!('Notification' in window) ? 'unsupported' : Notification.permission === 'granted' && cloud.pushOn ? 'on' : 'off');
+
+// «Напоминания о записях»: включены ли уведомления, а если нет — кнопка «Включить уведомления».
+function pushStatusHtml() {
+  const state = pushState();
+  if (state === 'on') return `<p class="status ok">${icon('bell')} ${t('Уведомления включены — напоминания придут на этот телефон.')}</p>`;
+  if (state === 'unsupported') return `<p class="status warn">${isIOS && !isStandalone() ? t('Уведомления работают, только если приложение установлено на экран «Домой».') : t('Этот браузер не поддерживает уведомления.')}</p>`;
+  return `<p class="status warn">${t('Чтобы напоминания приходили, включите уведомления.')}</p>
+      <button class="btn primary block" data-act="enable-push">${icon('bell')} ${t('Включить уведомления')}</button>`;
+}
+
 function cloudPairedHtml() {
-  const pushState = !('Notification' in window) ? 'unsupported' : Notification.permission === 'granted' && cloud.pushOn ? 'on' : 'off';
+  const state = pushState();
   return `
     <div id="cloud-status">${cloudStatusHtml()}</div>
     <div class="cloud-line">
       ${icon('bell')}
-      <span class="grow">${t('Уведомления о заявках:')} <b>${pushState === 'on' ? t('включены') : t('выключены')}</b></span>
+      <span class="grow">${t('Уведомления:')} <b>${state === 'on' ? t('включены') : t('выключены')}</b></span>
     </div>
-    ${pushState === 'on' ? '' : `<button class="btn primary block" data-act="enable-push">${icon('bell')} ${t('Включить уведомления')}</button>`}
-    ${pushState === 'unsupported' ? `<p class="hint">${isIOS && !isStandalone() ? t('Уведомления работают, только если приложение установлено на экран «Домой».') : t('Этот браузер не поддерживает уведомления.')}</p>` : ''}
+    ${state === 'on' ? '' : `<button class="btn primary block" data-act="enable-push">${icon('bell')} ${t('Включить уведомления')}</button>`}
+    ${state === 'unsupported' ? `<p class="hint">${isIOS && !isStandalone() ? t('Уведомления работают, только если приложение установлено на экран «Домой».') : t('Этот браузер не поддерживает уведомления.')}</p>` : ''}
     <div class="btn-row">
       <button class="btn small secondary" data-act="sync-now">${t('Сохранить сейчас')}</button>
       <button class="btn small secondary" data-act="cloud-restore">${t('Восстановить из облака')}</button>
@@ -2120,6 +2151,7 @@ async function syncNow() {
     cloud.savedAt = new Date().toISOString();
   });
   await step(syncSchedule);
+  await step(syncReminders);
   await step(async () => {
     const ids = new Set(data.appointments.flatMap(a => a.photos || []));
     for (const id of ids) {
@@ -2164,6 +2196,17 @@ async function syncSchedule() {
   if (print === cloud.schedulePrint) return;
   await api('PUT', '/api/schedule', schedule);
   cloud.schedulePrint = print;
+}
+
+// Напоминания о записях (2.8.0): ближайшие напоминания — на сервер, он пришлёт их уведомлениями в нужное
+// время, даже когда приложение закрыто. Только если уведомления включены и список изменился.
+async function syncReminders() {
+  if (!cloud.pushOn) return;
+  const payload = { items: L.reminderItems(data.appointments, settings(), Date.now()), tz: new Date().getTimezoneOffset() };
+  const print = JSON.stringify(payload);
+  if (print === cloud.remindPrint) return;
+  await api('PUT', '/api/reminders', payload);
+  cloud.remindPrint = print;
 }
 
 // Личные ссылки клиентов: перенос, оплата, отмена сразу видны клиенту.
@@ -2803,7 +2846,8 @@ async function enablePush() {
     cloud.pushOn = true;
     await dbSet('cloud', cloud).catch(() => {});
     render();
-    toast(t('Уведомления о заявках включены'));
+    toast(t('Уведомления включены'));
+    scheduleSync(0); // напоминания о записях — сразу на сервер
   } catch (e) {
     toast(t('Не удалось включить уведомления: {error}', { error: e.message }));
   }
@@ -3256,6 +3300,11 @@ async function onChange(el) {
       if (await save()) toast(t('Рабочее время сохранено'));
       break;
     }
+    case 'set-remindDays':
+    case 'set-remindHours':
+      data.settings = { ...s, [el.dataset.change.slice(4)]: Number(el.value) };
+      if (await save()) toast(t('Сохранено'));
+      break;
     case 'set-duration':
       data.settings = { ...s, duration: Number(el.value) };
       $('#duration-hint').textContent = durationHint(data.settings.duration);
@@ -3356,6 +3405,17 @@ document.addEventListener('visibilitychange', () => {
   if (sheet.hidden) render();
 });
 
+// Нажали на напоминание о записи — открыть её день в «Записях».
+function openDay(date) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '') || !data) return;
+  ui.tab = 'records';
+  ui.settingsPage = null;
+  ui.day = date;
+  ui.month = L.monthOf(date);
+  render();
+  scrollTo(0, 0);
+}
+
 // ---------- Запуск ----------
 
 async function start() {
@@ -3401,6 +3461,7 @@ async function start() {
         if ($('#chat-list')) loadChat();
       }
       if (e.data.type === 'open-chat' && cloud.key) openChat();
+      if (e.data.type === 'open-day') openDay(e.data.date);
     });
   }
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
@@ -3410,6 +3471,7 @@ async function start() {
     history.replaceState(history.state, '', location.pathname);
     if (params.get('open') === 'requests' && cloud.key) showRequests();
     if (params.get('open') === 'chat' && cloud.key) openChat();
+    if (params.get('open') === 'day') openDay(params.get('d'));
   }
   // Подписка на уведомления могла обновиться (например, после перезагрузки iPhone).
   if (cloud.key && cloud.pushOn && 'Notification' in window && Notification.permission === 'granted') {

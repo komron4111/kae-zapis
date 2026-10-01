@@ -1,7 +1,7 @@
 // Офлайн-кэш и уведомления: заявки клиентов и сообщения администратора.
 // После любой правки файлов увеличьте VERSION — телефоны скачают
 // новую версию при следующем запуске приложения.
-const VERSION = 'v24';
+const VERSION = 'v25';
 const CACHE = `zapisi-arai-${VERSION}`;
 const FILES = [
   './',
@@ -61,24 +61,25 @@ self.addEventListener('fetch', event => {
   })());
 });
 
-// Уведомление с сервера: «Новая заявка на запись» или сообщение администратора (kind: 'chat').
-// Каждое push-сообщение обязательно показывается (требование iOS), открытому приложению сообщаем сразу.
+// Уведомление с сервера: «Новая заявка на запись», сообщение администратора (kind: 'chat') или напоминание
+// о записи ('remind', 2.8.0). Каждое push-сообщение обязательно показывается (требование iOS),
+// открытому приложению сообщаем сразу. Значок на иконке — только для заявок и сообщений.
 self.addEventListener('push', event => {
   let msg = {};
   try {
     msg = event.data ? event.data.json() : {};
   } catch (e) { /* покажем общий текст */ }
-  const chat = msg.kind === 'chat';
-  const show = self.registration.showNotification(msg.title || (chat ? 'Сообщение от администратора' : 'Новая заявка на запись'), {
-    body: msg.body || (chat ? 'Откройте чат с администратором' : 'Откройте приложение, чтобы посмотреть заявку'),
+  const chat = msg.kind === 'chat', remind = msg.kind === 'remind';
+  const show = self.registration.showNotification(msg.title || (chat ? 'Сообщение от администратора' : remind ? 'Напоминание о записи' : 'Новая заявка на запись'), {
+    body: msg.body || (chat ? 'Откройте чат с администратором' : remind ? 'Откройте приложение, чтобы посмотреть запись' : 'Откройте приложение, чтобы посмотреть заявку'),
     icon: './icons/bb-192.png',
     badge: './icons/bb-192.png',
-    tag: msg.tag || (chat ? 'chat' : 'request'),
-    data: { url: msg.url || (chat ? './?open=chat' : './?open=requests') },
+    tag: msg.tag || (chat ? 'chat' : remind ? 'remind' : 'request'),
+    data: { url: msg.url || (chat ? './?open=chat' : remind ? './' : './?open=requests') },
   });
-  const tell = self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+  const tell = remind ? null : self.clients.matchAll({ type: 'window', includeUncontrolled: true })
     .then(list => list.forEach(client => client.postMessage({ type: chat ? 'new-chat' : 'new-request' })));
-  const badge = self.navigator && self.navigator.setAppBadge ? self.navigator.setAppBadge().catch(() => {}) : null;
+  const badge = !remind && self.navigator && self.navigator.setAppBadge ? self.navigator.setAppBadge().catch(() => {}) : null;
   event.waitUntil(Promise.all([show, tell, badge]));
 });
 
@@ -90,7 +91,8 @@ self.addEventListener('notificationclick', event => {
     for (const client of list) {
       if (!client.url.startsWith(self.registration.scope) || client.url.includes('/okna/')) continue;
       await client.focus();
-      client.postMessage({ type: url.includes('open=chat') ? 'open-chat' : 'open-requests' });
+      const day = new URL(url).searchParams.get('d');
+      client.postMessage(url.includes('open=chat') ? { type: 'open-chat' } : url.includes('open=day') ? { type: 'open-day', date: day } : { type: 'open-requests' });
       return;
     }
     await self.clients.openWindow(url);

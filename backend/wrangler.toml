@@ -3,9 +3,10 @@ name = "kae-zapis-api"
 main = "src/index.js"
 compatibility_date = "2026-09-01"
 
-# Каждый день в 04:00 UTC = 09:00 по Алматы — сводка по подпискам администратору (scheduled в src/index.js).
+# Каждый день в 04:00 UTC = 09:00 по Алматы — сводка по подпискам администратору; каждые 5 минут —
+# напоминания мастерам о записях (2.8.0). Обработчик — scheduled в src/index.js.
 [triggers]
-crons = ["0 4 * * *"]
+crons = ["0 4 * * *", "*/5 * * * *"]
 
 [observability]
 enabled = true

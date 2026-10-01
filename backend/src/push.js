@@ -83,7 +83,9 @@ export async function encryptPayload(subscription, plaintext, options = {}) {
 }
 
 // Отправляет одно уведомление. Ответ 404 или 410 значит, что подписка больше не действует.
-export async function sendPush(subscription, payload, vapid, subject) {
+// ttl — сколько секунд служба уведомлений хранит сообщение, пока телефон без связи
+// (напоминанию о записи — не дольше, чем до её начала).
+export async function sendPush(subscription, payload, vapid, subject, ttl = 86400) {
   const body = await encryptPayload(subscription, payload);
   return fetch(subscription.endpoint, {
     method: 'POST',
@@ -91,7 +93,7 @@ export async function sendPush(subscription, payload, vapid, subject) {
       Authorization: await vapidAuthorization(subscription.endpoint, vapid, subject),
       'Content-Encoding': 'aes128gcm',
       'Content-Type': 'application/octet-stream',
-      TTL: '86400',
+      TTL: String(Math.max(0, Math.round(ttl))),
       Urgency: 'high',
     },
     body,
