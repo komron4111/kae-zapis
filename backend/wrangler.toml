@@ -1,4 +1,7 @@
-# Сервер Beautybook (до 2.4.0 — Nailapp). Разворачивается командой: npx wrangler deploy (из папки backend).
+# Сервер Beautybook (до 2.4.0 — Nailapp). С 2.9.0 (01.10.2026) он работает на своём сервере beautybook.kz
+# (backend/node, выкладка — bash backend/deploy/deploy.sh), а Worker kae-zapis-api на Cloudflare — пересылка
+# из backend/proxy. Этот файл — для проверки на компьютере (wrangler dev). wrangler deploy отсюда НЕ запускать:
+# он заменит пересылку прежним сервером на базе D1, а в D1 нет ничего, что записано после переезда.
 name = "kae-zapis-api"
 main = "src/index.js"
 compatibility_date = "2026-09-01"
