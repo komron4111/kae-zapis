@@ -504,14 +504,6 @@ function banners() {
   if (storageBroken) {
     out.push(`<div class="banner bad"><div class="grow">${t('Не удалось открыть сохранённые записи. Закройте приложение полностью и откройте снова — изменения сейчас не сохраняются.')}</div></div>`);
   }
-  // Ночное окно обновлений (2.8.1): мастера знают, почему приложение может ненадолго не открываться.
-  if (!pref('nightNoticeHidden')) {
-    out.push(`
-      <div class="banner">
-        <div class="grow">${t('Обновления Beautybook проходят ночью, с 00:00 до 01:00. В это время приложение может ненадолго не работать — ваши данные сохраняются.')}</div>
-        <button class="icon-btn" data-act="hide-night-notice" aria-label="${t('Скрыть')}">${icon('close')}</button>
-      </div>`);
-  }
   if (!pref('installHidden')) {
     out.push(`
       <div class="banner" data-install-ui${Install.canInstall() ? '' : ' hidden'}>
@@ -1831,7 +1823,7 @@ function renderSettings() {
           ${chatBadge('menu-badge')}${icon('right')}
         </button>
       </section>` : ''}
-      <p class="version">${t('{app} · версия {version}', { app: APP_NAME, version: APP_VERSION })}<br>${t('Обновления — ночью, с 00:00 до 01:00')}</p>
+      <p class="version">${t('{app} · версия {version}', { app: APP_NAME, version: APP_VERSION })}<br>${t('Технические работы — обычно ночью, с 00:00 до 01:00')}</p>
       </div></div>`;
     return;
   }
@@ -2149,7 +2141,12 @@ async function api(method, path, body, type) {
   if (res.ok) return res;
   // Сервер отвечает по-русски, перевод — по словарю (kk.js).
   let message = t('ошибка {status}', { status: res.status });
-  try { message = t((await res.json()).error || message); } catch (e) { /* не JSON */ }
+  let answer = null;
+  try {
+    answer = await res.json();
+    message = t(answer.error || message);
+  } catch (e) { /* не JSON */ }
+  if (res.status === 503 && answer && answer.maintenance) showMaintenance(true);
   if (res.status === 402 && cloud.key) setTimeout(refreshAccount, 0);
   if (res.status === 401 && cloud.key) {
     // Вошли в аккаунт на другом телефоне или администратор сбросил пароль — снова вход.
@@ -3300,7 +3297,6 @@ const actions = {
       : t('Потом откройте Beautybook с иконки на экране «Домой» и создайте аккаунт (или войдите) уже там.'),
   }),
   'hide-install': () => { pref('installHidden', '1'); render(); },
-  'hide-night-notice': () => { pref('nightNoticeHidden', '1'); render(); },
   'reload-app': () => location.reload(),
   'auth': el => {
     // Набранный номер переходит на следующий экран («Забыли пароль?», «Создать»).
@@ -3478,13 +3474,66 @@ Install.onInstallChange(() => {
 addEventListener('online', () => scheduleSync(500));
 
 // Есть ли новая версия: iPhone часто не перезапускает приложение, а будит его — проверяем при каждом возвращении.
+// ---------- Технические работы (2.10.0) ----------
+// Пока идёт выкладка (или администратор включил их в «BB Админ»), сервер на изменения отвечает 503 { maintenance: true }.
+// Тогда поверх приложения — экран «Идут технические работы»: ввести ничего нельзя, значит, ничего и не потеряется
+// (незаконченное окно записи остаётся под ним как было). /api/status проверяем каждые 10 секунд, в обычное время —
+// раз в минуту на открытом экране и при возвращении в приложение. Работы закончились — экран исчезает, данные
+// уходят в облако, а если вышла новая версия и окно записи не открыто, приложение сразу перезапускается в ней.
+let maintenance = false;
+let maintenanceTimer = null;
+let reloadOnUpdate = false;
+
+function showMaintenance(on) {
+  planMaintenanceCheck(on);
+  if (on === maintenance) return;
+  maintenance = on;
+  let box = $('#maintenance');
+  if (on) {
+    if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+    if (!box) {
+      document.body.insertAdjacentHTML('beforeend', '<div id="maintenance" class="maintenance" role="alertdialog" aria-modal="true" aria-labelledby="maintenance-title"></div>');
+      box = $('#maintenance');
+    }
+    box.innerHTML = `
+      <div class="maintenance-box">
+        <div class="maintenance-spin" aria-hidden="true"></div>
+        <h2 id="maintenance-title">${t('Идут технические работы')}</h2>
+        <p>${t('Beautybook обновляется. Подождите несколько минут — приложение откроется само.')}</p>
+        <p class="hint">${t('Всё, что вы сохранили раньше, на месте.')}</p>
+      </div>`;
+    box.hidden = false;
+    return;
+  }
+  if (box) box.hidden = true;
+  if (cloud.key) scheduleSync(0);
+  reloadOnUpdate = sheet.hidden;
+  setTimeout(() => { reloadOnUpdate = false; }, 20000);
+  checkForUpdate();
+}
+
+async function checkMaintenance() {
+  try {
+    const res = await fetch(API + '/api/status', { cache: 'no-store' });
+    if (res.ok) return showMaintenance((await res.json()).maintenance === true);
+  } catch (e) { /* нет связи — работаем как без интернета */ }
+  planMaintenanceCheck(maintenance);
+}
+
+function planMaintenanceCheck(on) {
+  clearTimeout(maintenanceTimer);
+  if (document.visibilityState === 'visible') maintenanceTimer = setTimeout(checkMaintenance, on ? 10000 : 60000);
+}
+
 function checkForUpdate() {
   if (!('serviceWorker' in navigator)) return;
   navigator.serviceWorker.getRegistration().then(reg => reg && reg.update()).catch(() => {});
 }
 
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState !== 'visible' || !data) return;
+  if (document.visibilityState !== 'visible') return clearTimeout(maintenanceTimer);
+  checkMaintenance();
+  if (!data) return;
   checkForUpdate();
   scheduleSync(800);
   refreshAccount();
@@ -3551,6 +3600,8 @@ async function start() {
     const hadController = Boolean(navigator.serviceWorker.controller);
     navigator.serviceWorker.addEventListener('controllerchange', () => {
       if (!hadController || updateReady) return;
+      // Сразу после технических работ, если окно записи не открыто, — перезапуск в новой версии (2.10.0).
+      if (reloadOnUpdate && sheet.hidden) return location.reload();
       updateReady = true;
       if (sheet.hidden) render();
       else toast(t('Вышло обновление Beautybook. Нажмите «Обновить» — приложение перезапустится. Если что-то выглядит по-старому, закройте приложение и откройте снова (иногда 2 раза).'));
@@ -3570,6 +3621,7 @@ async function start() {
     });
   }
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+  checkMaintenance(); // технические работы (2.10.0)
 
   const params = new URLSearchParams(location.search);
   if (params.has('open')) {

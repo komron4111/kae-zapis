@@ -97,6 +97,14 @@ report.push(`  база: ${mb(srv.db)}, нагрузка (1 мин): ${srv.load}
 const backupAge = srv.backup ? now - srv.backup * 1000 : Infinity;
 report.push(`  последняя копия базы: ${srv.backup ? new Date(srv.backup * 1000).toLocaleString('ru-RU', { timeZone: 'Asia/Almaty' }) : 'ещё нет'}`);
 if (backupAge > BACKUP_MAX_AGE && now - (state.installedAt || now) > BACKUP_MAX_AGE) problem('WARN', 'backup', 'ночная копия базы не делалась больше полутора суток');
+// Технические работы (2.10.0): включены дольше 30 минут — наверное, забыли выключить.
+let works = {};
+try { works = JSON.parse((sql("SELECT value FROM config WHERE key = 'maintenance'")[0] || {}).value || '{}'); } catch (e) { /* нет отметки */ }
+if (works.on) {
+  const minutes = Math.round((now - Date.parse(works.since)) / 60000);
+  report.push(`  технические работы: включены ${minutes} мин`);
+  if (minutes > 30) problem('WARN', 'maintenance', `технические работы включены уже ${minutes} мин — выключить: «BB Админ» → «Сервер» или bash backend/deploy/maintenance.sh off`);
+}
 state.installedAt = state.installedAt || now;
 // Снимок для страницы администратора: только числа и время.
 const usage = { at: new Date(now).toISOString(), size: srv.db, disk: { used: diskUsed, total: diskTotal }, memory: { used: memUsed, total: memTotal }, load: srv.load, backupAt: srv.backup ? new Date(srv.backup * 1000).toISOString() : null };

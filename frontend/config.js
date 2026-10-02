@@ -12,7 +12,7 @@ export const PUBLIC_URL = 'https://beautybook.kz/';
 
 // Версия сайта: приложение мастера, страница клиентов и «BB Админ» выкладываются вместе. Поднимать при каждом
 // выпуске вместе с VERSION в sw.js. Её показывают «Настройки» приложения и низ страницы администратора (2.9.2).
-export const APP_VERSION = '2.9.5';
+export const APP_VERSION = '2.10.0';
 
 // Сайт открыт на компьютере для проверки — ссылки тогда ведут на него же.
 export const IS_LOCAL = /^(localhost|127\.0\.0\.1|\[::1\])$|\.localhost$/.test(location.hostname);

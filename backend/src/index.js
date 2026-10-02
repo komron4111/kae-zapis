@@ -43,9 +43,10 @@ const CORS = {
 };
 
 class HttpError extends Error {
-  constructor(status, message) {
+  constructor(status, message, extra) {
     super(message);
     this.status = status;
+    this.extra = extra; // дополнительные поля ответа, например { maintenance: true }
   }
 }
 
@@ -64,7 +65,7 @@ export default {
       response = await route(request, env, ctx);
     } catch (e) {
       if (e instanceof HttpError) {
-        response = json({ error: e.message }, e.status);
+        response = json({ error: e.message, ...(e.extra || {}) }, e.status);
       } else {
         console.error(e && e.stack ? e.stack : e);
         const place = `${request.method} ${new URL(request.url).pathname.replace(/^(\/api\/(?:bookings|photos|requests|admin\/masters))\/[^/]+/, '$1/:id')}`;
@@ -90,6 +91,12 @@ async function route(request, env, ctx) {
   const method = request.method;
   const slug = url.searchParams.get('m');
 
+  // Технические работы (2.10.0): пока идёт выкладка, данные не меняются — кроме администратора и журнала ошибок.
+  if (path === '/api/status' && method === 'GET') return json({ maintenance: await maintenanceOn(env) });
+  if (method !== 'GET' && !path.startsWith('/api/admin/') && path !== '/api/errors' && await maintenanceOn(env)) {
+    throw new HttpError(503, MAINTENANCE_TEXT, { maintenance: true });
+  }
+
   let m;
   // Для всех: страница клиентов (?m=<мастер>), личная ссылка на запись, регистрация и вход.
   if (path === '/api/okna' && method === 'GET') return getOkna(env, slug);
@@ -110,6 +117,7 @@ async function route(request, env, ctx) {
     await authAdmin(request, env);
     if (path === '/api/admin/masters' && method === 'GET') return listMasters(env);
     if (path === '/api/admin/broadcast' && method === 'POST') return broadcast(request, env);
+    if (path === '/api/admin/maintenance' && method === 'PUT') return putMaintenance(request, env);
     if (path === '/api/admin/passkeys' && method === 'GET') return listPasskeys(env);
     if (path === '/api/admin/passkey/options' && method === 'POST') return passkeyRegisterOptions(request, env);
     if (path === '/api/admin/passkeys' && method === 'POST') return passkeyRegister(request, env);
@@ -671,6 +679,7 @@ async function listMasters(env) {
     today: almatyToday(),
     size: (meta && meta.size_after) || null,
     usage: await loadUsage(env),
+    maintenance: await maintenanceOn(env),
     masters: results.map(r => ({
       id: r.id, name: r.name, phone: r.phone ? L.formatPhone(r.phone) : '', slug: r.slug, created: r.created,
       claimed: Boolean(r.claimed), devices: r.devices, active: r.active || null,
@@ -681,6 +690,29 @@ async function listMasters(env) {
       subscription: { ...subscriptionJson(r, periods[r.id] || []), periods: periods[r.id] || [] },
     })),
   });
+}
+
+// ---------- Технические работы (2.10.0) ----------
+// На время выкладки (deploy/maintenance.sh on|off; deploy.sh и release.sh включают их сами) или по кнопке
+// в «BB Админ» → «Сервер» всё, что меняет данные мастеров и клиентов, отвечает 503 { maintenance: true }:
+// приложение мастера закрывает экран «Идут технические работы» и само откроется, когда работы закончатся.
+// Читать можно. Отметка — config.maintenance {on, since}.
+const MAINTENANCE_TEXT = 'Идут технические работы — подождите несколько минут';
+
+async function maintenanceOn(env) {
+  const row = await env.DB.prepare("SELECT value FROM config WHERE key = 'maintenance'").first();
+  try {
+    return Boolean(row && JSON.parse(row.value).on);
+  } catch (e) {
+    return false;
+  }
+}
+
+async function putMaintenance(request, env) {
+  const on = (await readJson(request, 1024)).on === true;
+  await env.DB.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('maintenance', ?)")
+    .bind(JSON.stringify({ on, since: new Date().toISOString() })).run();
+  return json({ maintenance: on });
 }
 
 // Нагрузка за сутки (запросы, записанные и прочитанные строки) — Worker сам её не знает. Её записывает
@@ -907,7 +939,7 @@ async function getOkna(env, slug) {
   // кто записался, мастер увидит после продления. Расписание тогда — последнее, что прислал телефон.
   if (!schedule) return json({ app: 'kae-zapis', kind: 'okna', name: master.name, slug: master.slug, legacy, days: [], booking: false });
   // booking: заявки принимаем, только когда у мастера есть телефон, на который они придут.
-  return json({ ...L.applyHolds(schedule, await holds(env, master.id)), slug: master.slug, legacy, booking: await hasDevice(env, master.id) });
+  return json({ ...L.applyHolds(schedule, await holds(env, master.id)), slug: master.slug, legacy, booking: await hasDevice(env, master.id), maintenance: await maintenanceOn(env) });
 }
 
 async function createRequest(request, env, ctx, slug) {

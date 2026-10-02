@@ -111,7 +111,7 @@ async function load() {
     if (res.ok) {
       const raw = await res.json();
       const clean = L.cleanSchedule(raw);
-      return clean && { ...clean, booking: raw.booking === true, legacy: raw.legacy === true, slug: String(raw.slug || '').replace(/[^\w-]/g, '') };
+      return clean && { ...clean, booking: raw.booking === true, legacy: raw.legacy === true, maintenance: raw.maintenance === true, slug: String(raw.slug || '').replace(/[^\w-]/g, '') };
     }
     if (res.status === 404) return { missing: true };
   } catch (e) { /* покажем ошибку */ }
@@ -195,6 +195,7 @@ function render() {
   view.innerHTML = `
     ${title}
     ${placeHtml(s)}
+    ${s.maintenance ? `<section class="card page-card"><p>${t('Идут технические работы. Записаться можно будет через несколько минут.')}</p></section>` : ''}
     ${mine.length ? `
     <section class="my-bookings">
       <h2 class="section-title">${t('Мои записи')}</h2>

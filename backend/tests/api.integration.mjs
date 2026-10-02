@@ -456,6 +456,22 @@ if (cron.status !== 404) {
 } else {
   check('напоминания по расписанию — пропущено: wrangler dev запущен без --test-scheduled', true);
 }
+// ---------- Технические работы (2.10.0) ----------
+r = await call('PUT', '/api/admin/maintenance', { admin: CODE, body: { on: true } });
+check('технические работы включены', r.status === 200 && r.data.maintenance === true, JSON.stringify(r.data));
+const statusOn = (await call('GET', '/api/status')).data.maintenance === true;
+r = await call('PUT', '/api/reminders', { key: A.key, body: { tz: -300, items: [] } });
+check('технические работы: изменения мастера ждут (503)', statusOn && r.status === 503 && r.data.maintenance === true, JSON.stringify(r.data));
+r = await call('POST', `/api/requests?m=${A.slug}`, { body: { date: d1, time: '13:00', name: 'Клиентка', phone: '+7 701 555 44 36', services: ['Маникюр'] } });
+const oknaOn = await call('GET', `/api/okna?m=${A.slug}`);
+check('технические работы: заявка ждёт (503), страница клиентов открывается и знает о работах', r.status === 503 && r.data.maintenance === true
+  && oknaOn.status === 200 && oknaOn.data.maintenance === true, `${r.status} ${oknaOn.status} ${oknaOn.data.maintenance}`);
+r = await call('GET', '/api/account', { key: A.key });
+check('технические работы: читать можно', r.status === 200);
+r = await call('PUT', '/api/admin/maintenance', { admin: CODE, body: { on: false } });
+const statusOff = (await call('GET', '/api/status')).data.maintenance === false;
+r = await call('PUT', '/api/reminders', { key: A.key, body: { tz: -300, items: [] } });
+check('технические работы выключены — изменения снова принимаются', statusOff && r.status === 200, String(r.status));
 // ---------- Рассылка мастерам о новой версии (2.8.1) ----------
 // Каждая неудача засчитывается в лимит администратора (5 в час) — проверяем одну: чужой местный ключ.
 r = await call('POST', '/api/admin/broadcast', { headers: { Authorization: 'Local fake-key-0000' }, body: { kind: 'update' } });

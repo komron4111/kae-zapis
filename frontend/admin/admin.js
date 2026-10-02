@@ -64,6 +64,7 @@ let masterSort = 'created'; // список мастеров: created | total | 
 let subSort = 'created'; // «Подписки»: created | left
 let paying = ''; // мастер, которому в «Подписках» выбирают срок оплаты (месяц или год)
 let usage = null; // нагрузка за сутки — снимок последней проверки сервера (backend/monitor.mjs)
+let maintenance = false; // технические работы (2.10.0) — отметка config.maintenance на сервере
 let chats = null; // переписки с мастерами: последнее сообщение и непрочитанные
 let messages = []; // сообщения открытого чата
 let chatTimer = null;
@@ -221,6 +222,7 @@ async function load(first = false) {
     masters = list.masters;
     dbSize = list.size;
     usage = list.usage || null;
+    maintenance = list.maintenance === true;
     today = list.today || L.ymd(new Date());
     if (!subMonth) subMonth = L.monthOf(today);
     if (!statMonth) statMonth = L.monthOf(today);
@@ -280,6 +282,7 @@ function summary(id) {
   }
   if (id === 'chats') return unreadTotal() ? t('новых сообщений: {count}', { count: unreadTotal() }) : t('вопросы мастеров по оплате и приложению');
   if (id === 'server') {
+    if (maintenance) return t('идут технические работы');
     const values = { level: t(loadLevel()[1]), size: dbSize ? size(dbSize) : '—' };
     // Свой сервер (2.9.3): на главном экране — сколько места на диске занято и сколько всего.
     if (ownServer()) return t('занято {used} из {total} · загрузка {level}', { ...values, used: size(usage.disk.used), total: size(usage.disk.total) });
@@ -934,6 +937,17 @@ async function testPush() {
   }
 }
 
+// Технические работы (2.10.0): вручную — на время своих изменений; при выкладке новой версии включаются сами.
+async function toggleMaintenance(on) {
+  if (on && !confirm(t('Включить технические работы? Мастера и клиенты не смогут ничего записать, пока вы их не выключите.'))) return;
+  try {
+    maintenance = (await call('PUT', '/api/admin/maintenance', { on })).maintenance === true;
+    render();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
 // Рассылка мастерам (2.8.1): «Вышло обновление Beautybook — закройте и откройте приложение».
 async function sendUpdateNotice() {
   if (!confirm(t('Отправить всем мастерам уведомление «Вышло обновление Beautybook»?'))) return;
@@ -1035,6 +1049,11 @@ function serverHtml() {
   const when = usage && usage.at ? formatTime(usage.at) : '';
   const byStorage = [...masters].sort((a, b) => total(b.storage) - total(a.storage));
   return `
+    <section class="card page-card">
+      <h3 class="card-title">${t('Технические работы')}${maintenance ? ` <span class="load-level bad">${t('включены')}</span>` : ''}</h3>
+      <p class="hint">${t('Пока они включены, мастера и клиенты ничего не записывают: приложение мастера показывает «Идут технические работы» и откроется само, когда вы их выключите. При выкладке новой версии они включаются и выключаются сами.')}</p>
+      <button class="btn ${maintenance ? 'primary' : 'secondary'} block" data-maintenance="${maintenance ? 'off' : 'on'}">${maintenance ? t('Выключить технические работы') : t('Включить технические работы')}</button>
+    </section>
     <section class="card page-card">
       <h3 class="card-title">${t('Загрузка:')} <span class="load-level ${tone}">${t(word)}</span></h3>
       ${loads().map(([title, value, max, text]) => loadScale(title, value, max, text)).join('')}
@@ -1181,7 +1200,7 @@ async function resetPassword(id) {
 }
 
 view.addEventListener('click', e => {
-  const target = e.target.closest('[data-go], [data-master], [data-back], [data-reset], [data-unkey], [data-month], [data-sub], [data-sort], [data-chat], [data-copy], [data-pay-plan], [data-push], [data-push-remove], [data-broadcast], [data-install], #add-face, #leave');
+  const target = e.target.closest('[data-go], [data-master], [data-back], [data-reset], [data-unkey], [data-month], [data-sub], [data-sort], [data-chat], [data-copy], [data-pay-plan], [data-push], [data-push-remove], [data-broadcast], [data-maintenance], [data-install], #add-face, #leave');
   if (!target) return;
   if ('install' in target.dataset) {
     return Install.install({
@@ -1190,6 +1209,7 @@ view.addEventListener('click', e => {
       after: t('Потом откройте «BB Админ» с иконки на экране «Домой», войдите и включите Face ID и уведомления.'),
     });
   }
+  if (target.dataset.maintenance) return toggleMaintenance(target.dataset.maintenance === 'on');
   if (target.dataset.broadcast) return sendUpdateNotice();
   if (target.dataset.push === 'on') return enablePush();
   if (target.dataset.push === 'off') return disablePush();
