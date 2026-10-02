@@ -39,6 +39,7 @@ const ICONS = {
   right: '<path d="M9 5l7 7-7 7"/>',
   close: '<path d="M6 6l12 12M18 6L6 18"/>',
   user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/>',
+  contacts: '<rect x="5" y="3" width="15" height="18" rx="2"/><circle cx="12.5" cy="10" r="2.5"/><path d="M8.5 17c.7-1.8 2.2-2.8 4-2.8s3.3 1 4 2.8M3 7h3M3 12h3M3 17h3"/>',
   phone: '<path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2z"/>',
   chat: '<path d="M21 11.5a8.5 8.5 0 0 1-12.4 7.6L3 21l1.9-5.4A8.5 8.5 0 1 1 21 11.5z"/>',
   share: '<path d="M12 15V3M8 7l4-4 4 4"/><path d="M5 11v8a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-8"/>',
@@ -561,7 +562,7 @@ function drawAppt(id, prefill) {
   for (const name of chosen) if (!services.some(p => p.name === name)) services.push({ name, price: 0 });
 
   sheetHtml(src ? t('Запись') : requestId ? t('Подтверждение записи') : t('Новая запись'), `
-    <form id="appt-form" class="sheet-body" novalidate autocomplete="off">
+    <form id="appt-form" class="sheet-body" novalidate autocomplete="${contactAutofill() ? 'on' : 'off'}">
       ${requestId ? `<p class="hint form-note">${t('Проверьте данные, впишите предоплату и сохраните — запись появится в календаре, а время станет занятым для клиентов.')}</p>` : ''}
       <div class="row2">
         <label>${t('Дата')}<input type="date" name="date" value="${esc(a.date)}"></label>
@@ -570,9 +571,9 @@ function drawAppt(id, prefill) {
       <div id="time-hint" class="time-hint"></div>
       <button type="button" class="btn secondary block" data-act="pick-client">${icon('user')} ${t('Выбрать клиента')}</button>
       <div id="client-panel"></div>
-      <label>${t('Имя клиента')}<input name="name" value="${esc(a.name)}" autocapitalize="words" enterkeyhint="done" placeholder="${t('Например, Айгуль')}"></label>
+      <label>${t('Имя клиента')}<input name="name" value="${esc(a.name)}" autocapitalize="words" enterkeyhint="done" placeholder="${t('Например, Айгуль')}"${contactAutofill() ? ' autocomplete="name"' : ''}></label>
       <div class="suggest" data-for="name"></div>
-      <label>${t('Телефон')}<input name="phone" type="tel" value="${esc(L.phoneFieldStart(a.phone))}" enterkeyhint="done"></label>
+      ${telPickHtml(`<input name="phone" type="tel" value="${esc(L.phoneFieldStart(a.phone))}" enterkeyhint="done"${contactAutofill() ? ' autocomplete="tel"' : ''}>`)}
       <div class="suggest" data-for="phone"></div>
       <div class="phone-links" id="phone-links"></div>
       ${services.length ? `
@@ -1144,14 +1145,53 @@ async function saveClientProfile(form, c) {
   toast(t('Данные клиента сохранены'));
 }
 
+// Номер клиента из контактов телефона (2.9.5, просьба пользователя). Contact Picker API есть в Chrome на Android:
+// рядом с полем «Телефон» — кнопка, выбранный контакт заполняет номер (+7) и, если поле пустое, имя.
+// В Safari на iPhone она выключена (до 27.2 включительно) — там поля имени и телефона помечены для
+// «Автозаполнения контакта» над клавиатурой («Другой контакт» — любой из телефонной книги).
+const canPickContact = () => Boolean(navigator.contacts && typeof navigator.contacts.select === 'function');
+const contactAutofill = () => Install.isIOS && !canPickContact();
+
+function telPickHtml(input) {
+  const button = canPickContact()
+    ? `<button type="button" class="btn secondary" data-act="pick-contact" aria-label="${t('Выбрать из контактов')}" title="${t('Выбрать из контактов')}">${icon('contacts')}</button>`
+    : '';
+  return `<div class="tel-pick"><label>${t('Телефон')}${input}</label>${button}</div>`;
+}
+
+async function pickContact(form) {
+  if (!form || !canPickContact()) return;
+  let picked;
+  try {
+    [picked] = await navigator.contacts.select(['name', 'tel'], { multiple: false });
+  } catch (e) {
+    return toast(t('Не удалось открыть контакты'));
+  }
+  if (!picked) return; // передумали
+  const fill = (field, value) => {
+    field.value = value;
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+  // Имя — в пустое поле или вместо имени прошлого выбранного контакта; своё, вписанное мастером, не трогаем.
+  const name = L.contactName(picked.name);
+  const nameField = form.elements.name;
+  if (name && nameField && (!nameField.value.trim() || nameField.value === form.dataset.contactName)) {
+    fill(nameField, name);
+    form.dataset.contactName = name;
+  }
+  const phone = L.contactPhone(picked.tel);
+  if (phone) fill(form.elements.phone, phone);
+  else toast(t('У этого контакта нет номера +7 — впишите номер вручную'));
+}
+
 // Новый клиент без записи: имя, телефон и, если известно, Instagram, день рождения,
 // откуда пришёл. Он появится в списке клиентов и в «Выбрать клиента» при записи.
 function openNewClient(prefill = {}) {
   pushSheet(() => {
     sheetHtml(t('Новый клиент'), `
-      <form id="client-form" class="sheet-body" novalidate autocomplete="off">
-        <label>${t('Имя клиента')}<input name="name" value="${esc(prefill.name)}" autocapitalize="words" enterkeyhint="done" placeholder="${t('Например, Айгуль')}"></label>
-        <label>${t('Телефон')}<input name="phone" type="tel" value="${esc(L.phoneFieldValue(prefill.phone))}" enterkeyhint="done"></label>
+      <form id="client-form" class="sheet-body" novalidate autocomplete="${contactAutofill() ? 'on' : 'off'}">
+        <label>${t('Имя клиента')}<input name="name" value="${esc(prefill.name)}" autocapitalize="words" enterkeyhint="done" placeholder="${t('Например, Айгуль')}"${contactAutofill() ? ' autocomplete="name"' : ''}></label>
+        ${telPickHtml(`<input name="phone" type="tel" value="${esc(L.phoneFieldValue(prefill.phone))}" enterkeyhint="done"${contactAutofill() ? ' autocomplete="tel"' : ''}>`)}
         ${profileFieldsHtml()}
         <p class="hint form-note">${t('Клиент появится в списке и в «Выбрать клиента», когда будете делать запись.')}</p>
         <button type="submit" class="btn primary block">${t('Сохранить клиента')}</button>
@@ -3118,6 +3158,7 @@ const actions = {
   'open-appt': el => openAppt(el.dataset.id),
   'close-sheet': () => closeSheet(),
   'pick-client': () => toggleClients(),
+  'pick-contact': el => pickContact(el.closest('form') || el.closest('.sheet-body')),
   'fill': el => fillClient(el.closest('form'), el.dataset.name, el.dataset.phone),
   'pick-time': el => {
     const form = el.closest('form');

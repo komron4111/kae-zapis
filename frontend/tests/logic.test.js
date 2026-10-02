@@ -336,6 +336,15 @@ test('тема оформления в копии: своя сохраняетс
   eq(Object.keys(L.THEMES), ['neon', 'rose', 'plum', 'lavender', 'graphite']); // розово-чёрная (2.7.0) — первой
 });
 
+test('номер и имя из контактов телефона (2.9.5)', () => {
+  eq(L.contactPhone(['8 701 123 45 67']), '+7 701 123 45 67');
+  eq(L.contactPhone(['+7 (701) 123-45-67']), '+7 701 123 45 67');
+  eq(L.contactPhone(['701 123 4567']), '+7 701 123 45 67');
+  eq(L.contactPhone(['+998 90 123 45 67', '87071234567']), '+7 707 123 45 67'); // первый номер +7
+  eq([L.contactPhone(['+998 90 123 45 67']), L.contactPhone([]), L.contactPhone(undefined)], ['', '', '']);
+  eq([L.contactName(['', '  Айгерим   Нурланова ']), L.contactName(undefined), L.contactName([' '])], ['Айгерим Нурланова', '', '']);
+});
+
 test('исходная тема 2.9.1: пурпурная меняется на розово-чёрную один раз', () => {
   eq(L.DEFAULT_SETTINGS.theme, 'neon');
   const old = { theme: 'plum' };

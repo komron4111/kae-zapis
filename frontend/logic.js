@@ -891,6 +891,20 @@ export function phoneDigits(phone) {
   return d;
 }
 
+// Контакт из телефонной книги (2.9.5): первый номер +7 («8 701…», «+7 (701)…», «701…») — в виде поля
+// «+7 701 123 45 67»; других номеров поле с «+7» не примет — тогда ''.
+export function contactPhone(tels) {
+  for (const raw of Array.isArray(tels) ? tels : []) {
+    const d = phoneDigits(raw);
+    if (d.length === 11 && d[0] === '7') return phoneFieldValue('+' + d);
+  }
+  return '';
+}
+
+export function contactName(names) {
+  return (Array.isArray(names) ? names : []).map(s => String(s || '').replace(/\s+/g, ' ').trim()).find(Boolean)?.slice(0, 60) || '';
+}
+
 // «+7 701 123 45 67» для номеров +7, остальные — как ввели.
 export function formatPhone(phone) {
   const d = phoneDigits(phone);
