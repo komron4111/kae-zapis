@@ -891,6 +891,35 @@ export function phoneDigits(phone) {
   return d;
 }
 
+// Откуда пришёл человек по ссылке приложения (2.11.0): метка ?from=… (или utm_source) в ссылке, иначе приложение
+// или сайт, где её открыли (по адресу-источнику — у Android «android-app://com.whatsapp/» — и по браузеру: у Threads
+// в нём «Barcelona», у Instagram — «Instagram»), иначе 'direct' (ссылку открыли из сообщения или набрали сами).
+const VISIT_SOURCES = [
+  ['threads', /threads\.(net|com)|barcelona/i],
+  ['instagram', /instagram/i],
+  ['facebook', /facebook\.com|fban|fbav|com\.facebook/i],
+  ['whatsapp', /whatsapp/i],
+  ['telegram', /(\/\/|\.)t\.me\b|telegram/i],
+  ['tiktok', /tiktok|musical_ly|bytedance/i],
+  ['vk', /vk\.com|vkontakte/i],
+  ['google', /google\./i],
+  ['yandex', /yandex\./i],
+  ['2gis', /2gis/i],
+];
+
+export function visitSource({ search = '', referrer = '', ua = '', host = '' } = {}) {
+  const params = new URLSearchParams(search);
+  const tag = String(params.get('from') || params.get('utm_source') || '').toLowerCase()
+    .replace(/[^a-z0-9_.-]/g, '').replace(/^[^a-z0-9]+/, '').slice(0, 40);
+  if (tag) return tag;
+  for (const [name, re] of VISIT_SOURCES) if (re.test(referrer) || re.test(ua)) return name;
+  try {
+    const from = new URL(referrer).hostname.replace(/^www\./, '').toLowerCase();
+    if (from && from !== host) return from.slice(0, 40);
+  } catch (e) { /* адреса-источника нет */ }
+  return 'direct';
+}
+
 // Контакт из телефонной книги (2.9.5): первый номер +7 («8 701…», «+7 (701)…», «701…») — в виде поля
 // «+7 701 123 45 67»; других номеров поле с «+7» не примет — тогда ''.
 export function contactPhone(tels) {

@@ -107,6 +107,7 @@ async function route(request, env, ctx) {
   if (path === '/api/contact' && method === 'GET') return getContact(env);
   if (path === '/api/pair' && method === 'POST') return pair(request, env); // вход по коду, как до 2.0.0
   if (path === '/api/errors' && method === 'POST') return reportError(request, env);
+  if (path === '/api/visit' && method === 'POST') return recordVisit(request, env); // переход по ссылке (2.11.0)
 
   // Администратор: мастера, сброс пароля, контакт для «Забыли пароль?».
   if (path.startsWith('/api/admin/')) {
@@ -118,6 +119,7 @@ async function route(request, env, ctx) {
     if (path === '/api/admin/masters' && method === 'GET') return listMasters(env);
     if (path === '/api/admin/broadcast' && method === 'POST') return broadcast(request, env);
     if (path === '/api/admin/maintenance' && method === 'PUT') return putMaintenance(request, env);
+    if (path === '/api/admin/visits' && method === 'GET') return listVisits(env);
     if (path === '/api/admin/passkeys' && method === 'GET') return listPasskeys(env);
     if (path === '/api/admin/passkey/options' && method === 'POST') return passkeyRegisterOptions(request, env);
     if (path === '/api/admin/passkeys' && method === 'POST') return passkeyRegister(request, env);
@@ -399,6 +401,10 @@ async function register(request, env, ctx) {
   await env.DB.prepare("INSERT INTO subscriptions (master_id, start_date, end_date, kind, created) VALUES (?, ?, ?, 'trial', ?)")
     .bind(id, first.start, first.end, now).run();
   await startSession(env, id, key, body.device);
+  // Пришёл по ссылке приложения (2.11.0) — у перехода с этого телефона отмечаем регистрацию.
+  if (VISITOR_RE.test(String(body.visitor || ''))) {
+    await env.DB.prepare('UPDATE visits SET master_id = ? WHERE visitor = ? AND master_id IS NULL').bind(id, body.visitor).run();
+  }
   ctx.waitUntil(pushToAdmin(env, lang => ({ title: tr(lang, 'Новый мастер'), body: `${name} — ${L.specialtyName(profile.specialty, lang)}, ${L.formatPhone(phone)}`,
     tag: `master-${id}`, url: `./?open=master&m=${id}`, kind: 'master' })).catch(e => console.error('push admin', e)));
   return json({ ok: true, account: accountJson(master, [{ from: first.start, to: first.end, kind: 'trial', marked: now, plan: '', amount: 0 }]), pushKey: (await vapidKeys(env)).publicKey }, 201);
@@ -690,6 +696,38 @@ async function listMasters(env) {
       subscription: { ...subscriptionJson(r, periods[r.id] || []), periods: periods[r.id] || [] },
     })),
   });
+}
+
+// ---------- Переходы по ссылке приложения (2.11.0) ----------
+// Приложение (ещё не вошли, открыто в браузере, а не с экрана «Домой») раз в день присылает случайный номер
+// телефона и откуда человек пришёл впервые (L.visitSource). Один телефон — одна строка в visits; имён, номеров
+// и IP-адресов нет. Больше 30 переходов в час с одного адреса не считаем.
+const VISITOR_RE = /^[\w-]{16,40}$/;
+const VISIT_SOURCE_RE = /^[a-z0-9][a-z0-9_.-]{0,39}$/;
+
+async function recordVisit(request, env) {
+  const body = await readJson(request, 1024);
+  const id = String(body.visitor || ''), source = String(body.source || '');
+  if (!VISITOR_RE.test(id) || !VISIT_SOURCE_RE.test(source)) throw new HttpError(400, 'Неверный запрос');
+  const who = await visitor(request);
+  if (await tooMany(env, 'visit', who, 30, HOUR)) return json({ ok: true });
+  const now = new Date().toISOString();
+  await env.DB.prepare(`INSERT INTO visits (visitor, source, first, last) VALUES (?, ?, ?, ?)
+    ON CONFLICT(visitor) DO UPDATE SET last = excluded.last, views = views + 1`).bind(id, source, now, now).run();
+  await remember(env, 'visit', who);
+  return json({ ok: true });
+}
+
+// Для «BB Админ»: по источникам — людей всего, за 7 и 30 дней, сколько зарегистрировались; по дням — 14 дней.
+async function listVisits(env) {
+  const today = almatyToday();
+  const day = "date(first, '+5 hours')"; // день по Алматы
+  const { results: sources } = await env.DB.prepare(`SELECT source, COUNT(*) AS people, COUNT(master_id) AS registered,
+      SUM(${day} >= ?) AS week, SUM(${day} >= ?) AS month FROM visits GROUP BY source ORDER BY people DESC, source`)
+    .bind(L.addDays(today, -6), L.addDays(today, -29)).all();
+  const { results: days } = await env.DB.prepare(`SELECT ${day} AS day, COUNT(*) AS people FROM visits WHERE ${day} >= ? GROUP BY 1 ORDER BY 1`)
+    .bind(L.addDays(today, -13)).all();
+  return json({ today, sources, days });
 }
 
 // ---------- Технические работы (2.10.0) ----------

@@ -103,7 +103,11 @@ r = await call('POST', '/api/register', { body: { name: A.name, phone: A.phone, 
 check('регистрация мастера А', r.status === 201 && r.data.account.claimed && r.data.account.name === A.name, JSON.stringify(r.data.account));
 check('в аккаунте — направление и номер Kaspi', r.data.account.specialty === PROFILE.specialty && r.data.account.kaspi === L.formatPhone(PROFILE.kaspi), JSON.stringify(r.data.account));
 A.slug = r.data.account && r.data.account.slug;
-r = await call('POST', '/api/register', { body: { name: B.name, phone: B.phone, secret: B.secret, key: B.key, specialty: 'Барбер', kaspi: B.phone } });
+// Переходы по ссылке (2.11.0): мастер Б пришёл по ссылке с меткой и зарегистрировался.
+const VISIT_SRC = `test-${RUN}`, VISIT_B = L.bytesToB64u(crypto.getRandomValues(new Uint8Array(16)));
+r = await call('POST', '/api/visit', { body: { visitor: VISIT_B, source: VISIT_SRC } });
+check('переход по ссылке принят', r.status === 200, JSON.stringify(r.data));
+r = await call('POST', '/api/register', { body: { name: B.name, phone: B.phone, secret: B.secret, key: B.key, specialty: 'Барбер', kaspi: B.phone, visitor: VISIT_B } });
 check('регистрация мастера Б', r.status === 201);
 B.slug = r.data.account && r.data.account.slug;
 check('у мастеров свои ссылки', Boolean(A.slug && B.slug && A.slug !== B.slug), `${A.slug} / ${B.slug}`);
@@ -456,6 +460,21 @@ if (cron.status !== 404) {
 } else {
   check('напоминания по расписанию — пропущено: wrangler dev запущен без --test-scheduled', true);
 }
+// ---------- Переходы по ссылке (2.11.0) ----------
+r = await call('POST', '/api/visit', { body: { visitor: 'short', source: 'threads' } });
+const badVisit = r.status;
+r = await call('POST', '/api/visit', { body: { visitor: L.bytesToB64u(crypto.getRandomValues(new Uint8Array(16))), source: 'Bad Source!' } });
+check('переход: неверный номер или источник — 400', badVisit === 400 && r.status === 400, `${badVisit} ${r.status}`);
+const VISIT_X = L.bytesToB64u(crypto.getRandomValues(new Uint8Array(16)));
+await call('POST', '/api/visit', { body: { visitor: VISIT_X, source: VISIT_SRC } });
+await call('POST', '/api/visit', { body: { visitor: VISIT_X, source: 'threads' } }); // тот же телефон снова — один человек, первый источник
+r = await call('GET', '/api/visits', {});
+check('сводка переходов без кода администратора закрыта', r.status === 404 || r.status === 401 || r.status === 403, String(r.status));
+r = await call('GET', '/api/admin/visits', { admin: CODE });
+const visitRow = r.status === 200 && r.data.sources.find(x => x.source === VISIT_SRC);
+const visitDay = r.status === 200 && r.data.days.find(x => x.day === r.data.today);
+check('переходы: 2 человека с меткой, 1 зарегистрировался, сегодня — в сводке по дням', Boolean(visitRow) && visitRow.people === 2 && visitRow.registered === 1
+  && visitRow.week === 2 && visitRow.month === 2 && Boolean(visitDay) && visitDay.people >= 2, JSON.stringify({ visitRow, visitDay }));
 // ---------- Технические работы (2.10.0) ----------
 r = await call('PUT', '/api/admin/maintenance', { admin: CODE, body: { on: true } });
 check('технические работы включены', r.status === 200 && r.data.maintenance === true, JSON.stringify(r.data));

@@ -38,6 +38,7 @@ const ICONS = {
   left: '<path d="M15 5l-7 7 7 7"/>',
   right: '<path d="M9 5l7 7-7 7"/>',
   phone: '<path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2z"/>',
+  link: '<path d="M10 13.5a4.5 4.5 0 0 0 6.8.5l3-3a4.5 4.5 0 0 0-6.4-6.4l-1.7 1.7"/><path d="M14 10.5a4.5 4.5 0 0 0-6.8-.5l-3 3a4.5 4.5 0 0 0 6.4 6.4l1.7-1.7"/>',
   copy: '<rect x="8.5" y="8.5" width="12" height="12" rx="2.5"/><path d="M15.5 8.5V6a2.5 2.5 0 0 0-2.5-2.5H6A2.5 2.5 0 0 0 3.5 6v7A2.5 2.5 0 0 0 6 15.5h2.5"/>',
   check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
   instagram: '<rect x="3.5" y="3.5" width="17" height="17" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.2" cy="6.8" r=".4"/>',
@@ -65,6 +66,7 @@ let subSort = 'created'; // «Подписки»: created | left
 let paying = ''; // мастер, которому в «Подписках» выбирают срок оплаты (месяц или год)
 let usage = null; // нагрузка за сутки — снимок последней проверки сервера (backend/monitor.mjs)
 let maintenance = false; // технические работы (2.10.0) — отметка config.maintenance на сервере
+let visits = null; // переходы по ссылке приложения (2.11.0): { sources, days }
 let chats = null; // переписки с мастерами: последнее сообщение и непрочитанные
 let messages = []; // сообщения открытого чата
 let chatTimer = null;
@@ -223,6 +225,9 @@ async function load(first = false) {
     dbSize = list.size;
     usage = list.usage || null;
     maintenance = list.maintenance === true;
+    try {
+      visits = await call('GET', '/api/admin/visits');
+    } catch (e) { /* раздел покажет «пока нет данных» */ }
     today = list.today || L.ymd(new Date());
     if (!subMonth) subMonth = L.monthOf(today);
     if (!statMonth) statMonth = L.monthOf(today);
@@ -260,6 +265,7 @@ async function load(first = false) {
 
 const SECTIONS = {
   masters: ['users', 'Мастера'],
+  visits: ['link', 'Переходы по ссылке'],
   subs: ['calendar', 'Подписки'],
   chats: ['chat', 'Чат с мастерами'],
   push: ['bell', 'Уведомления'],
@@ -281,6 +287,11 @@ function summary(id) {
     return `${t('оплатили в этом месяце: {count}', { count: paid })}${off ? ` · ${t('закончилась: {count}', { count: off })}` : ''}`;
   }
   if (id === 'chats') return unreadTotal() ? t('новых сообщений: {count}', { count: unreadTotal() }) : t('вопросы мастеров по оплате и приложению');
+  if (id === 'visits') {
+    if (!visits) return t('пока нет данных');
+    const sum = key => visits.sources.reduce((n, s) => n + (Number(s[key]) || 0), 0);
+    return t('за 7 дней: {week} · всего: {total}', { week: sum('week'), total: sum('people') });
+  }
   if (id === 'server') {
     if (maintenance) return t('идут технические работы');
     const values = { level: t(loadLevel()[1]), size: dbSize ? size(dbSize) : '—' };
@@ -348,7 +359,7 @@ function render(anim) {
       <button class="back-link" data-back>${icon('left')} ${backTitle}</button>
       <h2 class="page-title">${title}</h2>
       ${page === 'chat' ? chatHtml() : m ? masterHtml(m) : page === 'masters' ? mastersHtml() : page === 'subs' ? subsHtml() : page === 'chats' ? chatsHtml()
-        : page === 'push' ? pushHtml() : page === 'server' ? serverHtml() : page === 'contact' ? contactHtml() : faceHtml()}
+        : page === 'push' ? pushHtml() : page === 'visits' ? visitsHtml() : page === 'server' ? serverHtml() : page === 'contact' ? contactHtml() : faceHtml()}
     </div></div>`;
   if (page === 'chat') startChat();
   if (page === 'chats') loadChats();
@@ -999,6 +1010,44 @@ clearBadge();
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') clearBadge();
 });
+
+// ---------- Переходы по ссылке (2.11.0) ----------
+// Сколько людей открыли ссылку приложения (beautybook.kz и прежние адреса) и откуда пришли впервые. Человек —
+// телефон: несколько открытий считаются один раз. Свои мастера и приложение с экрана «Домой» не считаются.
+const SOURCE_NAMES = { threads: 'Threads', instagram: 'Instagram', facebook: 'Facebook', whatsapp: 'WhatsApp', telegram: 'Telegram',
+  tiktok: 'TikTok', vk: 'ВКонтакте', google: 'Google', yandex: 'Яндекс', '2gis': '2ГИС', direct: 'Напрямую', aray: 'Рекомендации Арай' };
+const SOURCE_TAGS = [['threads', 'Для Threads'], ['aray', 'Для рекомендаций Арай'], ['instagram', 'Для Instagram']];
+const sourceName = s => (SOURCE_NAMES[s] ? t(SOURCE_NAMES[s])
+  : s.includes('.') ? t('сайт {source}', { source: s }) : t('метка «{source}»', { source: s }));
+
+function visitsHtml() {
+  const v = visits || { sources: [], days: [] };
+  const sum = key => v.sources.reduce((n, s) => n + (Number(s[key]) || 0), 0);
+  const tagLink = from => `${PUBLIC_URL}?from=${from}`;
+  return `
+    <section class="card page-card">
+      <div class="line"><span>${t('За 7 дней')}</span><b>${sum('week')}</b></div>
+      <div class="line"><span>${t('За 30 дней')}</span><b>${sum('month')}</b></div>
+      <div class="line"><span>${t('Всего')}</span><b>${sum('people')}</b></div>
+      <div class="line"><span>${t('Из них зарегистрировались')}</span><b>${sum('registered')}</b></div>
+      <p class="hint">${t('Человек — это телефон: если он открыл ссылку несколько раз, он считается один раз. Свои мастера и приложение с экрана «Домой» не считаются.')}</p>
+    </section>
+    <h3 class="section-title">${t('Откуда пришли')}</h3>
+    <section class="card page-card">${v.sources.length ? v.sources.map(s => `
+      <div class="line"><span>${esc(sourceName(s.source))}<small>${t('за 7 дней: {week} · зарегистрировались: {registered}', { week: s.week || 0, registered: s.registered || 0 })}</small></span><b>${s.people}</b></div>`).join('')
+      : `<p class="hint">${t('Переходов пока нет.')}</p>`}
+    </section>
+    <h3 class="section-title">${t('По дням')}</h3>
+    <section class="card page-card">${v.days.length ? v.days.slice().reverse().map(d => `
+      <div class="line"><span>${esc(L.dayTitle(d.day))}</span><b>${d.people}</b></div>`).join('')
+      : `<p class="hint">${t('За 2 недели переходов нет.')}</p>`}
+    </section>
+    <h3 class="section-title">${t('Ссылки с меткой')}</h3>
+    <section class="card page-card">
+      <p class="hint">${t('Если ссылку отправили в WhatsApp или СМС, телефон не сообщает, откуда пришли, — такие переходы видны как «Напрямую». Чтобы видеть точнее, давайте ссылку с меткой: переходы по ней попадут в свою строку.')}</p>${SOURCE_TAGS.map(([from, title]) => `
+      <div class="line"><span>${t(title)}<small>${esc(tagLink(from))}</small></span><button class="icon-btn" data-copy="${esc(tagLink(from))}" aria-label="${t('Скопировать')}">${icon('copy')}</button></div>`).join('')}
+    </section>`;
+}
 
 // ---------- Сервер ----------
 

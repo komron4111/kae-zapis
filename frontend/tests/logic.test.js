@@ -336,6 +336,16 @@ test('тема оформления в копии: своя сохраняетс
   eq(Object.keys(L.THEMES), ['neon', 'rose', 'plum', 'lavender', 'graphite']); // розово-чёрная (2.7.0) — первой
 });
 
+test('откуда пришли по ссылке приложения (2.11.0)', () => {
+  const src = o => L.visitSource({ host: 'beautybook.kz', ...o });
+  eq([src({ search: '?from=Aray' }), src({ search: '?utm_source=threads' }), src({ search: '?from=<b>x' })], ['aray', 'threads', 'bx']);
+  eq(src({ referrer: 'https://l.threads.com/?u=https%3A%2F%2Fbeautybook.kz' }), 'threads');
+  eq(src({ ua: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) Mobile/15E148 Barcelona 401.0.0.31.108' }), 'threads');
+  eq(src({ ua: 'Mozilla/5.0 (iPhone) Mobile/15E148 Instagram 400.0.0.37.104 (iPhone15,3; iOS 18_6)' }), 'instagram');
+  eq([src({ referrer: 'android-app://com.whatsapp/' }), src({ referrer: 'android-app://org.telegram.messenger/' })], ['whatsapp', 'telegram']);
+  eq([src({ referrer: 'https://www.example.com/post' }), src({ referrer: 'https://beautybook.kz/okna/' }), src({})], ['example.com', 'direct', 'direct']);
+});
+
 test('номер и имя из контактов телефона (2.9.5)', () => {
   eq(L.contactPhone(['8 701 123 45 67']), '+7 701 123 45 67');
   eq(L.contactPhone(['+7 (701) 123-45-67']), '+7 701 123 45 67');

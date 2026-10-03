@@ -2629,7 +2629,7 @@ async function submitAuth(form) {
       return;
     }
     const key = newDeviceKey();
-    const res = await (await api('POST', kind === 'login' ? '/api/login' : '/api/register', { name, phone, secret, key, device: deviceName(), specialty, kaspi })).json();
+    const res = await (await api('POST', kind === 'login' ? '/api/login' : '/api/register', { name, phone, secret, key, device: deviceName(), specialty, kaspi, visitor: pref('visitor') || '' })).json();
     // На телефоне данные другого мастера (он вышел не через «Выйти») — убираем их.
     if (cloud.lastPhone && cloud.lastPhone !== res.account.phone) await clearLocalData();
     cloud = { ...freshCloud(), key, pushKey: res.pushKey, account: res.account, lastPhone: res.account.phone };
@@ -3474,6 +3474,31 @@ Install.onInstallChange(() => {
 addEventListener('online', () => scheduleSync(500));
 
 // Есть ли новая версия: iPhone часто не перезапускает приложение, а будит его — проверяем при каждом возвращении.
+// ---------- Переходы по ссылке (2.11.0) ----------
+// Человек открыл ссылку приложения в браузере и ещё не вошёл: раз в день сообщаем серверу случайный номер этого
+// телефона и откуда он пришёл впервые (L.visitSource: метка ?from=…, Threads, Instagram, WhatsApp…). Ничего
+// личного не уходит. Свои мастера и приложение с экрана «Домой» не считаются. Номер уходит и при регистрации —
+// так в «BB Админ» видно, сколько пришедших зарегистрировались.
+function recordVisit() {
+  if (cloud.key || Install.isStandalone()) return;
+  const day = today();
+  if (pref('visitDay') === day) return;
+  let id = pref('visitor');
+  if (!id) {
+    id = L.bytesToB64u(crypto.getRandomValues(new Uint8Array(16)));
+    pref('visitor', id);
+  }
+  if (pref('visitor') !== id) return; // приватный режим: номер не сохраняется — не считаем
+  let source = pref('source');
+  if (!source) {
+    source = L.visitSource({ search: location.search, referrer: document.referrer, ua: navigator.userAgent, host: location.hostname });
+    pref('source', source);
+  }
+  pref('visitDay', day);
+  fetch(API + '/api/visit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ visitor: id, source }), keepalive: true })
+    .catch(() => {});
+}
+
 // ---------- Технические работы (2.10.0) ----------
 // Пока идёт выкладка (или администратор включил их в «BB Админ»), сервер на изменения отвечает 503 { maintenance: true }.
 // Тогда поверх приложения — экран «Идут технические работы»: ввести ничего нельзя, значит, ничего и не потеряется
@@ -3622,6 +3647,7 @@ async function start() {
   }
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   checkMaintenance(); // технические работы (2.10.0)
+  recordVisit(); // переходы по ссылке (2.11.0)
 
   const params = new URLSearchParams(location.search);
   if (params.has('open')) {
