@@ -38,6 +38,7 @@ const ICONS = {
   left: '<path d="M15 5l-7 7 7 7"/>',
   right: '<path d="M9 5l7 7-7 7"/>',
   phone: '<path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2z"/>',
+  card: '<rect x="3" y="5.5" width="18" height="13" rx="2.5"/><path d="M3 10h18M7 15h4"/>',
   link: '<path d="M10 13.5a4.5 4.5 0 0 0 6.8.5l3-3a4.5 4.5 0 0 0-6.4-6.4l-1.7 1.7"/><path d="M14 10.5a4.5 4.5 0 0 0-6.8-.5l-3 3a4.5 4.5 0 0 0 6.4 6.4l1.7-1.7"/>',
   copy: '<rect x="8.5" y="8.5" width="12" height="12" rx="2.5"/><path d="M15.5 8.5V6a2.5 2.5 0 0 0-2.5-2.5H6A2.5 2.5 0 0 0 3.5 6v7A2.5 2.5 0 0 0 6 15.5h2.5"/>',
   check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
@@ -67,6 +68,7 @@ let paying = ''; // мастер, которому в «Подписках» в�
 let usage = null; // нагрузка за сутки — снимок последней проверки сервера (backend/monitor.mjs)
 let maintenance = false; // технические работы (2.10.0) — отметка config.maintenance на сервере
 let visits = null; // переходы по ссылке приложения (2.11.0): { sources, days }
+let bills = null; // до какого числа оплачены сервер и домен (2.12.0): { server: {until, price}, domain: {…} }
 let chats = null; // переписки с мастерами: последнее сообщение и непрочитанные
 let messages = []; // сообщения открытого чата
 let chatTimer = null;
@@ -225,6 +227,7 @@ async function load(first = false) {
     dbSize = list.size;
     usage = list.usage || null;
     maintenance = list.maintenance === true;
+    bills = list.bills || null;
     try {
       visits = await call('GET', '/api/admin/visits');
     } catch (e) { /* раздел покажет «пока нет данных» */ }
@@ -270,6 +273,7 @@ const SECTIONS = {
   chats: ['chat', 'Чат с мастерами'],
   push: ['bell', 'Уведомления'],
   server: ['cloud', 'Сервер'],
+  bills: ['card', 'Оплата сервера и домена'],
   contact: ['phone', 'WhatsApp для мастеров'],
   face: ['lock', 'Вход по Face ID'],
 };
@@ -287,6 +291,12 @@ function summary(id) {
     return `${t('оплатили в этом месяце: {count}', { count: paid })}${off ? ` · ${t('закончилась: {count}', { count: off })}` : ''}`;
   }
   if (id === 'chats') return unreadTotal() ? t('новых сообщений: {count}', { count: unreadTotal() }) : t('вопросы мастеров по оплате и приложению');
+  if (id === 'bills') {
+    if (!bills) return t('нет данных');
+    const near = Object.keys(L.BILLS).map(key => ({ key, days: L.billDaysLeft(bills[key], today) }))
+      .filter(b => b.days !== null).sort((a, b) => a.days - b.days)[0];
+    return near ? `${t(L.BILLS[near.key].short)} — ${billStatus(near.days, bills[near.key].until)}` : t('укажите, до какого числа оплачено');
+  }
   if (id === 'visits') {
     if (!visits) return t('пока нет данных');
     const sum = key => visits.sources.reduce((n, s) => n + (Number(s[key]) || 0), 0);
@@ -359,7 +369,7 @@ function render(anim) {
       <button class="back-link" data-back>${icon('left')} ${backTitle}</button>
       <h2 class="page-title">${title}</h2>
       ${page === 'chat' ? chatHtml() : m ? masterHtml(m) : page === 'masters' ? mastersHtml() : page === 'subs' ? subsHtml() : page === 'chats' ? chatsHtml()
-        : page === 'push' ? pushHtml() : page === 'visits' ? visitsHtml() : page === 'server' ? serverHtml() : page === 'contact' ? contactHtml() : faceHtml()}
+        : page === 'push' ? pushHtml() : page === 'visits' ? visitsHtml() : page === 'server' ? serverHtml() : page === 'bills' ? billsHtml() : page === 'contact' ? contactHtml() : faceHtml()}
     </div></div>`;
   if (page === 'chat') startChat();
   if (page === 'chats') loadChats();
@@ -1011,6 +1021,53 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') clearBadge();
 });
 
+// ---------- Оплата сервера и домена (2.12.0) ----------
+// До какого числа оплачены сервер (vpsza500.kz) и домен (PS.kz), сколько осталось, кнопка «Оплатил — продлить»,
+// дату и цену можно поправить. Утром за 7, 3 и 1 день и в последний день приходит напоминание (сервер, billsDigest).
+const billStatus = (days, until) => (days < 0 ? t('оплата просрочена!') : days === 0 ? t('сегодня последний день')
+  : t('{until} · через {left}', { until: fullDateUntil(until), left: `${days} ${L.plural(days, DAY_FORMS)}` }));
+
+function billsHtml() {
+  const all = L.cleanBills(bills || {});
+  return Object.entries(L.BILLS).map(([key, info]) => {
+    const b = all[key];
+    const days = L.billDaysLeft(b, today);
+    const tone = days === null || days <= 3 ? 'bad' : days <= 7 ? 'warn' : 'ok';
+    const status = days === null ? t('дата не указана') : billStatus(days, b.until);
+    return `
+    <section class="card page-card">
+      <h3 class="card-title">${t(info.title)}</h3>
+      <p><span class="load-level ${tone}">${status}</span></p>
+      <div class="line"><span>${t('Где')}</span><b>${esc(info.where)}</b></div>
+      <div class="line"><span>${t('Оплачено до')}</span><b>${b.until ? fullDate(b.until) : '—'}</b></div>
+      <div class="line"><span>${t('Цена')}</span><b>${b.price ? `${L.formatMoney(b.price)} ${t(info.months === 12 ? 'в год' : 'в месяц')}` : '—'}</b></div>
+      <button class="btn primary block" data-bill-paid="${key}">${t(info.months === 12 ? 'Оплатил — продлить на год' : 'Оплатил — продлить на месяц')}</button>
+      <a class="btn secondary block" href="${esc(info.url)}" target="_blank" rel="noopener">${icon('link')} ${t('Открыть {site}', { site: info.site })}</a>
+      <div class="row2">
+        <label>${t('Оплачено до')}<input type="date" data-bill-until="${key}" value="${esc(b.until)}"></label>
+        <label>${t('Цена, ₸')}<input type="number" inputmode="numeric" min="0" step="100" data-bill-price="${key}" value="${b.price || ''}"></label>
+      </div>
+    </section>`;
+  }).join('') + `
+    <p class="hint">${t('Напоминание придёт утром за 7, 3 и 1 день до срока и в последний день — если в «Уведомлениях» они включены. Не оплатить вовремя — сервер или домен отключат, и приложение мастеров и ссылки клиентов перестанут работать. Даты: сервер — по дню его создания (1 октября, оплата помесячно), домен — по реестру доменов .kz. Если в кабинете vpsza500.kz или PS.kz дата другая — поправьте её в поле.')}</p>`;
+}
+
+async function saveBill(key, change) {
+  try {
+    bills = (await call('PUT', '/api/admin/bills', { [key]: change })).bills;
+  } catch (e) {
+    alert(e.message);
+  }
+  render();
+}
+
+async function payBill(key) {
+  const info = L.BILLS[key];
+  const until = L.addMonthsToDate((bills && bills[key] && bills[key].until) || today, info.months);
+  if (!confirm(t('Отметить оплату: {what} — {until}?', { what: t(info.short), until: fullDateUntil(until) }))) return;
+  await saveBill(key, { until });
+}
+
 // ---------- Переходы по ссылке (2.11.0) ----------
 // Сколько людей открыли ссылку приложения (beautybook.kz и прежние адреса) и откуда пришли впервые. Человек —
 // телефон: несколько открытий считаются один раз. Свои мастера и приложение с экрана «Домой» не считаются.
@@ -1249,7 +1306,7 @@ async function resetPassword(id) {
 }
 
 view.addEventListener('click', e => {
-  const target = e.target.closest('[data-go], [data-master], [data-back], [data-reset], [data-unkey], [data-month], [data-sub], [data-sort], [data-chat], [data-copy], [data-pay-plan], [data-push], [data-push-remove], [data-broadcast], [data-maintenance], [data-install], #add-face, #leave');
+  const target = e.target.closest('[data-go], [data-master], [data-back], [data-reset], [data-unkey], [data-month], [data-sub], [data-sort], [data-chat], [data-copy], [data-pay-plan], [data-push], [data-push-remove], [data-broadcast], [data-maintenance], [data-bill-paid], [data-install], #add-face, #leave');
   if (!target) return;
   if ('install' in target.dataset) {
     return Install.install({
@@ -1259,6 +1316,7 @@ view.addEventListener('click', e => {
     });
   }
   if (target.dataset.maintenance) return toggleMaintenance(target.dataset.maintenance === 'on');
+  if (target.dataset.billPaid) return payBill(target.dataset.billPaid);
   if (target.dataset.broadcast) return sendUpdateNotice();
   if (target.dataset.push === 'on') return enablePush();
   if (target.dataset.push === 'off') return disablePush();
@@ -1313,6 +1371,12 @@ async function copyText(button, text) {
 }
 
 view.addEventListener('change', e => {
+  // Оплата сервера и домена (2.12.0): дату и цену можно поправить вручную.
+  const bill = e.target.closest('[data-bill-until], [data-bill-price]');
+  if (bill) {
+    if (bill.dataset.billUntil) return saveBill(bill.dataset.billUntil, { until: bill.value });
+    return saveBill(bill.dataset.billPrice, { price: Math.max(0, Math.round(Number(bill.value) || 0)) });
+  }
   const box = e.target.closest('[data-pay]');
   if (!box) return;
   const want = box.checked;

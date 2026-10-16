@@ -80,7 +80,7 @@ export default {
   // Каждый день в 9:00 по Алматы (cron в wrangler.toml): у кого из мастеров подписка кончается.
   // 04:00 UTC — утренняя сводка администратору; каждые 5 минут — напоминания мастерам о записях (2.8.0).
   async scheduled(event, env, ctx) {
-    const job = event.cron === '0 4 * * *' ? subscriptionDigest(env) : sendReminders(env);
+    const job = event.cron === '0 4 * * *' ? morning(env) : sendReminders(env);
     ctx.waitUntil(job.catch(e => logError(env, 'server', 'scheduled', (e && e.message) || String(e))));
   },
 };
@@ -120,6 +120,7 @@ async function route(request, env, ctx) {
     if (path === '/api/admin/broadcast' && method === 'POST') return broadcast(request, env);
     if (path === '/api/admin/maintenance' && method === 'PUT') return putMaintenance(request, env);
     if (path === '/api/admin/visits' && method === 'GET') return listVisits(env);
+    if (path === '/api/admin/bills' && method === 'PUT') return putBills(request, env);
     if (path === '/api/admin/passkeys' && method === 'GET') return listPasskeys(env);
     if (path === '/api/admin/passkey/options' && method === 'POST') return passkeyRegisterOptions(request, env);
     if (path === '/api/admin/passkeys' && method === 'POST') return passkeyRegister(request, env);
@@ -686,6 +687,7 @@ async function listMasters(env) {
     size: (meta && meta.size_after) || null,
     usage: await loadUsage(env),
     maintenance: await maintenanceOn(env),
+    bills: await loadBills(env),
     masters: results.map(r => ({
       id: r.id, name: r.name, phone: r.phone ? L.formatPhone(r.phone) : '', slug: r.slug, created: r.created,
       claimed: Boolean(r.claimed), devices: r.devices, active: r.active || null,
@@ -728,6 +730,57 @@ async function listVisits(env) {
   const { results: days } = await env.DB.prepare(`SELECT ${day} AS day, COUNT(*) AS people FROM visits WHERE ${day} >= ? GROUP BY 1 ORDER BY 1`)
     .bind(L.addDays(today, -13)).all();
   return json({ today, sources, days });
+}
+
+// ---------- Оплата сервера и домена (2.12.0) ----------
+// config.bills — до какого числа оплачены сервер (vpsza500.kz) и домен (PS.kz) и цены (L.cleanBills); правит
+// администратор («BB Админ» → «Оплата сервера и домена»). Утром — напоминание (L.billReminders) уведомлением.
+async function loadBills(env) {
+  const row = await env.DB.prepare("SELECT value FROM config WHERE key = 'bills'").first();
+  try {
+    return L.cleanBills(row ? JSON.parse(row.value) : {});
+  } catch (e) {
+    return L.cleanBills({});
+  }
+}
+
+async function putBills(request, env) {
+  const body = await readJson(request, 2048);
+  const bills = await loadBills(env);
+  for (const key of Object.keys(L.BILLS)) {
+    const change = body[key];
+    if (!change || typeof change !== 'object') continue;
+    if ('until' in change) {
+      const until = String(change.until || '');
+      if (until && L.cleanBills({ [key]: { until } })[key].until !== until) throw new HttpError(400, 'Неверная дата');
+      bills[key].until = until;
+    }
+    if ('price' in change) {
+      const price = Number(change.price);
+      if (!Number.isInteger(price) || price < 0 || price > 10000000) throw new HttpError(400, 'Неверная цена');
+      bills[key].price = price;
+    }
+  }
+  await env.DB.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('bills', ?)").bind(JSON.stringify(bills)).run();
+  return json({ bills });
+}
+
+async function billsDigest(env) {
+  const due = L.billReminders(await loadBills(env), almatyToday());
+  for (const b of due) {
+    const info = L.BILLS[b.key];
+    await pushToAdmin(env, lang => {
+      const text = b.days < 0 ? tr(lang, 'Оплата просрочена: срок был {date}. Оплатите как можно скорее, иначе отключат.', { date: L.fullDate(b.until, lang) })
+        : b.days === 0 ? tr(lang, 'Сегодня последний оплаченный день — {date}.', { date: L.fullDate(b.until, lang) })
+        : tr(lang, 'Оплачено {until}, осталось дней: {days}.', { until: L.fullDateUntil(b.until, lang), days: b.days });
+      const price = b.price ? ` ${tr(lang, 'Цена: {price}.', { price: L.formatMoney(b.price) })}` : '';
+      return {
+        title: tr(lang, b.key === 'server' ? 'Пора оплатить сервер' : 'Пора продлить домен beautybook.kz'),
+        body: `${text}${price} ${info.site}`, tag: `bill-${b.key}`, url: './?open=bills', kind: 'bills',
+      };
+    });
+  }
+  return due.length;
 }
 
 // ---------- Технические работы (2.10.0) ----------
@@ -1273,6 +1326,15 @@ async function pushToAdmin(env, message) {
 }
 
 // Утренняя сводка (cron): у кого сегодня последний день подписки, у кого — завтра, у кого закончилась вчера.
+// Утро (09:00 Алматы): подписки мастеров, потом — оплата сервера и домена (2.12.0).
+async function morning(env) {
+  try {
+    await subscriptionDigest(env);
+  } finally {
+    await billsDigest(env);
+  }
+}
+
 async function subscriptionDigest(env) {
   const today = almatyToday(), tomorrow = L.addDays(today, 1), yesterday = L.addDays(today, -1);
   const { results } = await env.DB.prepare(`SELECT id, name, paid_until FROM masters

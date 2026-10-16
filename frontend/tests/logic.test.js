@@ -336,6 +336,14 @@ test('тема оформления в копии: своя сохраняетс
   eq(Object.keys(L.THEMES), ['neon', 'rose', 'plum', 'lavender', 'graphite']); // розово-чёрная (2.7.0) — первой
 });
 
+test('оплата сервера и домена (2.12.0)', () => {
+  const bills = L.cleanBills({ server: { until: '2026-11-01', price: 5100 }, domain: { until: '2027-02-30', price: -5 }, other: {} });
+  eq(bills, { server: { until: '2026-11-01', price: 5100 }, domain: { until: '', price: 0 } });
+  eq([L.billDaysLeft(bills.server, '2026-10-16'), L.billDaysLeft(bills.domain, '2026-10-16')], [16, null]);
+  const at = day => L.billReminders(bills, day).map(b => `${b.key}:${b.days}`);
+  eq([at('2026-10-16'), at('2026-10-25'), at('2026-10-29'), at('2026-11-01'), at('2026-11-03')], [[], ['server:7'], ['server:3'], ['server:0'], ['server:-2']]);
+});
+
 test('откуда пришли по ссылке приложения (2.11.0)', () => {
   const src = o => L.visitSource({ host: 'beautybook.kz', ...o });
   eq([src({ search: '?from=Aray' }), src({ search: '?utm_source=threads' }), src({ search: '?from=<b>x' })], ['aray', 'threads', 'bx']);

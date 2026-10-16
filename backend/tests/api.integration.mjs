@@ -475,6 +475,34 @@ const visitRow = r.status === 200 && r.data.sources.find(x => x.source === VISIT
 const visitDay = r.status === 200 && r.data.days.find(x => x.day === r.data.today);
 check('переходы: 2 человека с меткой, 1 зарегистрировался, сегодня — в сводке по дням', Boolean(visitRow) && visitRow.people === 2 && visitRow.registered === 1
   && visitRow.week === 2 && visitRow.month === 2 && Boolean(visitDay) && visitDay.people >= 2, JSON.stringify({ visitRow, visitDay }));
+// ---------- Оплата сервера и домена (2.12.0) ----------
+r = await call('PUT', '/api/admin/bills', { admin: CODE, body: { server: { until: '2026-02-30' } } });
+const badBillDate = r.status;
+r = await call('PUT', '/api/admin/bills', { admin: CODE, body: { domain: { price: -1 } } });
+check('оплата: неверная дата или цена — 400', badBillDate === 400 && r.status === 400, `${badBillDate} ${r.status}`);
+const billDay = L.addDays(todayKz, 3), domainDay = L.addDays(todayKz, 300);
+r = await call('PUT', '/api/admin/bills', { admin: CODE, body: { server: { until: billDay, price: 5100 }, domain: { until: domainDay } } });
+const listedBills = (await call('GET', '/api/admin/masters', { admin: CODE })).data.bills;
+check('оплата: даты и цена сохранены и видны администратору', r.status === 200 && listedBills && listedBills.server.until === billDay
+  && listedBills.server.price === 5100 && listedBills.domain.until === domainDay, JSON.stringify(listedBills));
+const billFrom = pushed.length;
+const billCron = await fetch(`${API}/__scheduled?cron=${encodeURIComponent('0 4 * * *')}`);
+if (billCron.status === 404) {
+  check('напоминание об оплате — пропущено: wrangler dev запущен без --test-scheduled', true);
+} else {
+  let billNote = null;
+  for (let i = 0; i < 40 && !billNote; i++) {
+    for (const p of pushed.slice(billFrom).filter(x => x.path === `/admin-${RUN}`)) {
+      const n = await decryptPush(p.body, ua);
+      if (n && n.kind === 'bills') billNote = n;
+    }
+    if (!billNote) await sleep(150);
+  }
+  check('утром за 3 дня — напоминание администратору об оплате сервера (без лишнего о домене)', Boolean(billNote) && billNote.url === './?open=bills'
+    && billNote.tag === 'bill-server' && billNote.body.includes('3'), JSON.stringify(billNote));
+}
+// Чтобы следующие запуски проверки не получали лишних напоминаний — срок подальше.
+await call('PUT', '/api/admin/bills', { admin: CODE, body: { server: { until: L.addDays(todayKz, 200) } } });
 // ---------- Технические работы (2.10.0) ----------
 r = await call('PUT', '/api/admin/maintenance', { admin: CODE, body: { on: true } });
 check('технические работы включены', r.status === 200 && r.data.maintenance === true, JSON.stringify(r.data));

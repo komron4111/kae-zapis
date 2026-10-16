@@ -97,6 +97,18 @@ report.push(`  база: ${mb(srv.db)}, нагрузка (1 мин): ${srv.load}
 const backupAge = srv.backup ? now - srv.backup * 1000 : Infinity;
 report.push(`  последняя копия базы: ${srv.backup ? new Date(srv.backup * 1000).toLocaleString('ru-RU', { timeZone: 'Asia/Almaty' }) : 'ещё нет'}`);
 if (backupAge > BACKUP_MAX_AGE && now - (state.installedAt || now) > BACKUP_MAX_AGE) problem('WARN', 'backup', 'ночная копия базы не делалась больше полутора суток');
+// Оплата сервера и домена (2.12.0): за 3 дня и после срока — напомнить (даты — «BB Админ» → «Оплата сервера и домена»).
+let bills = {};
+try { bills = JSON.parse((sql("SELECT value FROM config WHERE key = 'bills'")[0] || {}).value || '{}'); } catch (e) { /* дат нет */ }
+const todayKz = new Date(now + 5 * 3600e3).toISOString().slice(0, 10);
+for (const [key, name] of [['server', 'сервер (vpsza500.kz)'], ['domain', 'домен beautybook.kz (PS.kz)']]) {
+  const until = bills[key] && bills[key].until;
+  if (!until) continue;
+  const days = Math.round((Date.parse(until) - Date.parse(todayKz)) / 864e5);
+  report.push(`  оплачено: ${name} — до ${until} (осталось ${days} дн.)`);
+  if (days < 0) problem('ALERT', `bill:${key}`, `оплата просрочена: ${name}, срок был ${until} — оплатите, иначе отключат`);
+  else if (days <= 3) problem('WARN', `bill:${key}`, `пора оплатить ${name}: до ${until}, осталось ${days} дн.`);
+}
 // Технические работы (2.10.0): включены дольше 30 минут — наверное, забыли выключить.
 let works = {};
 try { works = JSON.parse((sql("SELECT value FROM config WHERE key = 'maintenance'")[0] || {}).value || '{}'); } catch (e) { /* нет отметки */ }

@@ -563,6 +563,38 @@ export function subscriptionDaysLeft(sub, today) {
   return Math.round((parseYmd(sub.until) - parseYmd(today)) / 864e5);
 }
 
+// ---------- Оплата сервера и домена (2.12.0) ----------
+// «BB Админ» → «Оплата сервера и домена»: до какого числа оплачены сервер (vpsza500.kz, помесячно) и домен
+// beautybook.kz (PS.kz, на год). Напоминание администратору — утром за 7, 3 и 1 день, в последний день и каждый
+// день после, пока оплату не отметят. bills — { server: {until, price}, domain: {until, price} }.
+export const BILLS = {
+  server: { title: 'Сервер', short: 'сервер', where: 'vpsza500.kz · VDS-2-2-50', site: 'vpsza500.kz', url: 'https://vpsza500.kz/', months: 1 },
+  domain: { title: 'Домен beautybook.kz', short: 'домен', where: 'PS.kz', site: 'PS.kz', url: 'https://www.ps.kz/', months: 12 },
+};
+export const BILL_REMIND_DAYS = [7, 3, 1, 0];
+
+export function cleanBills(raw) {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  const out = {};
+  for (const key of Object.keys(BILLS)) {
+    const b = src[key] && typeof src[key] === 'object' ? src[key] : {};
+    const until = DATE_RE.test(b.until) && addDays(b.until, 0) === b.until ? b.until : '';
+    const price = Number.isInteger(b.price) && b.price >= 0 && b.price <= 10000000 ? b.price : 0;
+    out[key] = { until, price };
+  }
+  return out;
+}
+
+// Сколько дней осталось: 0 — сегодня последний оплаченный день, меньше нуля — просрочено, null — дата не указана.
+export function billDaysLeft(bill, today) {
+  return bill && bill.until ? subscriptionDaysLeft({ until: bill.until }, today) : null;
+}
+
+export function billReminders(bills, today) {
+  return Object.keys(BILLS).map(key => ({ key, ...(bills || {})[key], days: billDaysLeft((bills || {})[key], today) }))
+    .filter(b => b.days !== null && (b.days < 0 || BILL_REMIND_DAYS.includes(b.days)));
+}
+
 // ---------- Где принимает мастер: адрес и 2ГИС ----------
 
 // Адрес одной строкой, до 150 знаков.
